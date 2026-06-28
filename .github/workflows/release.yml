@@ -1,0 +1,145 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.0'
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: web
+
+      - name: Build frontend
+        run: npm run build
+        working-directory: web
+
+      - name: Copy frontend to embed dir
+        run: |
+          rm -rf cmd/hikami/webdist
+          cp -r web/dist cmd/hikami/webdist
+
+      - name: Check Go formatting
+        run: |
+          test -z "$(gofmt -l cmd internal)"
+
+      - name: Run Go vet
+        run: go vet ./...
+
+      - name: Run Go tests
+        run: go test ./...
+
+  build:
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+            embed_ffmpeg: true
+          - goos: windows
+            goarch: amd64
+            embed_ffmpeg: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.0'
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: web
+      - name: Build frontend
+        run: npm run build
+        working-directory: web
+      - name: Copy frontend to embed dir
+        run: |
+          rm -rf cmd/hikami/webdist
+          cp -r web/dist cmd/hikami/webdist
+      - name: Cache ffmpeg for Windows embed
+        if: matrix.embed_ffmpeg
+        id: cache-ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: internal/runtime/assets/ffmpeg.zip
+          key: ffmpeg-windows-shared-embed-v1
+      - name: Download ffmpeg for Windows embed
+        if: matrix.embed_ffmpeg && steps.cache-ffmpeg.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p internal/runtime/assets
+          curl -fSL -o /tmp/ffmpeg.zip "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip"
+          unzip /tmp/ffmpeg.zip -d /tmp/ffmpeg-extract
+          cd /tmp/ffmpeg-extract && rm -rf ffmpeg-master-latest-win64-gpl-shared/doc ffmpeg-master-latest-win64-gpl-shared/include ffmpeg-master-latest-win64-gpl-shared/lib ffmpeg-master-latest-win64-gpl-shared/presets 2>/dev/null || true
+          cd /tmp/ffmpeg-extract && zip -r $GITHUB_WORKSPACE/internal/runtime/assets/ffmpeg.zip ffmpeg-master-latest-win64-gpl-shared/
+      - name: Report embedded ffmpeg size
+        if: matrix.embed_ffmpeg
+        run: |
+          echo "Embedded ffmpeg.zip size: $(du -h $GITHUB_WORKSPACE/internal/runtime/assets/ffmpeg.zip | cut -f1)"
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          SUFFIX=""
+          # 始终嵌入前端（embedded_web）；embed_ffmpeg 仅 Windows 完整版叠加
+          TAGS="-tags embedded_web"
+          if [ "${{ matrix.embed_ffmpeg }}" = "true" ]; then
+            TAGS="-tags embed_ffmpeg,embedded_web"
+          elif [ "${{ matrix.embed_ffmpeg }}" = "false" ]; then
+            SUFFIX="-lite"
+          fi
+          BINARY=hikami-${{ matrix.goos }}-${{ matrix.goarch }}${SUFFIX}
+          if [ "${{ matrix.goos }}" = "windows" ]; then BINARY="${BINARY}.exe"; fi
+          mkdir -p dist
+          go build ${TAGS} -ldflags="-s -w" -o dist/${BINARY} ./cmd/hikami
+          echo "ARTIFACT_NAME=hikami-${{ matrix.goos }}-${{ matrix.goarch }}${SUFFIX}" >> $GITHUB_ENV
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: hikami-*
+          path: dist/
+          merge-multiple: true
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/hikami-*
+          generate_release_notes: true

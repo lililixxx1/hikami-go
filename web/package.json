@@ -1,0 +1,37 @@
+{
+  "name": "hikami-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc -b && vite build",
+    "type-check": "vue-tsc -b",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@types/dompurify": "^3.0.5",
+    "axios": "^1.7.9",
+    "dompurify": "^3.4.3",
+    "element-plus": "^2.9.1",
+    "marked": "^18.0.3",
+    "mitt": "^3.0.1",
+    "pinia": "^2.3.0",
+    "qrcode": "^1.5.4",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@types/qrcode": "^1.5.5",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "@vue/test-utils": "^2.4.10",
+    "happy-dom": "^20.10.1",
+    "typescript": "~5.6.3",
+    "vite": "^6.0.0",
+    "vitest": "^4.1.8",
+    "vue-tsc": "^2.2.0"
+  }
+}

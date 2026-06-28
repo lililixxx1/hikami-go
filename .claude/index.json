@@ -1,0 +1,311 @@
+{
+  "version": 24,
+  "scanned_at": "2026-06-14T21:19:54+08:00",
+  "project": "hikami-go",
+  "language": "Go",
+  "go_version": "1.25.0",
+  "root_claude_md": "CLAUDE.md",
+  "modules": [
+    {
+      "path": "cmd/hikami",
+      "name": "CLI 入口",
+      "entry_files": ["cmd/hikami/main.go", "cmd/hikami/embed.go"],
+      "test_files": [],
+      "test_case_count": 0,
+      "responsibility": "服务启动与优雅关闭，嵌入式前端 FS，自动 ASR/发布回调，secrets 加载，旧版术语表导入，回顾模板 Store 初始化，通知管理器注入，术语发现器注入",
+      "claude_md": "cmd/hikami/CLAUDE.md"
+    },
+    {
+      "path": "internal/config",
+      "name": "配置加载与验证",
+      "entry_files": ["internal/config/config.go"],
+      "test_files": ["internal/config/config_test.go"],
+      "test_case_count": 12,
+      "responsibility": "YAML 配置加载、校验、默认值。默认 web.listen 为 :6334。新增 ASRTempConfig 本地 HTTP 服务支持（Enabled/Listen/LocalDir）、ASRS3Config S3 兼容对象存储支持（Endpoint/Bucket/AccessKeyID/AccessKeySecret/AccessKeyEnv/Region/PublicURLPrefix/UsePathStyle + SecretResolved/Configured）、WebDAVConfig 原生 WebDAV 支持（URL/Username/Password/PasswordEnv + PasswordResolved/NativeConfigured/RcloneConfigured 方法）",
+      "claude_md": "internal/config/CLAUDE.md"
+    },
+    {
+      "path": "internal/db",
+      "name": "SQLite 数据库",
+      "entry_files": ["internal/db/db.go", "internal/db/migrate.go"],
+      "test_files": ["internal/db/migrate_test.go"],
+      "test_case_count": 8,
+      "responsibility": "SQLite 打开、schema 迁移（v30）",
+      "claude_md": "internal/db/CLAUDE.md"
+    },
+    {
+      "path": "internal/aiprovider",
+      "name": "AI Provider 共享类型",
+      "entry_files": ["internal/aiprovider/result.go"],
+      "test_files": ["internal/aiprovider/result_test.go"],
+      "test_case_count": 5,
+      "responsibility": "GenerateResult 类型定义（Content/Raw/FinishReason），被 recap 和 glossary 模块共用",
+      "claude_md": "internal/aiprovider/CLAUDE.md"
+    },
+    {
+      "path": "internal/runtime",
+      "name": "外部工具探测与 FFmpeg 自动解析",
+      "entry_files": ["internal/runtime/probe.go", "internal/runtime/health.go", "internal/runtime/ffmpeg_resolver.go", "internal/runtime/ffmpeg_manifest.go", "internal/runtime/ffmpeg_embed.go", "internal/runtime/ffmpeg_embed_none.go", "internal/runtime/disk_unix.go", "internal/runtime/disk_windows.go"],
+      "test_files": ["internal/runtime/probe_test.go", "internal/runtime/health_test.go", "internal/runtime/ffmpeg_resolver_test.go"],
+      "test_case_count": 24,
+      "responsibility": "外部工具探测、能力暴露、FFmpeg 自动解析/下载/嵌入（三级回退：系统 PATH -> 嵌入资源 -> 在线下载）、配置状态快照、平台感知安装提示、跨平台磁盘使用检查、Cookie 过期检查",
+      "claude_md": "internal/runtime/CLAUDE.md"
+    },
+    {
+      "path": "internal/biliutil",
+      "name": "B 站 Cookie/签名/QR 登录工具",
+      "entry_files": ["internal/biliutil/cookie.go", "internal/biliutil/cookie_crypto.go", "internal/biliutil/cookie_account.go", "internal/biliutil/cookie_writer.go", "internal/biliutil/login.go", "internal/biliutil/wbi.go", "internal/biliutil/ua.go"],
+      "test_files": ["internal/biliutil/cookie_test.go", "internal/biliutil/cookie_crypto_test.go", "internal/biliutil/cookie_account_test.go", "internal/biliutil/wbi_test.go", "internal/biliutil/login_test.go", "internal/biliutil/cookie_writer_test.go"],
+      "test_case_count": 44,
+      "responsibility": "B 站 Netscape 格式 Cookie 加载/解析/写入/过期检查/静态加密、Cookie Account Store（含路径穿越防护 ValidateCookiePath、导入用 CreateImported、全量清除 ClearAll）、QR 码登录、WBI URL 签名、统一 User-Agent",
+      "claude_md": "internal/biliutil/CLAUDE.md"
+    },
+    {
+      "path": "internal/channel",
+      "name": "主播 CRUD 与识别",
+      "entry_files": ["internal/channel/channel.go", "internal/channel/identify.go"],
+      "test_files": ["internal/channel/channel_test.go", "internal/channel/identify_test.go"],
+      "test_case_count": 57,
+      "responsibility": "主播 CRUD、B 站识别、Cookie 查找、首次引导、auto_record/auto_asr/auto_publish、per-channel 发布配置、source_mode/discover_limit、recap_model/max_continuations",
+      "claude_md": "internal/channel/CLAUDE.md"
+    },
+    {
+      "path": "internal/session",
+      "name": "场次 CRUD",
+      "entry_files": ["internal/session/session.go"],
+      "test_files": ["internal/session/session_test.go"],
+      "test_case_count": 29,
+      "responsibility": "场次 CRUD、去重、失败重试、来源创建、删除、统计查询",
+      "claude_md": "internal/session/CLAUDE.md"
+    },
+    {
+      "path": "internal/state",
+      "name": "场次聚合状态机",
+      "entry_files": ["internal/state/state.go"],
+      "test_files": ["internal/state/state_test.go"],
+      "test_case_count": 10,
+      "responsibility": "场次聚合状态机、事件驱动转换、失败恢复",
+      "claude_md": "internal/state/CLAUDE.md"
+    },
+    {
+      "path": "internal/worker",
+      "name": "后台任务池与友好错误",
+      "entry_files": ["internal/worker/worker.go", "internal/worker/task.go", "internal/worker/hub.go", "internal/worker/errors.go"],
+      "test_files": ["internal/worker/worker_test.go", "internal/worker/task_test.go"],
+      "test_case_count": 35,
+      "responsibility": "任务池、Hub 广播、任务 CRUD、批量删除/重试、友好错误映射、自动重试去重",
+      "claude_md": "internal/worker/CLAUDE.md"
+    },
+    {
+      "path": "internal/handler",
+      "name": "HTTP API 与 WebSocket（含运行时状态代际校验）",
+      "entry_files": ["internal/handler/server.go", "internal/handler/config_export.go"],
+      "test_files": ["internal/handler/server_test.go"],
+      "test_case_count": 20,
+      "responsibility": "Gin 路由、REST API、WebSocket（Origin 校验）、onboarding、cookie-accounts、stats/dashboard、recap-partial、template export/import、glossary export/import/batch/candidates/discovery、Bili accounts 端点、诊断报告、Cookie 状态、发布错误映射、配置复制、recap config 端点、WebDAV config 端点、配置全量导出/导入（config_export.go，支持 merge/overwrite 策略）、运行时状态代际校验（configGen atomic.Uint64 + runtimeMu + refreshRuntimeStatus 过期快照丢弃，修复配置并发更新 Probe 乱序覆盖竞态）",
+      "claude_md": "internal/handler/CLAUDE.md"
+    },
+    {
+      "path": "internal/discover",
+      "name": "B 站回放发现",
+      "entry_files": ["internal/discover/discover.go"],
+      "test_files": ["internal/discover/discover_test.go"],
+      "test_case_count": 5,
+      "responsibility": "B 站回放发现 (yt-dlp)，支持 source_mode 过滤和 discover_limit",
+      "claude_md": "internal/discover/CLAUDE.md"
+    },
+    {
+      "path": "internal/download",
+      "name": "回放音频下载",
+      "entry_files": ["internal/download/download.go"],
+      "test_files": ["internal/download/download_test.go"],
+      "test_case_count": 20,
+      "responsibility": "回放音频下载，支持单 P 和多 P (yt-dlp)",
+      "claude_md": "internal/download/CLAUDE.md"
+    },
+    {
+      "path": "internal/live_record",
+      "name": "B 站直播录制",
+      "entry_files": ["internal/live_record/manager.go", "internal/live_record/bilibili.go", "internal/live_record/danmaku.go", "internal/live_record/ffmpeg.go", "internal/live_record/types.go"],
+      "test_files": ["internal/live_record/bilibili_test.go", "internal/live_record/ffmpeg_test.go", "internal/live_record/manager_test.go", "internal/live_record/danmaku_test.go"],
+      "test_case_count": 31,
+      "responsibility": "B 站直播音频+弹幕录制",
+      "claude_md": "internal/live_record/CLAUDE.md"
+    },
+    {
+      "path": "internal/importer",
+      "name": "手动导入",
+      "entry_files": ["internal/importer/importer.go"],
+      "test_files": ["internal/importer/importer_test.go"],
+      "test_case_count": 15,
+      "responsibility": "手动 multipart 导入（含弹幕）、ffmpeg 转码",
+      "claude_md": "internal/importer/CLAUDE.md"
+    },
+    {
+      "path": "internal/normalize",
+      "name": "媒体与弹幕标准化",
+      "entry_files": ["internal/normalize/normalize.go"],
+      "test_files": ["internal/normalize/normalize_test.go"],
+      "test_case_count": 67,
+      "responsibility": "媒体标准化、弹幕解析(JSONL+XML+多P合并)、时间偏移修复、元数据生成",
+      "claude_md": "internal/normalize/CLAUDE.md"
+    },
+    {
+      "path": "internal/asr",
+      "name": "ASR 转写",
+      "entry_files": ["internal/asr/asr.go", "internal/asr/dashscope.go", "internal/asr/temp_server.go", "internal/asr/s3_publisher.go", "internal/asr/public_ip.go", "internal/asr/danmaku_correction.go"],
+      "test_files": ["internal/asr/asr_test.go", "internal/asr/danmaku_correction_test.go", "internal/asr/temp_server_test.go", "internal/asr/s3_publisher_test.go", "internal/asr/public_ip_test.go"],
+      "test_case_count": 63,
+      "responsibility": "ASR 转写（DashScope + 本地占位）、三级临时音频发布后端（本地 HTTP 服务 > S3 兼容存储 > rclone）、公网 IP 自动检测、弹幕时间校正",
+      "claude_md": "internal/asr/CLAUDE.md"
+    },
+    {
+      "path": "internal/recap",
+      "name": "AI 直播回顾生成",
+      "entry_files": ["internal/recap/handler.go", "internal/recap/prompt.go", "internal/recap/filter.go", "internal/recap/provider_openai.go", "internal/recap/provider_util.go", "internal/recap/danmaku_analysis.go", "internal/recap/segmentation.go", "internal/recap/transcript_summarizer.go", "internal/recap/glossary_correction.go", "internal/recap/transcript_correction.go", "internal/recap/anthropic.go", "internal/recap/claude_cli.go", "internal/recap/codex_cli.go", "internal/recap/danmaku.go", "internal/recap/template.go", "internal/recap/render.go", "internal/recap/danmaku_stats.go", "internal/recap/presets.go", "internal/recap/knowledge_lookup.go"],
+      "test_files": ["internal/recap/recap_test.go", "internal/recap/template_test.go", "internal/recap/test_recap_main_test.go", "internal/recap/test_recap_0329_test.go"],
+      "test_case_count": 89,
+      "responsibility": "AI 回顾生成（多 Provider）、弹幕分析、术语建议闭环、模板系统（含 ClearCustom 全量清除）、续写、per-channel 配置",
+      "claude_md": "internal/recap/CLAUDE.md"
+    },
+    {
+      "path": "internal/upload",
+      "name": "WebDAV 归档上传",
+      "entry_files": ["internal/upload/upload.go", "internal/upload/webdav_copier.go"],
+      "test_files": ["internal/upload/upload_test.go", "internal/upload/webdav_copier_test.go"],
+      "test_case_count": 35,
+      "responsibility": "WebDAV 归档上传，支持 rclone 和原生 WebDAV (gowebdav) 两种后端，自动选择，支持清理策略",
+      "claude_md": "internal/upload/CLAUDE.md"
+    },
+    {
+      "path": "internal/publisher",
+      "name": "B 站专栏发布（含 -352 风控处理）",
+      "entry_files": ["internal/publisher/publisher.go", "internal/publisher/bilibili_opus.go", "internal/publisher/cookie.go", "internal/publisher/md2opus.go"],
+      "test_files": ["internal/publisher/md2opus_test.go", "internal/publisher/publisher_test.go", "internal/publisher/bilibili_opus_test.go"],
+      "test_case_count": 48,
+      "responsibility": "B 站专栏发布（Opus 格式：代码块保留 + 表格 formatTableRow 用 | 连接 + 表头加粗 + --- 作为普通分割线不吞内容、草稿/发布、封面上传、CookieAccountStore、通知、TopicID）+ -352 风控自动处理（doRequestWithGaia 两级重试：gaia 验证 register+validate + WBI RefreshKeys；getBuvids 24h 缓存 buvid3/buvid4；injectBuvids 注入 Cookie；完整浏览器风格 Header）。2026-06-14 移除 headerBlock 装饰块跳过逻辑（修复 --- 后正文被吞 bug）",
+      "claude_md": "internal/publisher/CLAUDE.md"
+    },
+    {
+      "path": "internal/scheduler",
+      "name": "定时任务调度",
+      "entry_files": ["internal/scheduler/scheduler.go"],
+      "test_files": ["internal/scheduler/scheduler_test.go"],
+      "test_case_count": 13,
+      "responsibility": "定时任务调度（回放发现、直播检查、磁盘/Cookie 告警）",
+      "claude_md": "internal/scheduler/CLAUDE.md"
+    },
+    {
+      "path": "internal/secrets",
+      "name": "API Key 管理",
+      "entry_files": ["internal/secrets/secrets.go"],
+      "test_files": ["internal/secrets/secrets_test.go"],
+      "test_case_count": 8,
+      "responsibility": "API Key 管理（SQLite 存储、掩码、环境变量加载、校验、Clear 全量清除）",
+      "claude_md": "internal/secrets/CLAUDE.md"
+    },
+    {
+      "path": "internal/glossary",
+      "name": "ASR 术语校正表管理与 AI 术语发现",
+      "entry_files": ["internal/glossary/glossary.go", "internal/glossary/candidate_store.go", "internal/glossary/discovery.go"],
+      "test_files": ["internal/glossary/glossary_test.go", "internal/glossary/candidate_store_test.go", "internal/glossary/discovery_test.go"],
+      "test_case_count": 55,
+      "responsibility": "术语表 CRUD、全局/主播合并、导入/导出、Prompt 生成、ClearAll 全量清除 + AI 术语发现系统（candidate_store.go 候选 CRUD/审批/评分 + discovery.go AI 自动发现/分块/prompt/候选合并）",
+      "claude_md": "internal/glossary/CLAUDE.md"
+    },
+    {
+      "path": "internal/notify",
+      "name": "通知事件系统",
+      "entry_files": ["internal/notify/notify.go", "internal/notify/factory.go", "internal/notify/webhook.go", "internal/notify/bark.go", "internal/notify/serverchan.go"],
+      "test_files": ["internal/notify/notify_test.go", "internal/notify/sender_test.go"],
+      "test_case_count": 12,
+      "responsibility": "通知管理（事件常量、Manager、Webhook/Bark/ServerChan 发送器）",
+      "claude_md": "internal/notify/CLAUDE.md"
+    },
+    {
+      "path": "web",
+      "name": "Vue 3 前端",
+      "entry_files": ["web/src/main.ts"],
+      "test_files": ["web/src/utils/format.test.ts", "web/src/utils/lifecycle.test.ts", "web/src/utils/friendlyStatus.test.ts"],
+      "test_case_count": 49,
+      "responsibility": "Vue 3 前端管理界面（含配置备份/导入导出、API Key 在线输入、WebDAV 配置卡片、Vitest 测试）。2026-06-14 增量：fetchRuntime(force) 强制跳过 30s 节流、SettingsView dashScope/recap 密钥环境变量动态化、ASR 能力项 hint 动作、GlossaryEditor 新增热词对话框、RecapTemplateEditor 预设下拉、listRecapPresets API、TemplatePreset 类型",
+      "claude_md": "web/CLAUDE.md"
+    }
+  ],
+  "root_level_standalone_tools": [
+    {
+      "path": "update_status.go",
+      "package": "main",
+      "description": "独立小工具：通过命令行参数手动更新 SQLite 中 sessions 表的 status 字段（go run update_status.go <db_path> <session_id> <new_status>）。非业务模块，未纳入模块索引，不属于 internal 包树。"
+    }
+  ],
+  "coverage": {
+    "estimated_total_go_files": 128,
+    "scanned_go_files": 128,
+    "scanned_go_test_files": 48,
+    "total_go_test_case_count": 705,
+    "scanned_frontend_test_files": 3,
+    "total_frontend_test_case_count": 49,
+    "modules_with_claude_md": 25,
+    "modules_total": 25,
+    "coverage_percent": 100,
+    "truncated": false,
+    "completed_gaps": [
+      {
+        "module": "internal/aiprovider",
+        "type": "documentation",
+        "description": "已补全：创建完整的 CLAUDE.md 文档，包含模块职责、对外接口、使用场景、测试覆盖、相关文件清单和面包屑导航"
+      },
+      {
+        "module": "internal/publisher",
+        "type": "documentation",
+        "description": "已补全（2026-06-13）：CLAUDE.md 新增 -352 风控自动处理章节（doRequestWithGaia 两级重试、getBuvids 24h 缓存、injectBuvids、performGaiaVerification 两步验证流程），更新模块职责和相关文件清单"
+      },
+      {
+        "module": "internal/handler",
+        "type": "documentation+tests",
+        "description": "已补全（2026-06-14）：CLAUDE.md 新增'运行时状态代际校验（并发安全）'章节（configGen/runtimeMu/configSnapshot/bumpConfigGen/refreshRuntimeStatus/currentRuntimeStatus helpers 及调用约定）；测试计数 14→20（新增 5 个并发安全测试函数）"
+      },
+      {
+        "module": "internal/publisher",
+        "type": "documentation",
+        "description": "已补全（2026-06-14）：CLAUDE.md 更新 md2opus 表格转换说明（formatTableRow 用 | 连接、表头加粗、--- 作为普通分割线不吞内容）、Markdown 转换章节、相关文件清单、新增 changelog 行"
+      },
+      {
+        "module": "web",
+        "type": "documentation",
+        "description": "已补全（2026-06-14）：CLAUDE.md 新增 stores/runtime.ts fetchRuntime(force) 说明、SettingsView 密钥环境变量动态化与 ASR hint 动作说明、GlossaryEditor 新增热词对话框、RecapTemplateEditor 预设下拉、api/recap-templates.ts listRecapPresets、TemplatePreset 类型；新增 changelog 行"
+      }
+    ],
+    "gaps": [],
+    "previous_gaps_resolved": [
+      {
+        "module": "internal/publisher",
+        "type": "tests",
+        "description": "已解决：新增 4 个 HandleTask 集成测试（CookieAccountStore/NotifyManager/InvalidStatus/UploadedStatus）"
+      },
+      {
+        "module": "web",
+        "type": "tests",
+        "description": "已解决：初始化 Vitest 测试框架，新增 3 个测试文件共 49 个测试用例"
+      }
+    ],
+    "last_incremental_sync": {
+      "timestamp": "2026-06-14T21:19:54+08:00",
+      "scope": "internal/handler + internal/publisher + web",
+      "summary": "(1) handler 并发安全：Server 新增 configGen atomic.Uint64 代际校验 + runtimeMu/configSnapshot/bumpConfigGen/refreshRuntimeStatus helpers，修复配置并发更新 Probe 乱序覆盖；新增 5 测试函数（handler 14→20）。(2) publisher bug 修复：md2opus 移除 headerBlock 装饰块跳过逻辑（--- 后正文被吞 bug），表格改 formatTableRow | 连接+表头加粗。(3) web 交互：fetchRuntime(force)、SettingsView 密钥 env 动态化+ASR hint、GlossaryEditor 新增热词对话框、RecapTemplateEditor 预设下拉+TemplatePreset 类型。Go 测试总数 699→705（+6 handler）；前端仍 49",
+      "files_updated": [
+        "CLAUDE.md",
+        "CLAUDE-detail/changelog.md",
+        "internal/handler/CLAUDE.md",
+        "internal/publisher/CLAUDE.md",
+        "web/CLAUDE.md",
+        ".claude/index.json"
+      ]
+    }
+  },
+  "ignored": {
+    "patterns": [".git/**", "node_modules/**", "dist/**", "web/dist/**", "cmd/hikami/webdist/**", "*.db", "*.db-*", "logs/**", "tmp/**", ".env", "huizeman/**", "*.out", "cover*.out", ".spec-workflow/**", ".claude/plans/**", ".playwright-mcp/**", ".local/**", ".serena/**", ".cc-connect/**", ".cgpt/**", "test-recap/**", ".config/**"],
+    "source": ".gitignore + defaults"
+  }
+}

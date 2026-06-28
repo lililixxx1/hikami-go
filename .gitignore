@@ -1,0 +1,88 @@
+/hikami
+/hikami-api
+/hazel.db
+/hazel.db-*
+/hikami.db
+/hikami.db-*
+/huizeman/
+/logs/
+dist/
+tmp/
+.env
+config.yaml
+cmd/hikami/webdist/
+.claude/plans/
+.spec-workflow/
+cover.out
+cover_final.out
+
+# Runtime artifacts
+snapshot.txt
+*.network-request
+internal/runtime/assets/
+引用格式
+
+# Runtime data (recordings, transcriptions, cookies)
+data/
+
+# Config export snapshots
+*-config-*.json
+
+# Ad-hoc investigation / working notes
+OPUS_DRAFT_EMPTY_CONTENT_INVESTIGATION.md
+WEB_OPTIMIZATION_SUGGESTIONS.md
+直播回顾_*.md
+
+# MCP / tool caches
+.playwright-mcp/
+.serena/
+.local/
+
+# Test data
+test-recap/
+
+# Design docs temp
+AGENTS.md
+
+# Temp plan files
+plan_*.md
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# AI skills (samber/cc-skills-golang, local install via skills CLI)
+.agents/
+.claude/skills/
+skills-lock.json
+
+# Build artifacts & runtime outputs
+node_modules/
+output/
+*.exe
+*.log
+/draft-render-fullpage.png
+/glossary-editor.png
+/recap-models-dropdown.png
+
+# Local environment & tooling state
+.cc-connect/
+.config/
+
+# Backup snapshots (runtime/config/db with timestamp)
+*.bak
+*.bak.*
+hazel.bak*
+hikami.bak*
+hazel.db.bak*
+hikami.db.bak*
+config.yaml.bak*
+
+# Codex task workspace
+.cgpt/

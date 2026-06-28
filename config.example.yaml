@@ -1,0 +1,7 @@
+# Hikami-Go 最小配置
+# 完整配置参考: config.full.example.yaml
+output_root: ./data
+db_path: ./hikami.db
+
+recap_ai:
+  enabled: true

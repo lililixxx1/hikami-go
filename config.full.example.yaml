@@ -1,0 +1,125 @@
+output_root: "huizeman"
+db_path: "hikami.db"
+
+# Cookie 文件加密密钥（64 位十六进制字符串 = 32 字节 AES-256）
+# 留空或不设置则 Cookie 文件以明文存储（向后兼容）
+# 生成方法: openssl rand -hex 32
+# cookie_encryption_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+ffmpeg: "ffmpeg"
+ffprobe: "ffprobe"
+yt_dlp: "yt-dlp"
+rclone: "rclone"
+
+web:
+  enabled: true
+  listen: "127.0.0.1:6334"   # 默认仅绑定回环；如需外网/内网访问改为 "0.0.0.0:6334" 并必须配置 admin_token
+  admin_token: ""            # 保护敏感 REST API（secrets/config/cookies）；绑非 loopback 时必填
+  admin_token_env: ""        # 可选：从该环境变量读 token（优先于 admin_token，避免明文存放）
+
+worker:
+  num: 3
+  live_record_num: 2
+
+cron:
+  discovery: "@every 20m"
+  live_check: "@every 30s"
+
+logs:
+  dir: "logs"
+  level: "info"
+  format: "json"          # json 或 text
+
+dashscope:
+  api_key_env: "DASHSCOPE_API_KEY"
+  asr_url: "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription"
+  tasks_url: "https://dashscope.aliyuncs.com/api/v1/tasks"
+  # 可选：qwen-asr、qwen3-asr-flash-filetrans、fun-asr
+  # 注意：仅 fun-asr 支持术语表热词注入（vocabulary），qwen 系列模型不会使用热词
+  model: "qwen3-asr-flash-filetrans"
+  language: "zh"
+
+asr_temp:
+  # 原生内嵌 ASR 临时服务端
+  enabled: false
+  listen: ""                 # 可选；例如 ":8090"，留空则挂载到 Gin
+  local_dir: "tmp/asr-audio"
+  public_base_url: "https://example.com/tmp/asr"
+  cleanup_after_success: true
+  # deprecated: rclone fallback
+  rclone_remote: "hikami-temp:"
+  base_path: "tmp/asr"        # deprecated: 远端路径
+
+recap_ai:
+  provider: "openai_compatible"
+  api_key_env: "AI_API_KEY"
+  base_url: "https://api.openai.com/v1"
+  model: "gpt-5.4"
+  max_tokens: 16384
+  max_continuations: 2
+  timeout_seconds: 180
+  cli_path: ""
+
+webdav:
+  # 原生 WebDAV 客户端
+  url: "https://webdav.example.com/dav"
+  username: "hikami"
+  password: ""
+  password_env: "WEBDAV_PASSWORD"
+  base_path: "录播/Hikami/huizeman"
+  remote: "hikami-webdav:"     # deprecated: rclone fallback
+
+upload:
+  # 上传成功后清理本地文件的策略：
+  #   none      不清理（默认，保留全部本地产物）
+  #   temp      删除 ASR 公开音频（asr/audio.public.json）与远端临时对象
+  #   generated 删除 ASR 临时产物目录（asr/）
+  #   all       删除整个本地场次目录（raw/asr/package/recap），并置 session.local_available=false；
+  #             之后生成回顾/发布/词汇表发现等读本地文件的操作会被守卫拦截，
+  #             需先调用 /api/sessions/:sid/fetch 从 WebDAV 取回（取回后 local_available 置回 true）
+  cleanup_policy: "none"
+
+archive:
+  # 发布专栏成功后自动归档到 WebDAV（不推进 session 主状态，会话保持 published）。
+  auto_after_publish: false
+  # 归档成功后清理本地文件的策略（枚举同 upload.cleanup_policy）：
+  #   none      不清理（默认）
+  #   temp      删除 ASR 公开音频与远端临时对象
+  #   generated 删除 ASR 临时产物目录（asr/）
+  #   all       删除整个本地场次目录，置 local_available=false；再次编辑专栏需先 Fetch 取回
+  cleanup_policy: "none"
+
+downloader:
+  # 回放下载后端：
+  #   auto/native 使用 Go 原生 B 站下载链路（单 P 音频 + 弹幕 XML）
+  #   ytdlp       使用 yt-dlp 兼容后端（保留多 P 能力）
+  backend: "auto"
+
+publish:
+  enabled: false
+  mode: "draft"           # draft=仅保存草稿, publish=自动发布
+  category_id: 15         # 分区：生活->其他
+  list_id: 0              # 文集 ID（0=不加入文集）
+  private_pub: 2          # 2=公开, 1=仅自己可见
+  summary_len: 100        # 摘要截取字数
+  original: 0             # 0=转载/未声明原创, 1=原创
+  aigc: 0                 # 0=未使用 AI 辅助创作, 1=声明 AI 辅助创作
+  timer_pub_time: 0       # Unix 时间戳，0=不定时发布
+  cover_url: ""           # 自定义封面 URL 或本地路径，空=自动查找 recap/cover.*
+  topics: ""              # 话题，逗号分隔
+  close_comment: 0        # 0=开启评论, 1=关闭评论
+  up_choose_comment: 0    # 0=关闭精选评论, 1=开启精选评论
+
+bootstrap_channels:
+  - id: "huize"
+    name: "灰泽满Hazel"
+    uid: 1298779265
+    live_room_id: 0
+    replay_source_url: "https://space.bilibili.com/1298779265/lists/5070891?type=series"
+    space_url: "https://space.bilibili.com/1298779265/video"
+    title_prefix: "【直播回放】"
+    cookie_file: ""
+    download_cookie_file: ""
+    enabled: true
+    auto_record: true       # 检测到开播后自动开始录制
+    auto_asr: false          # 录播完成后自动提交 ASR 转写
