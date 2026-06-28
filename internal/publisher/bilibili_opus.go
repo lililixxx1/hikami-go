@@ -485,7 +485,29 @@ func (c *BiliOpusClient) uploadCoverToURL(ctx context.Context, baseURL string, c
 	if strings.HasPrefix(coverURL, "//") {
 		coverURL = "https:" + coverURL
 	}
+	// 将上传返回的 i0.hdslb.com 等 BFS 域名改写为专栏图床域名 article.biliimg.com。
+	// 原因:SaveDraft 时 B站服务端会把上传的 BFS 封面 URL 自动改写为 article.biliimg.com
+	// (经 draft/view 读回确认),但 PublishOpus 的 article.cover 不会触发这个改写——
+	// 若直接传入 i0.hdslb.com,发布端会静默丢弃封面,导致发布的专栏无封面。
+	// 官方编辑器发布时用的正是草稿存储后改写过的 article.biliimg.com URL(经抓包 create/opus 确认)。
+	// 两个域名指向同一张 BFS 图,改写后草稿端(image_urls)与发布端(article.cover)行为一致。
+	coverURL = normalizeBiliCoverURL(coverURL)
 	return coverURL, nil
+}
+
+// normalizeBiliCoverURL 把 B站 BFS 上传返回的通用图床域名(i*.hdslb.com)统一为
+// 专栏图床域名 article.biliimg.com,与 B站服务端在 SaveDraft 时的改写行为对齐。
+// 仅替换 host,保留 scheme/path/query。非 BFS 图床 URL 原样返回。
+func normalizeBiliCoverURL(coverURL string) string {
+	for _, host := range []string{"i0.hdslb.com", "i1.hdslb.com", "i2.hdslb.com", "i3.hdslb.com"} {
+		if strings.Contains(coverURL, "://"+host+"/") {
+			return strings.Replace(coverURL, "://"+host+"/", "://article.biliimg.com/", 1)
+		}
+		if strings.Contains(coverURL, "//"+host+"/") {
+			return strings.Replace(coverURL, "//"+host+"/", "//article.biliimg.com/", 1)
+		}
+	}
+	return coverURL
 }
 
 func (c *BiliOpusClient) doRequestWithGaia(ctx context.Context, cookie *BiliCookie, url string, body []byte) (json.RawMessage, error) {

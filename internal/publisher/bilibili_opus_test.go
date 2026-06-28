@@ -404,6 +404,50 @@ func TestUploadCover(t *testing.T) {
 			t.Errorf("coverURL = %q, want https:// prefix", coverURL)
 		}
 	})
+
+	// TestUploadCover_BFSDomainRewrite 验证上传返回的 BFS 通用图床域名(i0.hdslb.com 等)
+	// 被改写为专栏图床域名 article.biliimg.com。
+	// 原因:SaveDraft 时 B站服务端会把上传的 BFS 封面 URL 改写为 article.biliimg.com,
+	// 但 PublishOpus 的 article.cover 不触发该改写,直接传 i0.hdslb.com 会导致封面丢失。
+	t.Run("BFS domain rewrite to article.biliimg.com", func(t *testing.T) {
+		cases := []struct {
+			name   string
+			resp   string
+			want   string
+		}{
+			{"http i0.hdslb.com", `{"code":0,"data":{"image_url":"http://i0.hdslb.com/bfs/new_dyn/abc.png"}}`, "http://article.biliimg.com/bfs/new_dyn/abc.png"},
+			{"https i0.hdslb.com", `{"code":0,"data":{"image_url":"https://i0.hdslb.com/bfs/x.jpg"}}`, "https://article.biliimg.com/bfs/x.jpg"},
+			{"protocol-relative i0", `{"code":0,"data":{"image_url":"//i0.hdslb.com/bfs/y.png"}}`, "https://article.biliimg.com/bfs/y.png"},
+			{"i1 hdslb.com", `{"code":0,"data":{"image_url":"https://i1.hdslb.com/bfs/z.png"}}`, "https://article.biliimg.com/bfs/z.png"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if strings.HasSuffix(r.URL.Path, "/finger/spi") {
+						w.Header().Set("Content-Type", "application/json")
+						fmt.Fprintf(w, `{"code":0,"data":{"b_3":"b3","b_4":"b4"}}`)
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					fmt.Fprint(w, tc.resp)
+				}))
+				defer srv.Close()
+
+				client := newOpusClientWithRedirect(srv)
+				dir := t.TempDir()
+				imgPath := filepath.Join(dir, "cover.png")
+				os.WriteFile(imgPath, []byte("fake"), 0644)
+
+				coverURL, err := client.UploadCover(context.Background(), cookie, imgPath)
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if coverURL != tc.want {
+					t.Errorf("coverURL = %q, want %q", coverURL, tc.want)
+				}
+			})
+		}
+	})
 }
 
 // newRedirectingClient 返回一个 http.Client,把所有请求(无论原始 URL 指向哪个 host)
