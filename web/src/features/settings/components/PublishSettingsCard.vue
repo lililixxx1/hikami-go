@@ -19,7 +19,7 @@ const runtimeStore = useRuntimeStore()
 const config = ref<PublishConfig>({
   enabled: false, mode: 'draft', category_id: 15, list_id: 0,
   private_pub: 2, summary_len: 100, original: 0, aigc: 0, timer_pub_time: 0,
-  cover_url: '', topics: '', topic_id: 0, topic_name: '', close_comment: 0, up_choose_comment: 0,
+  cover_url: '', auto_cover: true, topics: '', topic_id: 0, topic_name: '', close_comment: 0, up_choose_comment: 0,
 })
 const saving = ref(false)
 
@@ -160,6 +160,14 @@ defineExpose({ reload: fetchConfig })
           <el-input v-model="config.cover_url" size="small" clearable placeholder="未设置时自动使用 recap/cover.png" style="width: 320px" />
         </div>
         <div class="column-note">可填写封面图片 URL 或本地路径；留空时自动抓取回顾目录封面。</div>
+      </div>
+
+      <div class="column-row">
+        <div class="column-label">自动取源封面</div>
+        <div class="column-control">
+          <el-switch v-model="config.auto_cover" />
+        </div>
+        <div class="column-note">开启后自动下载视频/直播官方封面作为回顾封面；关闭则仅使用上方自定义封面。</div>
       </div>
 
       <div class="column-row">

@@ -91,6 +91,8 @@ func (d NativeDownloader) Download(ctx context.Context, sourceURL string, rawDir
 	if len(info.Pages) == 0 {
 		return fmt.Errorf("video has no pages")
 	}
+	// 下载视频官方封面到 raw/cover.*（供 publisher 作为专栏封面）。失败不阻断下载。
+	biliutil.DownloadCover(ctx, d.HTTPClient, info.Pic, cookieHeader, rawDir)
 	if len(info.Pages) == 1 {
 		return d.downloadSingleP(ctx, rawDir, cookieHeader, info, info.Pages[0])
 	}
