@@ -411,9 +411,9 @@ func TestUploadCover(t *testing.T) {
 	// 但 PublishOpus 的 article.cover 不触发该改写,直接传 i0.hdslb.com 会导致封面丢失。
 	t.Run("BFS domain rewrite to article.biliimg.com", func(t *testing.T) {
 		cases := []struct {
-			name   string
-			resp   string
-			want   string
+			name string
+			resp string
+			want string
 		}{
 			{"http i0.hdslb.com", `{"code":0,"data":{"image_url":"http://i0.hdslb.com/bfs/new_dyn/abc.png"}}`, "http://article.biliimg.com/bfs/new_dyn/abc.png"},
 			{"https i0.hdslb.com", `{"code":0,"data":{"image_url":"https://i0.hdslb.com/bfs/x.jpg"}}`, "https://article.biliimg.com/bfs/x.jpg"},

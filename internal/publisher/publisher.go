@@ -285,16 +285,18 @@ func (h *Handler) publishRecap(
 		title = sessionInfo.Title
 	}
 
-	// 封面来源（优先级：recap 目录 cover.* > 配置 cover_url）。
-	// 先查 recap cover：找到则只上传它，避免对配置的本地路径做无用上传（codex 审核）。
-	// 仅当 recap 无 cover 时，才 fallback 到配置来源的 cover_url（本地路径自动上传 / 网络 URL 原样用）。
+	// 封面来源优先级：recap/cover.* > raw/cover.*(仅当 auto_cover 开启) > 配置 cover_url。
+	// - recap/cover.*：始终最高优先（保留原有人工/回顾封面语义，auto_cover 不影响它）。
+	// - raw/cover.*：download/live_record 自动取的源封面；仅当 AutoCover=true 且 recap 无封面时才用。
+	// - cover_url：兜底默认图（本地路径自动上传 / 网络 URL 原样用）。
 	// 上传后 URL 同时用于草稿端(arg.image_urls)和发布端(opus_req.opus.article.cover)。
 	coverURL := ""
 	if coverPath := findCoverImage(recapDir); coverPath != "" {
-		if uploader, ok := h.client.(OpusCoverUploader); ok {
-			if uploaded, err := uploader.UploadCover(ctx, cookie, coverPath); err == nil {
-				coverURL = uploaded
-			}
+		coverURL = h.uploadCoverPath(ctx, cookie, coverPath)
+	}
+	if coverURL == "" && h.cfg.Publish.AutoCover {
+		if coverPath := findCoverImage(h.rawDir(sessionInfo)); coverPath != "" {
+			coverURL = h.uploadCoverPath(ctx, cookie, coverPath)
 		}
 	}
 	if coverURL == "" {
@@ -482,6 +484,11 @@ func (h *Handler) recapDir(sessionInfo session.Session) string {
 	return filepath.Join(h.cfg.OutputRoot, sessionInfo.ChannelID, sessionInfo.Slug, "recap")
 }
 
+// rawDir 是 recapDir 的兄弟目录，存放下载/录制阶段的原始素材（含自动取的 raw/cover.*）。
+func (h *Handler) rawDir(sessionInfo session.Session) string {
+	return filepath.Join(h.cfg.OutputRoot, sessionInfo.ChannelID, sessionInfo.Slug, "raw")
+}
+
 func findRecapMarkdown(recapDir string) (string, error) {
 	entries, err := os.ReadDir(recapDir)
 	if err != nil {
@@ -515,14 +522,31 @@ func findRecapMarkdown(recapDir string) (string, error) {
 	return filepath.Join(recapDir, latest.Name()), nil
 }
 
-func findCoverImage(recapDir string) string {
-	for _, name := range []string{"cover.png", "cover.jpg", "cover.jpeg"} {
-		p := filepath.Join(recapDir, name)
+// findCoverImage 在给定目录查找首个存在的 cover.{png,jpg,jpeg,webp}，找不到返回空串。
+func findCoverImage(dir string) string {
+	for _, ext := range []string{".png", ".jpg", ".jpeg", ".webp"} {
+		p := filepath.Join(dir, "cover"+ext)
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}
 	}
 	return ""
+}
+
+// uploadCoverPath 把本地封面图片文件上传到 B 站换取网络 URL。
+// client 不支持封面上传或上传失败时记录警告并返回空串，让调用方回退到下一优先级来源。
+func (h *Handler) uploadCoverPath(ctx context.Context, cookie *BiliCookie, coverPath string) string {
+	uploader, ok := h.client.(OpusCoverUploader)
+	if !ok {
+		slog.Warn("cover path found but client does not support cover upload", "cover_path", coverPath)
+		return ""
+	}
+	uploaded, err := uploader.UploadCover(ctx, cookie, coverPath)
+	if err != nil {
+		slog.Warn("cover upload failed", "cover_path", coverPath, "error", err)
+		return ""
+	}
+	return uploaded
 }
 
 // resolveCoverUpload 解析配置来源（config.cover_url / channel.publish_cover_url）的封面值。
