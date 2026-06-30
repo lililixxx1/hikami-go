@@ -71,6 +71,7 @@ func (c *BilibiliClient) CheckLive(ctx context.Context, roomID int64, cookieHead
 		RoomID:    room.RoomID,
 		Live:      live,
 		Title:     title,
+		Cover:     room.Cover,
 		StartedAt: startedAt,
 	}, nil
 }
@@ -232,6 +233,7 @@ type roomInfoResponse struct {
 			RoomID        int64  `json:"room_id"`
 			LiveStatus    int    `json:"live_status"`
 			Title         string `json:"title"`
+			Cover         string `json:"cover"` // 直播间封面 URL
 			LiveStartTime int64  `json:"live_start_time"`
 		} `json:"room_info"`
 		AnchorInfo struct {

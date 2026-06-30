@@ -23,6 +23,7 @@ type LiveInfo struct {
 	RoomID    int64
 	Live      bool
 	Title     string
+	Cover     string // 直播间封面 URL（room_info.cover），用作专栏封面
 	StartedAt time.Time
 }
 
