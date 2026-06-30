@@ -132,6 +132,7 @@ func (d YTDLPDownloader) downloadSingleP(ctx context.Context, command, sourceURL
 		"-x",
 		"--audio-format", "m4a",
 		"--write-info-json",
+		"--write-thumbnail",
 		"-o", outputTemplate,
 		sourceURL,
 	)
@@ -140,7 +141,11 @@ func (d YTDLPDownloader) downloadSingleP(ctx context.Context, command, sourceURL
 	if err != nil {
 		return fmt.Errorf("yt-dlp download failed: %w: %s", err, string(output))
 	}
-	return normalizeMetadataName(rawDir)
+	if err := normalizeMetadataName(rawDir); err != nil {
+		return err
+	}
+	normalizeCoverName(rawDir)
+	return nil
 }
 
 // downloadMultiP downloads each part of a multi-P video, retrieves durations,
@@ -181,6 +186,7 @@ func (d YTDLPDownloader) downloadMultiP(ctx context.Context, command, sourceURL,
 			"--audio-format", "m4a",
 			"--write-info-json",
 			"--write-comments",
+			"--write-thumbnail",
 			"-o", outputTemplate,
 			entry.WebpageURL,
 		)
@@ -262,6 +268,10 @@ func (d YTDLPDownloader) downloadMultiP(ctx context.Context, command, sourceURL,
 		return err
 	}
 
+	// Promote the first available thumbnail (across all parts) to raw/cover.<ext>
+	// before the parts directory is removed. Cover is per-video, not per-P.
+	normalizeCoverFromParts(partsDir, rawDir)
+
 	// Clean up parts directory.
 	os.RemoveAll(partsDir)
 
@@ -329,7 +339,9 @@ func escapeConcatListPath(p string) string {
 	return p
 }
 
-// findAudioInDir finds the first audio file (non-JSON, non-XML) in a directory.
+// findAudioInDir finds the first audio file in a directory.
+// 用音频扩展名白名单（而非“非 json/xml”黑名单），避免 yt-dlp 的 --write-thumbnail
+// 把缩略图写成 audio.jpg/audio.webp 时被误当成音频返回（会导致 ffprobe/concat 失败）。
 func findAudioInDir(dir string) (string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -340,13 +352,20 @@ func findAudioInDir(dir string) (string, error) {
 			continue
 		}
 		name := entry.Name()
-		if strings.HasPrefix(name, "audio.") &&
-			!strings.HasSuffix(name, ".json") &&
-			!strings.HasSuffix(name, ".xml") {
+		if strings.HasPrefix(name, "audio.") && isAudioExt(name) {
 			return filepath.Join(dir, name), nil
 		}
 	}
 	return "", fmt.Errorf("no audio file found in %s", dir)
+}
+
+// isAudioExt 判断文件名是否为已知音频扩展名。
+func isAudioExt(name string) bool {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".m4a", ".mp3", ".aac", ".flac", ".opus", ".ogg", ".wav", ".mka", ".wma":
+		return true
+	}
+	return false
 }
 
 // moveInfoJSON moves a .info.json file from srcDir to dstDir with a pNNN prefix.
@@ -455,10 +474,11 @@ func (h *Handler) CreateFromURL(ctx context.Context, channelID, rawURL string) (
 	}
 	sourceID := biliutil.ExtractVideoID(rawURL)
 	cleanURL := biliutil.NormalizeSourceURL(rawURL)
+	title := h.resolveDownloadTitle(ctx, channelID, sourceID)
 	createdSession, created, err := h.sessions.CreateDownload(ctx, session.CreateDownloadInput{
 		ChannelID: channelID,
 		SourceID:  sourceID,
-		Title:     sourceID,
+		Title:     title,
 		SourceURL: cleanURL,
 	})
 	if err != nil {
@@ -473,6 +493,56 @@ func (h *Handler) CreateFromURL(ctx context.Context, channelID, rawURL string) (
 		Type:      TaskType,
 		Payload:   "{}",
 	})
+}
+
+// resolveDownloadTitle 通过 view API 取视频真实标题并清洗为直播主题（如「晚上好」），
+// 修复「用官方录播链接导入时标题变成 BV 号」的问题。取标题失败（风控/网络/无 cookie）时
+// 退回 sourceID（BV 号），不阻断导入——与历史兜底行为一致，下游仍可正常跑流水线。
+// cookie 解析复用 HandleTask 的策略：账号池（账号化配置 → 默认下载账号 → legacy 文件）→ 退化到频道配置。
+func (h *Handler) resolveDownloadTitle(ctx context.Context, channelID, sourceID string) string {
+	cookieHeader := h.downloadCookieHeader(ctx, channelID)
+	info, err := biliutil.FetchVideoInfo(ctx, sourceID, cookieHeader)
+	if err != nil {
+		slog.Warn("resolve download title: view api failed, fallback to source id",
+			"channel_id", channelID, "source_id", sourceID, "error", err)
+		return sourceID
+	}
+	cleaned := biliutil.CleanReplayTitle(info.Title)
+	if cleaned == "" {
+		return sourceID
+	}
+	slog.Info("resolve download title",
+		"channel_id", channelID, "source_id", sourceID, "raw_title", info.Title, "title", cleaned)
+	return cleaned
+}
+
+// downloadCookieHeader 解析频道下载用 cookie，返回 Cookie header 字符串（供 view API 使用）。
+// 复用 HandleTask 的 cookie 解析优先级：账号池优先，退化到频道 DownloadCookieFile。失败返回空串。
+func (h *Handler) downloadCookieHeader(ctx context.Context, channelID string) string {
+	var cookieFile string
+	var downloadAccountID *int64
+	if ch, err := h.channels.Get(ctx, channelID); err == nil {
+		cookieFile = ch.DownloadCookieFile
+		downloadAccountID = ch.DownloadAccountID
+	} else {
+		slog.Warn("resolve download title: channel lookup failed",
+			"channel_id", channelID, "error", err)
+	}
+	if h.cookieAccountStore != nil {
+		if resolved, err := h.cookieAccountStore.ResolveCookie(ctx, nullInt64FromPtr(downloadAccountID), sql.NullInt64{}, "download", cookieFile); err == nil {
+			return resolved.CookieHeader()
+		} else if !errors.Is(err, biliutil.ErrNoDefaultAccount) {
+			slog.Warn("resolve download title: resolve cookie failed, try legacy file",
+				"channel_id", channelID, "error", err)
+		}
+	}
+	header, err := cookieHeaderFromCookieFile(cookieFile)
+	if err != nil {
+		slog.Warn("resolve download title: legacy cookie file failed",
+			"channel_id", channelID, "cookie_file", cookieFile, "error", err)
+		return ""
+	}
+	return header
 }
 
 func (h *Handler) Enqueue(ctx context.Context, sessionID string) (worker.Task, error) {
@@ -606,6 +676,98 @@ func normalizeMetadataName(rawDir string) error {
 		}
 	}
 	return nil
+}
+
+// normalizeCoverName 把 yt-dlp 写下的缩略图（文件名通常含视频标题）规范化为
+// rawDir/cover.<ext>，供 publisher 的 findCoverImage 命中。已是 cover.* 则不动。
+// 仅在 rawDir 不存在 cover.* 时搬移首个图片缩略图；找不到则静默跳过（封面非关键）。
+func normalizeCoverName(rawDir string) {
+	if coverExists(rawDir) {
+		return
+	}
+	entries, err := os.ReadDir(rawDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasPrefix(name, "cover") {
+			continue
+		}
+		if ext, ok := thumbnailExt(name); ok {
+			src := filepath.Join(rawDir, name)
+			dst := filepath.Join(rawDir, "cover"+ext)
+			if err := os.Rename(src, dst); err != nil {
+				slog.Warn("normalize cover name failed", "src", src, "error", err)
+				return
+			}
+			slog.Info("cover normalized", "from", name, "to", filepath.Base(dst))
+			return
+		}
+	}
+}
+
+// normalizeCoverFromParts 从多 P 的 partsDir 各 part 子目录里取首个缩略图，
+// 规范化搬到 rawDir/cover.<ext>。仅当 rawDir 无 cover.* 时执行（封面不分 P）。
+func normalizeCoverFromParts(partsDir, rawDir string) {
+	if coverExists(rawDir) {
+		return
+	}
+	parts, err := os.ReadDir(partsDir)
+	if err != nil {
+		return
+	}
+	for _, part := range parts {
+		if !part.IsDir() {
+			continue
+		}
+		partDir := filepath.Join(partsDir, part.Name())
+		files, err := os.ReadDir(partDir)
+		if err != nil {
+			continue
+		}
+		for _, f := range files {
+			if f.IsDir() {
+				continue
+			}
+			if ext, ok := thumbnailExt(f.Name()); ok {
+				src := filepath.Join(partDir, f.Name())
+				dst := filepath.Join(rawDir, "cover"+ext)
+				if err := os.Rename(src, dst); err != nil {
+					slog.Warn("normalize cover from parts failed", "src", src, "error", err)
+					return
+				}
+				slog.Info("cover promoted from part", "from", filepath.Join(part.Name(), f.Name()))
+				return
+			}
+		}
+	}
+}
+
+// coverExists 检查 dir 下是否已存在 cover.{png,jpg,jpeg,webp}。
+func coverExists(dir string) bool {
+	for _, ext := range []string{".png", ".jpg", ".jpeg", ".webp"} {
+		if _, err := os.Stat(filepath.Join(dir, "cover"+ext)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// thumbnailExt 判断文件名是否为图片缩略图，返回归一化扩展名（.png/.jpg/.webp）。
+func thumbnailExt(name string) (string, bool) {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".png":
+		return ".png", true
+	case ".jpg", ".jpeg":
+		return ".jpg", true
+	case ".webp":
+		return ".webp", true
+	}
+	return "", false
 }
 
 func dirSize(root string) int64 {

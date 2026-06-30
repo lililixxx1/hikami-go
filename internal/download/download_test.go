@@ -84,6 +84,30 @@ func TestFindAudioInDirEmpty(t *testing.T) {
 	}
 }
 
+// TestFindAudioInDirIgnoresThumbnail r8 P1 回归：yt-dlp --write-thumbnail 会把封面写成
+// audio.jpg/audio.webp，与 audio.m4a 共存时，必须返回音频而非缩略图（旧黑名单实现会先返回 audio.jpg）。
+func TestFindAudioInDirIgnoresThumbnail(t *testing.T) {
+	dir := createTempDir(t)
+	// 故意让缩略图字典序靠前，验证白名单确实跳过它们。
+	writeFile := func(name string, content string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeFile("audio.jpg", "fake-jpg")
+	writeFile("audio.webp", "fake-webp")
+	audioPath := filepath.Join(dir, "audio.m4a")
+	writeFile("audio.m4a", "audio")
+
+	got, err := findAudioInDir(dir)
+	if err != nil {
+		t.Fatalf("findAudioInDir returned error: %v", err)
+	}
+	if got != audioPath {
+		t.Fatalf("findAudioInDir = %q, want audio.m4a (thumbnails must be skipped), got %q", audioPath, got)
+	}
+}
+
 // TestEscapeConcatListPathAbsolutizesRelativePaths 是针对相对 OutputRoot 导致
 // 路径叠加 bug 的回归测试。
 //
