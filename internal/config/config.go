@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -151,6 +152,10 @@ type ASRS3Config struct {
 	Region          string `mapstructure:"region"`
 	PublicURLPrefix string `mapstructure:"public_url_prefix"`
 	UsePathStyle    bool   `mapstructure:"use_path_style"`
+
+	// accessKeyManaged 同 WebDAVConfig.passwordManaged：标记密钥是否被 UI/secrets 接管，
+	// managed=true 时 EffectiveAccessKey 不回落 config.yaml 明文。无 tag，仅 ApplyOverrides 注入。
+	accessKeyManaged bool
 }
 
 // 回顾 AI 默认值(留空兜底用,单一来源)。
@@ -220,11 +225,27 @@ func (c *ASRS3Config) SecretResolved() string {
 	return c.AccessKeySecret
 }
 
+// AccessKeyManaged 报告密钥是否已被 UI/secrets 接管（tombstone）。同 WebDAV.PasswordManaged。
+func (c ASRS3Config) AccessKeyManaged() bool { return c.accessKeyManaged }
+
+// SetAccessKeyManaged 由 handler 设置 tombstone 状态（跨包写未导出字段）。
+func (c *ASRS3Config) SetAccessKeyManaged(v bool) { c.accessKeyManaged = v }
+
+// EffectiveAccessKey 返回运行时生效的 ASR S3 access key。
+// managed=false：先 env 后回落明文（= SecretResolved，向后兼容）。
+// managed=true（UI 接管）：仅 env，空则空，不回落 config.yaml 明文（r11/r13 tombstone）。
+func (c ASRS3Config) EffectiveAccessKey() string {
+	if c.accessKeyManaged {
+		return os.Getenv(c.EffectiveAccessKeyEnv())
+	}
+	return c.SecretResolved()
+}
+
 func (c *ASRS3Config) Configured() bool {
 	return strings.TrimSpace(c.Endpoint) != "" &&
 		strings.TrimSpace(c.Bucket) != "" &&
 		strings.TrimSpace(c.AccessKeyID) != "" &&
-		strings.TrimSpace(c.SecretResolved()) != "" &&
+		strings.TrimSpace(c.EffectiveAccessKey()) != "" &&
 		strings.TrimSpace(c.PublicURLPrefix) != ""
 }
 
@@ -235,6 +256,12 @@ type WebDAVConfig struct {
 	Username    string `mapstructure:"username"`
 	Password    string `mapstructure:"password"`
 	PasswordEnv string `mapstructure:"password_env"`
+
+	// passwordManaged 标记密码是否已被 UI/secrets 接管。无 mapstructure/json tag：
+	// 不读 config.yaml、不参与 DTO marshal。仅由 ApplyOverrides 从 runtime_settings
+	// 的 publish DTO 注入。managed=true 时 EffectivePassword 不回落 config.yaml 明文，
+	// 使「UI 清除密码」真正生效（r11/r13 tombstone 语义）。
+	passwordManaged bool
 }
 
 func (c *ASRTempConfig) NativeConfigured() bool {
@@ -245,17 +272,47 @@ func (c *ASRTempConfig) RcloneConfigured() bool {
 	return strings.TrimSpace(c.RcloneRemote) != ""
 }
 
+// EffectivePasswordEnv 返回留空兜底后的有效密码环境变量名，空值回落到 WEBDAV_PASSWORD。
+// 范本同 DashScopeConfig.EffectiveAPIKeyEnv。
+func (c WebDAVConfig) EffectivePasswordEnv() string {
+	if e := strings.TrimSpace(c.PasswordEnv); e != "" {
+		return e
+	}
+	return "WEBDAV_PASSWORD"
+}
+
+// PasswordManaged 报告密码是否已被 UI/secrets 接管（tombstone）。
+// handler 跨包只读此访问器；写入由 ApplyOverrides 在本包内完成（r14 跨包可见性修正）。
+func (c WebDAVConfig) PasswordManaged() bool { return c.passwordManaged }
+
+// SetPasswordManaged 由 handler 设置 tombstone 状态（跨包写未导出字段）。
+func (c *WebDAVConfig) SetPasswordManaged(v bool) { c.passwordManaged = v }
+
+// EffectivePassword 返回运行时生效的 WebDAV 密码。
+// managed=false（未接管，向后兼容旧 config.yaml）：先 env 后回落明文 password（= PasswordResolved）。
+// managed=true（UI 接管）：仅 env，env 空则返回空，**不回落 config.yaml 明文**，
+// 使「UI 清除密码」真正生效（r11/r13 tombstone）。
+func (c WebDAVConfig) EffectivePassword() string {
+	if c.passwordManaged {
+		return os.Getenv(c.EffectivePasswordEnv())
+	}
+	return c.PasswordResolved()
+}
+
 func (c *WebDAVConfig) PasswordResolved() string {
-	if c.PasswordEnv != "" {
-		if password := os.Getenv(c.PasswordEnv); password != "" {
+	if env := c.EffectivePasswordEnv(); env != "" {
+		if password := os.Getenv(env); password != "" {
 			return password
 		}
 	}
 	return c.Password
 }
 
+// NativeConfigured 判定 native WebDAV 后端是否可用。
+// 要求 URL 与密码都齐：上传能力需凭据完整，清除密码后 capability 关闭（r13 [Medium]）。
+// 注意：这会把匿名/无密码 WebDAV 判为未配置——属既定产品语义，在 config 示例注释写明。
 func (c *WebDAVConfig) NativeConfigured() bool {
-	return strings.TrimSpace(c.URL) != ""
+	return strings.TrimSpace(c.URL) != "" && c.EffectivePassword() != ""
 }
 
 func (c *WebDAVConfig) RcloneConfigured() bool {
@@ -298,6 +355,7 @@ type PublishConfig struct {
 	Aigc            int    `mapstructure:"aigc"`
 	TimerPubTime    int64  `mapstructure:"timer_pub_time"`
 	CoverURL        string `mapstructure:"cover_url"`
+	AutoCover       bool   `mapstructure:"auto_cover"` // true=优先自动取视频/直播官方封面；取不到或关闭时回退 cover_url
 	Topics          string `mapstructure:"topics"`
 	TopicID         int    `mapstructure:"topic_id"`
 	TopicName       string `mapstructure:"topic_name"`
@@ -342,6 +400,301 @@ type BootstrapChannel struct {
 	PublishTimerPubTime int64  `mapstructure:"publish_timer_pub_time"`
 	PublishCoverURL     string `mapstructure:"publish_cover_url"`
 	PublishTopics       string `mapstructure:"publish_topics"`
+}
+
+// --- 运行时配置覆盖（runtime_settings → 内存 cfg） ---
+//
+// 6 个全局设置 handler 改动持久化到 SQLite runtime_settings 表（per-section JSON）。
+// 启动时 ApplyOverrides 用该表覆盖 viper 加载的基线。每个 SectionDTO 只含对应 handler
+// 实际管理的字段（指针，presence-aware），**不**含完整 config struct 的隐藏字段
+// （如 RecapAIConfig.CLIPath/GlossaryFile），避免冻结手工改 yaml 的字段（r10 [Medium]）。
+// 密钥字段不进 DTO（走 secrets 表），WebDAV/ASRS3 通过 *_managed tombstone 标记接管状态。
+//
+// 覆盖优先级（高→低）：runtime_settings > config.yaml > viper SetDefault。
+
+// PublishSectionDTO 对应 updatePublishConfig 管理的字段。
+type PublishSectionDTO struct {
+	Enabled         *bool   `json:"enabled,omitempty"`
+	Mode            *string `json:"mode,omitempty"`
+	CategoryID      *int    `json:"category_id,omitempty"`
+	ListID          *int    `json:"list_id,omitempty"`
+	PrivatePub      *int    `json:"private_pub,omitempty"`
+	SummaryLen      *int    `json:"summary_len,omitempty"`
+	Original        *int    `json:"original,omitempty"`
+	Aigc            *int    `json:"aigc,omitempty"`
+	TimerPubTime    *int64  `json:"timer_pub_time,omitempty"`
+	CoverURL        *string `json:"cover_url,omitempty"`
+	AutoCover       *bool   `json:"auto_cover,omitempty"`
+	Topics          *string `json:"topics,omitempty"`
+	TopicID         *int    `json:"topic_id,omitempty"`
+	TopicName       *string `json:"topic_name,omitempty"`
+	CloseComment    *int    `json:"close_comment,omitempty"`
+	UpChooseComment *int    `json:"up_choose_comment,omitempty"`
+}
+
+// ASRS3SectionDTO 对应 updateASRS3Config 管理的字段。AccessKeySecret 不进 DTO（走 secrets）。
+type ASRS3SectionDTO struct {
+	Endpoint        *string `json:"endpoint,omitempty"`
+	Bucket          *string `json:"bucket,omitempty"`
+	AccessKeyID     *string `json:"access_key_id,omitempty"`
+	AccessKeyEnv    *string `json:"access_key_env,omitempty"`
+	Region          *string `json:"region,omitempty"`
+	PublicURLPrefix *string `json:"public_url_prefix,omitempty"`
+	UsePathStyle    *bool   `json:"use_path_style,omitempty"`
+	// AccessKeyManaged = tombstone：UI 设/清/改 env 名后置 true，EffectiveAccessKey 不回落明文。
+	AccessKeyManaged *bool `json:"access_key_managed,omitempty"`
+}
+
+// DashScopeSectionDTO 对应 updateDashScopeConfig 管理的字段。APIKey 不进 DTO（走 secrets）。
+type DashScopeSectionDTO struct {
+	APIKeyEnv          *string `json:"api_key_env,omitempty"`
+	ASRURL             *string `json:"asr_url,omitempty"`
+	TasksURL           *string `json:"tasks_url,omitempty"`
+	Model              *string `json:"model,omitempty"`
+	Language           *string `json:"language,omitempty"`
+	DiarizationEnabled *bool   `json:"diarization_enabled,omitempty"`
+	SpeakerCount       *int    `json:"speaker_count,omitempty"`
+	VocabularyID       *string `json:"vocabulary_id,omitempty"`
+}
+
+// RecapAISectionDTO 对应 updateRecapConfig 管理的字段。
+// **不含** CLIPath/GlossaryFile/EnableSummarization（隐藏字段，由 config.yaml 持有）。
+// APIKey 不进 DTO（走 secrets）。
+type RecapAISectionDTO struct {
+	Enabled            *bool   `json:"enabled,omitempty"`
+	Provider           *string `json:"provider,omitempty"`
+	APIKeyEnv          *string `json:"api_key_env,omitempty"`
+	BaseURL            *string `json:"base_url,omitempty"`
+	Model              *string `json:"model,omitempty"`
+	MaxTokens          *int    `json:"max_tokens,omitempty"`
+	MaxContinuations   *int    `json:"max_continuations,omitempty"`
+	TimeoutSeconds     *int    `json:"timeout_seconds,omitempty"`
+	IncludeSpeakerInfo *bool   `json:"include_speaker_info,omitempty"`
+}
+
+// WebDAVSectionDTO 对应 updateWebDAVConfig 管理的字段。Password 不进 DTO（走 secrets）。
+type WebDAVSectionDTO struct {
+	URL         *string `json:"url,omitempty"`
+	Username    *string `json:"username,omitempty"`
+	PasswordEnv *string `json:"password_env,omitempty"`
+	BasePath    *string `json:"base_path,omitempty"`
+	Remote      *string `json:"remote,omitempty"`
+	// PasswordManaged = tombstone：UI 设/清/改 env 名后置 true，EffectivePassword 不回落明文。
+	PasswordManaged *bool `json:"password_managed,omitempty"`
+}
+
+// ArchiveSectionDTO 对应 updateArchiveConfig 管理的字段。
+type ArchiveSectionDTO struct {
+	AutoAfterPublish *bool   `json:"auto_after_publish,omitempty"`
+	CleanupPolicy    *string `json:"cleanup_policy,omitempty"`
+}
+
+// ApplyOverrides 用 runtime_settings 的 per-section JSON 覆盖 cfg 的对应段。
+//
+// 语义：
+//   - section 缺失或 JSON 为空 {} → 保留基线（不覆盖）。
+//   - DTO 单字段为 nil（指针）→ 该字段保留基线（presence-aware，r11 [Medium]）。
+//   - WebDAV/ASRS3 的 *_managed tombstone 非 nil → 注入到未导出字段，驱动 Effective*。
+//
+// 损坏的 section JSON：跳过该 section 并 slog.Error（不 fatal，让其它 section 生效）。
+// 全部覆盖完成后执行 cfg.Validate()（r10 [Medium]）。
+func ApplyOverrides(cfg *Config, overrides map[string]json.RawMessage) error {
+	if cfg == nil {
+		return errors.New("ApplyOverrides: nil config")
+	}
+
+	apply := func(section string, dst interface{}) {
+		raw, ok := overrides[section]
+		if !ok || len(raw) == 0 || strings.TrimSpace(string(raw)) == "{}" {
+			return
+		}
+		if err := json.Unmarshal(raw, dst); err != nil {
+			slog.Error("runtime_settings section JSON corrupt, skipping",
+				"section", section, "error", err)
+			return
+		}
+	}
+
+	if raw, ok := overrides["publish"]; ok && len(raw) > 0 {
+		var dto PublishSectionDTO
+		apply("publish", &dto)
+		if dto.Enabled != nil {
+			cfg.Publish.Enabled = *dto.Enabled
+		}
+		if dto.Mode != nil {
+			cfg.Publish.Mode = *dto.Mode
+		}
+		if dto.CategoryID != nil {
+			cfg.Publish.CategoryID = *dto.CategoryID
+		}
+		if dto.ListID != nil {
+			cfg.Publish.ListID = *dto.ListID
+		}
+		if dto.PrivatePub != nil {
+			cfg.Publish.PrivatePub = *dto.PrivatePub
+		}
+		if dto.SummaryLen != nil {
+			cfg.Publish.SummaryLen = *dto.SummaryLen
+		}
+		if dto.Original != nil {
+			cfg.Publish.Original = *dto.Original
+		}
+		if dto.Aigc != nil {
+			cfg.Publish.Aigc = *dto.Aigc
+		}
+		if dto.TimerPubTime != nil {
+			cfg.Publish.TimerPubTime = *dto.TimerPubTime
+		}
+		if dto.CoverURL != nil {
+			cfg.Publish.CoverURL = *dto.CoverURL
+		}
+		if dto.AutoCover != nil {
+			cfg.Publish.AutoCover = *dto.AutoCover
+		}
+		if dto.Topics != nil {
+			cfg.Publish.Topics = *dto.Topics
+		}
+		if dto.TopicID != nil {
+			cfg.Publish.TopicID = *dto.TopicID
+		}
+		if dto.TopicName != nil {
+			cfg.Publish.TopicName = *dto.TopicName
+		}
+		if dto.CloseComment != nil {
+			cfg.Publish.CloseComment = *dto.CloseComment
+		}
+		if dto.UpChooseComment != nil {
+			cfg.Publish.UpChooseComment = *dto.UpChooseComment
+		}
+	}
+
+	if raw, ok := overrides["asr_s3"]; ok && len(raw) > 0 {
+		var dto ASRS3SectionDTO
+		apply("asr_s3", &dto)
+		if dto.Endpoint != nil {
+			cfg.ASRS3.Endpoint = *dto.Endpoint
+		}
+		if dto.Bucket != nil {
+			cfg.ASRS3.Bucket = *dto.Bucket
+		}
+		if dto.AccessKeyID != nil {
+			cfg.ASRS3.AccessKeyID = *dto.AccessKeyID
+		}
+		if dto.AccessKeyEnv != nil {
+			cfg.ASRS3.AccessKeyEnv = *dto.AccessKeyEnv
+		}
+		if dto.Region != nil {
+			cfg.ASRS3.Region = *dto.Region
+		}
+		if dto.PublicURLPrefix != nil {
+			cfg.ASRS3.PublicURLPrefix = *dto.PublicURLPrefix
+		}
+		if dto.UsePathStyle != nil {
+			cfg.ASRS3.UsePathStyle = *dto.UsePathStyle
+		}
+		// tombstone：非 nil 注入到未导出字段（同包赋值合法）。
+		if dto.AccessKeyManaged != nil {
+			cfg.ASRS3.accessKeyManaged = *dto.AccessKeyManaged
+		}
+	}
+
+	if raw, ok := overrides["dashscope"]; ok && len(raw) > 0 {
+		var dto DashScopeSectionDTO
+		apply("dashscope", &dto)
+		if dto.APIKeyEnv != nil {
+			cfg.DashScope.APIKeyEnv = *dto.APIKeyEnv
+		}
+		if dto.ASRURL != nil {
+			cfg.DashScope.ASRURL = *dto.ASRURL
+		}
+		if dto.TasksURL != nil {
+			cfg.DashScope.TasksURL = *dto.TasksURL
+		}
+		if dto.Model != nil {
+			cfg.DashScope.Model = *dto.Model
+		}
+		if dto.Language != nil {
+			cfg.DashScope.Language = *dto.Language
+		}
+		if dto.DiarizationEnabled != nil {
+			cfg.DashScope.DiarizationEnabled = *dto.DiarizationEnabled
+		}
+		if dto.SpeakerCount != nil {
+			cfg.DashScope.SpeakerCount = *dto.SpeakerCount
+		}
+		if dto.VocabularyID != nil {
+			cfg.DashScope.VocabularyID = *dto.VocabularyID
+		}
+	}
+
+	if raw, ok := overrides["recap_ai"]; ok && len(raw) > 0 {
+		var dto RecapAISectionDTO
+		apply("recap_ai", &dto)
+		if dto.Enabled != nil {
+			cfg.RecapAI.Enabled = *dto.Enabled
+		}
+		if dto.Provider != nil {
+			cfg.RecapAI.Provider = *dto.Provider
+		}
+		if dto.APIKeyEnv != nil {
+			cfg.RecapAI.APIKeyEnv = *dto.APIKeyEnv
+		}
+		if dto.BaseURL != nil {
+			cfg.RecapAI.BaseURL = *dto.BaseURL
+		}
+		if dto.Model != nil {
+			cfg.RecapAI.Model = *dto.Model
+		}
+		if dto.MaxTokens != nil {
+			cfg.RecapAI.MaxTokens = *dto.MaxTokens
+		}
+		if dto.MaxContinuations != nil {
+			cfg.RecapAI.MaxContinuations = *dto.MaxContinuations
+		}
+		if dto.TimeoutSeconds != nil {
+			cfg.RecapAI.TimeoutSeconds = *dto.TimeoutSeconds
+		}
+		if dto.IncludeSpeakerInfo != nil {
+			cfg.RecapAI.IncludeSpeakerInfo = *dto.IncludeSpeakerInfo
+		}
+		// 注意：CLIPath/GlossaryFile/EnableSummarization 不在 DTO，保留 config.yaml 基线（r10）。
+	}
+
+	if raw, ok := overrides["webdav"]; ok && len(raw) > 0 {
+		var dto WebDAVSectionDTO
+		apply("webdav", &dto)
+		if dto.URL != nil {
+			cfg.WebDAV.URL = *dto.URL
+		}
+		if dto.Username != nil {
+			cfg.WebDAV.Username = *dto.Username
+		}
+		if dto.PasswordEnv != nil {
+			cfg.WebDAV.PasswordEnv = *dto.PasswordEnv
+		}
+		if dto.BasePath != nil {
+			cfg.WebDAV.BasePath = *dto.BasePath
+		}
+		if dto.Remote != nil {
+			cfg.WebDAV.Remote = *dto.Remote
+		}
+		if dto.PasswordManaged != nil {
+			cfg.WebDAV.passwordManaged = *dto.PasswordManaged
+		}
+	}
+
+	if raw, ok := overrides["archive"]; ok && len(raw) > 0 {
+		var dto ArchiveSectionDTO
+		apply("archive", &dto)
+		if dto.AutoAfterPublish != nil {
+			cfg.Archive.AutoAfterPublish = *dto.AutoAfterPublish
+		}
+		if dto.CleanupPolicy != nil {
+			cfg.Archive.CleanupPolicy = *dto.CleanupPolicy
+		}
+	}
+
+	return cfg.Validate()
 }
 
 func Load(path string) (*Config, error) {
@@ -440,6 +793,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("publish.summary_len", 100)
 	v.SetDefault("publish.aigc", 0)
 	v.SetDefault("publish.timer_pub_time", 0)
+	v.SetDefault("publish.auto_cover", true)
 	v.SetDefault("publish.topic_id", 0)
 	v.SetDefault("publish.topic_name", "")
 	v.SetDefault("notify.enabled", false)

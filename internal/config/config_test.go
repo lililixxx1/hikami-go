@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -400,5 +401,194 @@ func TestValidate_ArchiveCleanupPolicy(t *testing.T) {
 				t.Fatalf("Validate: %v", err)
 			}
 		})
+	}
+}
+
+// --- ApplyOverrides / Effective* / tombstone 测试（计划 v6 核心） ---
+
+func baseCfg() *Config {
+	return &Config{
+		OutputRoot: "./data",
+		DBPath:     "./hikami.db",
+		Worker:     WorkerConfig{Num: 2},
+		LiveRecord: LiveRecordConfig{AudioContainer: "m4a"},
+		Publish: PublishConfig{
+			Mode:       "draft",
+			CategoryID: 15,
+			AutoCover:  true,
+		},
+		WebDAV: WebDAVConfig{URL: "http://w", Password: "yaml-plain"},
+		ASRS3:  ASRS3Config{Endpoint: "http://s", AccessKeySecret: "yaml-secret"},
+	}
+}
+
+func rawJSON(t *testing.T, v interface{}) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func TestApplyOverrides_OverridesPublishFields(t *testing.T) {
+	cfg := baseCfg()
+	cover := "/x.png"
+	mode := "publish"
+	auto := false
+	overrides := map[string]json.RawMessage{
+		"publish": rawJSON(t, PublishSectionDTO{CoverURL: &cover, Mode: &mode, AutoCover: &auto}),
+	}
+	if err := ApplyOverrides(cfg, overrides); err != nil {
+		t.Fatalf("ApplyOverrides: %v", err)
+	}
+	if cfg.Publish.CoverURL != "/x.png" || cfg.Publish.Mode != "publish" || cfg.Publish.AutoCover {
+		t.Fatalf("publish not overridden: %+v", cfg.Publish)
+	}
+	// 未覆盖字段保留基线
+	if cfg.Publish.CategoryID != 15 {
+		t.Fatalf("CategoryID should retain baseline 15, got %d", cfg.Publish.CategoryID)
+	}
+}
+
+func TestApplyOverrides_MissingSectionRetainsBaseline(t *testing.T) {
+	cfg := baseCfg()
+	if err := ApplyOverrides(cfg, map[string]json.RawMessage{}); err != nil {
+		t.Fatalf("ApplyOverrides empty: %v", err)
+	}
+	if cfg.Publish.Mode != "draft" {
+		t.Fatalf("baseline publish.Mode should be retained, got %s", cfg.Publish.Mode)
+	}
+}
+
+func TestApplyOverrides_EmptyObjectRetainsBaseline(t *testing.T) {
+	cfg := baseCfg()
+	overrides := map[string]json.RawMessage{"publish": json.RawMessage(`{}`)}
+	if err := ApplyOverrides(cfg, overrides); err != nil {
+		t.Fatalf("ApplyOverrides empty obj: %v", err)
+	}
+	if cfg.Publish.Mode != "draft" {
+		t.Fatalf("empty {} should retain baseline, got %s", cfg.Publish.Mode)
+	}
+}
+
+func TestApplyOverrides_CorruptJSONSkippedNotFatal(t *testing.T) {
+	cfg := baseCfg()
+	overrides := map[string]json.RawMessage{
+		"publish": json.RawMessage(`not-json`), // corrupt
+	}
+	// 不应 fatal；publish 保留基线
+	if err := ApplyOverrides(cfg, overrides); err != nil {
+		t.Fatalf("corrupt section should not error out: %v", err)
+	}
+	if cfg.Publish.Mode != "draft" {
+		t.Fatalf("corrupt publish should retain baseline, got %s", cfg.Publish.Mode)
+	}
+}
+
+func TestApplyOverrides_DoesNotFreezeHiddenRecapFields(t *testing.T) {
+	cfg := baseCfg()
+	cfg.RecapAI.CLIPath = "/usr/local/bin/claude" // 隐藏字段，UI 不管理
+	cfg.RecapAI.Model = "old"
+	newModel := "new-model"
+	overrides := map[string]json.RawMessage{
+		"recap_ai": rawJSON(t, RecapAISectionDTO{Model: &newModel}),
+	}
+	if err := ApplyOverrides(cfg, overrides); err != nil {
+		t.Fatalf("ApplyOverrides: %v", err)
+	}
+	if cfg.RecapAI.Model != "new-model" {
+		t.Fatalf("Model should be overridden: %s", cfg.RecapAI.Model)
+	}
+	if cfg.RecapAI.CLIPath != "/usr/local/bin/claude" {
+		t.Fatalf("hidden CLIPath must NOT be frozen/overwritten: %s", cfg.RecapAI.CLIPath)
+	}
+}
+
+// r11/r13 [High] tombstone：managed=true 时清除 env，EffectivePassword 不回落 yaml 明文。
+func TestEffectivePassword_ManagedTrueDoesNotFallBackToYaml(t *testing.T) {
+	cfg := baseCfg()
+	os.Unsetenv("WEBDAV_PASSWORD")
+	cfg.WebDAV.passwordManaged = true
+	// yaml 有明文 password="yaml-plain"，但 managed=true 且 env 空 → 必须返回空。
+	if got := cfg.WebDAV.EffectivePassword(); got != "" {
+		t.Fatalf("managed=true + empty env must not fall back to yaml plaintext, got %q", got)
+	}
+	// managed=true + env 有值 → 返回 env。
+	t.Setenv("WEBDAV_PASSWORD", "env-val")
+	if got := cfg.WebDAV.EffectivePassword(); got != "env-val" {
+		t.Fatalf("managed=true + env set should return env, got %q", got)
+	}
+}
+
+func TestEffectivePassword_ManagedFalseFallsBackToYaml(t *testing.T) {
+	cfg := baseCfg()
+	os.Unsetenv("WEBDAV_PASSWORD")
+	cfg.WebDAV.passwordManaged = false
+	// managed=false → 向后兼容，回落 yaml 明文。
+	if got := cfg.WebDAV.EffectivePassword(); got != "yaml-plain" {
+		t.Fatalf("managed=false should fall back to yaml plaintext, got %q", got)
+	}
+}
+
+// r13 [High] 状态保持：managed=true 通过 ApplyOverrides 注入。
+func TestApplyOverrides_InjectsWebDAVTombstone(t *testing.T) {
+	cfg := baseCfg()
+	os.Unsetenv("WEBDAV_PASSWORD")
+	managed := true
+	overrides := map[string]json.RawMessage{
+		"webdav": rawJSON(t, WebDAVSectionDTO{PasswordManaged: &managed}),
+	}
+	if err := ApplyOverrides(cfg, overrides); err != nil {
+		t.Fatalf("ApplyOverrides: %v", err)
+	}
+	if !cfg.WebDAV.PasswordManaged() {
+		t.Fatal("PasswordManaged should be injected true")
+	}
+	// 注入后 EffectivePassword 不回落明文
+	if got := cfg.WebDAV.EffectivePassword(); got != "" {
+		t.Fatalf("after managed injection, EffectivePassword should be empty, got %q", got)
+	}
+}
+
+// r13 [Medium] NativeConfigured 要求密码：清除密码后 capability 关闭。
+func TestNativeConfigured_RequiresPassword(t *testing.T) {
+	cfg := baseCfg()
+	cfg.WebDAV.passwordManaged = true
+	os.Unsetenv("WEBDAV_PASSWORD")
+	if cfg.WebDAV.NativeConfigured() {
+		t.Fatal("managed=true + empty password: NativeConfigured should be false")
+	}
+	t.Setenv("WEBDAV_PASSWORD", "env-val")
+	if !cfg.WebDAV.NativeConfigured() {
+		t.Fatal("with password set: NativeConfigured should be true")
+	}
+}
+
+// ASRS3 EffectiveAccessKey / Configured 同构验证。
+func TestEffectiveAccessKey_ManagedDoesNotFallBack(t *testing.T) {
+	cfg := baseCfg()
+	os.Unsetenv("ASR_S3_ACCESS_KEY_SECRET")
+	cfg.ASRS3.accessKeyManaged = true
+	if got := cfg.ASRS3.EffectiveAccessKey(); got != "" {
+		t.Fatalf("managed=true + empty env must not fall back, got %q", got)
+	}
+	if cfg.ASRS3.Configured() {
+		t.Fatal("Configured should be false when access key empty")
+	}
+	t.Setenv("ASR_S3_ACCESS_KEY_SECRET", "env-secret")
+	if got := cfg.ASRS3.EffectiveAccessKey(); got != "env-secret" {
+		t.Fatalf("managed=true + env set should return env, got %q", got)
+	}
+}
+
+func TestEffectivePasswordEnv_DefaultFallback(t *testing.T) {
+	w := WebDAVConfig{}
+	if got := w.EffectivePasswordEnv(); got != "WEBDAV_PASSWORD" {
+		t.Fatalf("empty PasswordEnv should fall back to WEBDAV_PASSWORD, got %q", got)
+	}
+	w.PasswordEnv = "CUSTOM_WD"
+	if got := w.EffectivePasswordEnv(); got != "CUSTOM_WD" {
+		t.Fatalf("explicit PasswordEnv should win, got %q", got)
 	}
 }

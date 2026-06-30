@@ -61,11 +61,14 @@ recap_ai:
   cli_path: ""
 
 webdav:
-  # 原生 WebDAV 客户端
+  # 原生 WebDAV 客户端。
+  # 注意：config.yaml 是只读基线，UI 设置面板改动的全局配置存数据库（runtime_settings 表），
+  # 启动时覆盖此处基线。native webdav 上传要求凭据完整（url + password 都填），
+  # 匿名/无密码 webdav 不被识别为可用上传后端。
   url: "https://webdav.example.com/dav"
   username: "hikami"
-  password: ""
-  password_env: "WEBDAV_PASSWORD"
+  password: ""                 # 明文密码（向后兼容基线）；推荐改用 password_env + 环境变量
+  password_env: "WEBDAV_PASSWORD"  # UI 在设置面板设置/清除密码后，改走 secrets 表 + 此 env（重启不丢）
   base_path: "录播/Hikami/huizeman"
   remote: "hikami-webdav:"     # deprecated: rclone fallback
 
@@ -106,6 +109,7 @@ publish:
   aigc: 0                 # 0=未使用 AI 辅助创作, 1=声明 AI 辅助创作
   timer_pub_time: 0       # Unix 时间戳，0=不定时发布
   cover_url: ""           # 自定义封面 URL 或本地路径，空=自动查找 recap/cover.*
+  auto_cover: true        # 自动下载视频/直播官方封面作为回顾封面（优先于 cover_url）；关闭则只用 cover_url
   topics: ""              # 话题，逗号分隔
   close_comment: 0        # 0=开启评论, 1=关闭评论
   up_choose_comment: 0    # 0=关闭精选评论, 1=开启精选评论

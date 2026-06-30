@@ -384,6 +384,8 @@ func TestArchiveTargetRclone(t *testing.T) {
 
 func TestArchiveTargetNative(t *testing.T) {
 	fix := setupArchiveTest(t)
+	// native 模式要求凭据完整(URL+密码)；EffectivePassword 走 env。
+	t.Setenv("WEBDAV_PASSWORD", "p")
 	fix.cfg.WebDAV = config.WebDAVConfig{URL: "https://webdav.example.com", BasePath: "/hikami"}
 	fix.handler = NewHandler(fix.cfg, fix.sessions, fix.states, fix.copier, fix.deleter)
 	got := fix.handler.archiveTarget(session.Session{ChannelID: "ch1", Slug: "live_1"})

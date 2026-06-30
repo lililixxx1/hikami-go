@@ -35,7 +35,9 @@ func NewS3Publisher(cfg *config.Config) (*S3Publisher, error) {
 	useSSL := u.Scheme == "https" || strings.HasPrefix(endpoint, "https://")
 
 	opts := &minio.Options{
-		Creds:        credentials.NewStaticV4(s3cfg.AccessKeyID, s3cfg.SecretResolved(), ""),
+		// EffectiveAccessKey 遵循 tombstone（managed 时不回落 config.yaml 明文），
+		// 与 GET 响应/能力探测一致（r12 Effective* 闭环）。
+		Creds:        credentials.NewStaticV4(s3cfg.AccessKeyID, s3cfg.EffectiveAccessKey(), ""),
 		Secure:       useSSL,
 		Region:       strings.TrimSpace(s3cfg.Region),
 		BucketLookup: minio.BucketLookupAuto,

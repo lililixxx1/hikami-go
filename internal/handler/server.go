@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +38,7 @@ import (
 	"hikami-go/internal/publisher"
 	"hikami-go/internal/recap"
 	"hikami-go/internal/runtime"
+	"hikami-go/internal/runtimeconfig"
 	"hikami-go/internal/secrets"
 	"hikami-go/internal/session"
 	"hikami-go/internal/upload"
@@ -60,6 +62,7 @@ type Server struct {
 	archives           *archive.Handler
 	publisher          *publisher.Handler
 	secrets            *secrets.Store
+	runtimeCfg         *runtimeconfig.Store // 全局运行时配置持久化（runtime_settings 表）
 	glossary           *glossary.Store
 	glossaryDiscoverer *glossary.Discoverer
 	biliLogin          *biliutil.QRCodeManager
@@ -94,6 +97,7 @@ func NewServer(
 	archives *archive.Handler,
 	publisherHandler *publisher.Handler,
 	secretsStore *secrets.Store,
+	runtimeCfgStore *runtimeconfig.Store,
 	webFS fs.FS,
 	glossaryStore *glossary.Store,
 	glossaryDiscoverer *glossary.Discoverer,
@@ -124,6 +128,7 @@ func NewServer(
 		archives:           archives,
 		publisher:          publisherHandler,
 		secrets:            secretsStore,
+		runtimeCfg:         runtimeCfgStore,
 		glossary:           glossaryStore,
 		glossaryDiscoverer: glossaryDiscoverer,
 		recapTemplates:     recapTemplates,
@@ -1683,7 +1688,7 @@ func listSessionFiles(outputRoot string, sessionInfo session.Session) []sessionF
 
 func (s *Server) listSecrets(ctx *gin.Context) {
 	// 走 Effective* 兜底:env 名留空时 KnownKeys 用默认值,与运行时/probe 一致(codex 审核低[6])。
-	knownKeys := secrets.KnownKeys(s.cfg.DashScope.EffectiveAPIKeyEnv(), s.cfg.RecapAI.EffectiveAPIKeyEnv(), s.cfg.ASRS3.EffectiveAccessKeyEnv())
+	knownKeys := secrets.KnownKeys(s.cfg.DashScope.EffectiveAPIKeyEnv(), s.cfg.RecapAI.EffectiveAPIKeyEnv(), s.cfg.ASRS3.EffectiveAccessKeyEnv(), s.cfg.WebDAV.EffectivePasswordEnv())
 	dbSecrets, err := s.secrets.List(ctx.Request.Context())
 	if err != nil {
 		writeError(ctx, err)
@@ -1801,12 +1806,105 @@ func (s *Server) applySecretEnvChange(ctx context.Context, oldEnv, newEnv, newSe
 	return nil
 }
 
+// envMutation 描述 applySecretEnvChangeTx 在事务内对 secrets 表做的、
+// 需要在事务 commit 成功后再反映到进程 env 的副作用。
+// 语义:commit 成功后,对 setEnv 调 os.Setenv、对 unsetEnvs 逐个 os.Unsetenv。
+type envMutation struct {
+	setEnv    map[string]string // env名 -> 值(非空才 Setenv)
+	unsetEnvs []string          // 需 Unsetenv 的 env名
+}
+
+// applySecretEnvChangeTx 是 applySecretEnvChange 的事务版:把 secrets 的读写全部放进
+// 同一 *sql.Tx(与 runtimeconfig.SaveTx 共享),commit 后调用方再按返回的 envMutation
+// 更新进程 env + 写 cfg 内存。保证「密钥写入 + 配置段写入」原子(r11 [High]),
+// 且 env rename 的旧值读取也在事务内(r12 [Medium] GetTx)。
+func (s *Server) applySecretEnvChangeTx(ctx context.Context, tx *sql.Tx, oldEnv, newEnv, newSecret string, clear bool) (envMutation, error) {
+	mut := envMutation{setEnv: map[string]string{}}
+	// env 名变化:迁移旧值到新 key(避免孤儿)
+	if oldEnv != newEnv {
+		if newSecret != "" && !clear {
+			if err := s.secrets.SetTx(ctx, tx, newEnv, newSecret); err != nil {
+				return mut, err
+			}
+			mut.setEnv[newEnv] = newSecret
+		} else if !clear {
+			// 未提供新值时迁移旧值；GetTx 已把 ErrNoRows 转成 ("",nil)，
+			// 其它读取错误必须显式返回，避免静默跳过迁移后 DeleteTx 丢失 secret（codex r16 [Medium]）。
+			oldSecret, err := s.secrets.GetTx(ctx, tx, oldEnv)
+			if err != nil {
+				return mut, err
+			}
+			if oldSecret != "" {
+				if err := s.secrets.SetTx(ctx, tx, newEnv, oldSecret); err != nil {
+					return mut, err
+				}
+				mut.setEnv[newEnv] = oldSecret
+			}
+		}
+		if err := s.secrets.DeleteTx(ctx, tx, oldEnv); err != nil {
+			return mut, err
+		}
+		mut.unsetEnvs = append(mut.unsetEnvs, oldEnv)
+		if clear {
+			if err := s.secrets.DeleteTx(ctx, tx, newEnv); err != nil {
+				return mut, err
+			}
+			mut.unsetEnvs = append(mut.unsetEnvs, newEnv)
+		}
+		return mut, nil
+	}
+	// env 名未变,走标准三态
+	if clear {
+		if err := s.secrets.DeleteTx(ctx, tx, newEnv); err != nil {
+			return mut, err
+		}
+		mut.unsetEnvs = append(mut.unsetEnvs, newEnv)
+	} else if newSecret != "" {
+		if err := s.secrets.SetTx(ctx, tx, newEnv, newSecret); err != nil {
+			return mut, err
+		}
+		mut.setEnv[newEnv] = newSecret
+	}
+	return mut, nil
+}
+
+// applyEnvMutation 在事务 commit 成功后,把 envMutation 反映到进程 env。
+// 失败仅记录:DB 已是真相,env 滞后可由下次保存/重启 LoadIntoEnv 自愈。
+func applyEnvMutation(mut envMutation) {
+	for k, v := range mut.setEnv {
+		_ = os.Setenv(k, v)
+	}
+	for _, k := range mut.unsetEnvs {
+		_ = os.Unsetenv(k)
+	}
+}
+
+// persistSectionTx 在事务内写单个 section 的 DTO(JSON)。供不含密钥的 handler
+// (Publish/Archive)使用:WithTx 仅包一次 SaveTx。含密钥的 handler 自行在 WithTx 内
+// 同时调 applySecretEnvChangeTx + SaveTx。data 必须是可 json.Marshal 的 DTO。
+func (s *Server) persistSectionTx(ctx context.Context, tx *sql.Tx, section string, dto interface{}) error {
+	b, err := json.Marshal(dto)
+	if err != nil {
+		return fmt.Errorf("marshal %s section: %w", section, err)
+	}
+	return s.runtimeCfg.SaveTx(ctx, tx, section, b)
+}
+
 func (s *Server) updateSecret(ctx *gin.Context) {
 	key := ctx.Param("key")
 	// 走 Effective* 兜底,与 listSecrets/运行时一致(codex 审核低[6])。
-	knownKeys := secrets.KnownKeys(s.cfg.DashScope.EffectiveAPIKeyEnv(), s.cfg.RecapAI.EffectiveAPIKeyEnv(), s.cfg.ASRS3.EffectiveAccessKeyEnv())
+	knownKeys := secrets.KnownKeys(s.cfg.DashScope.EffectiveAPIKeyEnv(), s.cfg.RecapAI.EffectiveAPIKeyEnv(), s.cfg.ASRS3.EffectiveAccessKeyEnv(), s.cfg.WebDAV.EffectivePasswordEnv())
 	if err := secrets.ValidateKey(key, knownKeys); err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// ASR S3 access key 与 WebDAV password 有明文兜底 + tombstone 语义：
+	// 必须经各自分段配置接口（updateASRS3Config/updateWebDAVConfig）增删改，那里会在
+	// 同一事务写 access_key_managed/password_managed。通用 /api/secrets/:key 不写 tombstone，
+	// 若放行清除会导致 managed=false → Effective* 仍回落 config.yaml 明文（codex r16 [High]）。
+	// DashScope/Recap 的 api_key 无明文字段，走本接口安全。
+	if key == s.cfg.ASRS3.EffectiveAccessKeyEnv() || key == s.cfg.WebDAV.EffectivePasswordEnv() {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "this secret is managed by its section config endpoint; update it via the corresponding settings card"})
 		return
 	}
 
@@ -1856,6 +1954,7 @@ type publishConfigResponse struct {
 	Aigc            int    `json:"aigc"`
 	TimerPubTime    int64  `json:"timer_pub_time"`
 	CoverURL        string `json:"cover_url"`
+	AutoCover       bool   `json:"auto_cover"`
 	Topics          string `json:"topics"`
 	TopicID         int    `json:"topic_id"`
 	TopicName       string `json:"topic_name"`
@@ -1875,6 +1974,7 @@ func newPublishConfigResponse(p config.PublishConfig) publishConfigResponse {
 		Aigc:            p.Aigc,
 		TimerPubTime:    p.TimerPubTime,
 		CoverURL:        p.CoverURL,
+		AutoCover:       p.AutoCover,
 		Topics:          p.Topics,
 		TopicID:         p.TopicID,
 		TopicName:       p.TopicName,
@@ -1902,6 +2002,7 @@ func (s *Server) updatePublishConfig(ctx *gin.Context) {
 		Aigc            *int    `json:"aigc"`
 		TimerPubTime    *int64  `json:"timer_pub_time"`
 		CoverURL        *string `json:"cover_url"`
+		AutoCover       *bool   `json:"auto_cover"`
 		Topics          *string `json:"topics"`
 		TopicID         *int    `json:"topic_id"`
 		TopicName       *string `json:"topic_name"`
@@ -1951,53 +2052,68 @@ func (s *Server) updatePublishConfig(ctx *gin.Context) {
 	}
 
 	s.publishMu.Lock()
-	cfg := &s.cfg.Publish
+	// 基于【当前】配置 patch 出下一状态(仍持锁,无并发丢更新)。
+	nextPublish := s.cfg.Publish
 	if input.Enabled != nil {
-		cfg.Enabled = *input.Enabled
+		nextPublish.Enabled = *input.Enabled
 	}
 	if input.Mode != nil {
-		cfg.Mode = *input.Mode
+		nextPublish.Mode = *input.Mode
 	}
 	if input.CategoryID != nil {
-		cfg.CategoryID = *input.CategoryID
+		nextPublish.CategoryID = *input.CategoryID
 	}
 	if input.ListID != nil {
-		cfg.ListID = *input.ListID
+		nextPublish.ListID = *input.ListID
 	}
 	if input.PrivatePub != nil {
-		cfg.PrivatePub = *input.PrivatePub
+		nextPublish.PrivatePub = *input.PrivatePub
 	}
 	if input.SummaryLen != nil {
-		cfg.SummaryLen = *input.SummaryLen
+		nextPublish.SummaryLen = *input.SummaryLen
 	}
 	if input.Original != nil {
-		cfg.Original = *input.Original
+		nextPublish.Original = *input.Original
 	}
 	if input.Aigc != nil {
-		cfg.Aigc = *input.Aigc
+		nextPublish.Aigc = *input.Aigc
 	}
 	if input.TimerPubTime != nil {
-		cfg.TimerPubTime = *input.TimerPubTime
+		nextPublish.TimerPubTime = *input.TimerPubTime
 	}
 	if input.CoverURL != nil {
-		cfg.CoverURL = strings.TrimSpace(*input.CoverURL)
+		nextPublish.CoverURL = strings.TrimSpace(*input.CoverURL)
+	}
+	if input.AutoCover != nil {
+		nextPublish.AutoCover = *input.AutoCover
 	}
 	if input.Topics != nil {
-		cfg.Topics = strings.TrimSpace(*input.Topics)
+		nextPublish.Topics = strings.TrimSpace(*input.Topics)
 	}
 	if input.TopicID != nil {
-		cfg.TopicID = *input.TopicID
+		nextPublish.TopicID = *input.TopicID
 	}
 	if input.TopicName != nil {
-		cfg.TopicName = *input.TopicName
+		nextPublish.TopicName = *input.TopicName
 	}
 	if input.CloseComment != nil {
-		cfg.CloseComment = *input.CloseComment
+		nextPublish.CloseComment = *input.CloseComment
 	}
 	if input.UpChooseComment != nil {
-		cfg.UpChooseComment = *input.UpChooseComment
+		nextPublish.UpChooseComment = *input.UpChooseComment
 	}
-
+	// 构造完整下一状态 DTO(presence-aware,所有字段非 nil),持久化到 runtime_settings。
+	dto := publishConfigToDTO(nextPublish)
+	// 持久化成功后再提交内存:WithTx 包一次 SaveTx,失败 500 不改内存(env/cfg 不变)。
+	if err := runtimeconfig.WithTx(ctx.Request.Context(), s.runtimeCfg.DB(), func(tx *sql.Tx) error {
+		return s.persistSectionTx(ctx.Request.Context(), tx, "publish", dto)
+	}); err != nil {
+		s.publishMu.Unlock()
+		slog.Warn("persist publish config failed", "error", err)
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist publish config"})
+		return
+	}
+	s.cfg.Publish = nextPublish
 	resp := newPublishConfigResponse(s.cfg.Publish)
 	cfgSnapshot := *s.cfg
 	gen := s.bumpConfigGen()
@@ -2006,6 +2122,29 @@ func (s *Server) updatePublishConfig(ctx *gin.Context) {
 	s.refreshRuntimeStatus(cfgSnapshot, gen)
 
 	ctx.JSON(http.StatusOK, resp)
+}
+
+// publishConfigToDTO 把 PublishConfig 转成完整下一状态 DTO(所有指针非 nil,
+// 保证 runtime_settings 存的是完整快照而非 PATCH,避免 PATCH 把未传字段写成零值)。
+func publishConfigToDTO(p config.PublishConfig) config.PublishSectionDTO {
+	return config.PublishSectionDTO{
+		Enabled:         &p.Enabled,
+		Mode:            &p.Mode,
+		CategoryID:      &p.CategoryID,
+		ListID:          &p.ListID,
+		PrivatePub:      &p.PrivatePub,
+		SummaryLen:      &p.SummaryLen,
+		Original:        &p.Original,
+		Aigc:            &p.Aigc,
+		TimerPubTime:    &p.TimerPubTime,
+		CoverURL:        &p.CoverURL,
+		AutoCover:       &p.AutoCover,
+		Topics:          &p.Topics,
+		TopicID:         &p.TopicID,
+		TopicName:       &p.TopicName,
+		CloseComment:    &p.CloseComment,
+		UpChooseComment: &p.UpChooseComment,
+	}
 }
 
 // --- ASR S3 (对象存储) config handlers ---
@@ -2023,18 +2162,17 @@ type asrS3ConfigResponse struct {
 
 // newASRS3ConfigResponse 返回 ASR S3 配置响应。
 // access_key_env 经 EffectiveAccessKeyEnv 兜底;access_key_secret 永不返回明文,只返回 access_key_set。
-// access_key_set 基于 SecretResolved()(读 env + 字段),与运行时(s3_publisher.go)一致。
+// access_key_set 基于 EffectiveAccessKey()(managed 时不回落 yaml 明文),与运行时一致(r12 Effective* 闭环)。
 func newASRS3ConfigResponse(c config.ASRS3Config) asrS3ConfigResponse {
-	envKey := c.EffectiveAccessKeyEnv()
 	return asrS3ConfigResponse{
 		Endpoint:        c.Endpoint,
 		Bucket:          c.Bucket,
 		AccessKeyID:     c.AccessKeyID,
-		AccessKeyEnv:    envKey,
+		AccessKeyEnv:    c.EffectiveAccessKeyEnv(),
 		Region:          c.Region,
 		PublicURLPrefix: c.PublicURLPrefix,
 		UsePathStyle:    c.UsePathStyle,
-		AccessKeySet:    os.Getenv(envKey) != "",
+		AccessKeySet:    c.EffectiveAccessKey() != "",
 	}
 }
 
@@ -2114,10 +2252,9 @@ func (s *Server) updateASRS3Config(ctx *gin.Context) {
 
 	// 整体串行化:从读 oldEnv 到 secret 迁移再到写 cfg 全程持锁,
 	// 保证 env 改名 + secret 迁移原子完成,避免并发 PUT 产生孤儿(与 DashScope/Recap 一致)。
-	// 密钥走 secrets.Store(codex 审核高[4]):写 env + secrets.Set,而非写 cfg.AccessKeySecret 字段,
-	// 这样密钥持久化到数据库,重启不丢;运行时经 SecretResolved() 读 env。
+	// 密钥走 secrets.Store:写 env + secrets.Set,而非写 cfg.AccessKeySecret 字段,
+	// 这样密钥持久化到数据库,重启不丢;运行时经 EffectiveAccessKey() 读 env。
 	s.publishMu.Lock()
-	defer s.publishMu.Unlock()
 
 	oldEnv := s.cfg.ASRS3.EffectiveAccessKeyEnv()
 	newEnv := oldEnv
@@ -2129,13 +2266,10 @@ func (s *Server) updateASRS3Config(ctx *gin.Context) {
 			newEnv = trimmed
 		}
 	}
-
-	// 密钥:env 名变化时迁移旧 secret 到新 key,避免孤儿。
-	if err := s.applySecretEnvChange(ctx.Request.Context(),
-		oldEnv, newEnv, derefStr(input.AccessKeySecret), derefBool(input.ClearSecret)); err != nil {
-		writeError(ctx, err)
-		return
-	}
+	// tombstone 状态机(r13 [High]):显式密钥操作(设/清/改 env 名)升 managed=true;
+	// 非密钥字段改动保持当前 managed(可能为 true,不回退)。
+	explicitSecretOp := input.AccessKeySecret != nil || derefBool(input.ClearSecret) || input.AccessKeyEnv != nil
+	nextManaged := s.cfg.ASRS3.AccessKeyManaged() || explicitSecretOp
 
 	// 字段提交:基于【当前】配置 patch(此时仍持锁,无并发丢更新)。
 	nextCfg := s.cfg.ASRS3
@@ -2160,14 +2294,50 @@ func (s *Server) updateASRS3Config(ctx *gin.Context) {
 	if input.AccessKeyEnv != nil {
 		nextCfg.AccessKeyEnv = strings.TrimSpace(*input.AccessKeyEnv)
 	}
-	// 注意:不写 nextCfg.AccessKeySecret —— 密钥走 secrets.Store + env,由 SecretResolved() 读取。
+	// 注意:不写 nextCfg.AccessKeySecret —— 密钥走 secrets + env,由 EffectiveAccessKey() 读取。
+	dto := asrs3ConfigToDTO(nextCfg, nextManaged)
+
+	// 原子:secrets 写入 + runtime_settings 写入放同一事务(r11 [High]),commit 后才改 env/cfg。
+	var mut envMutation
+	err := runtimeconfig.WithTx(ctx.Request.Context(), s.runtimeCfg.DB(), func(tx *sql.Tx) error {
+		var secretErr error
+		mut, secretErr = s.applySecretEnvChangeTx(ctx.Request.Context(), tx,
+			oldEnv, newEnv, derefStr(input.AccessKeySecret), derefBool(input.ClearSecret))
+		if secretErr != nil {
+			return secretErr
+		}
+		return s.persistSectionTx(ctx.Request.Context(), tx, "asr_s3", dto)
+	})
+	if err != nil {
+		s.publishMu.Unlock()
+		writeError(ctx, err)
+		return
+	}
+	applyEnvMutation(mut) // commit 成功后才更新进程 env
+
+	nextCfg.SetAccessKeyManaged(nextManaged)
 	s.cfg.ASRS3 = nextCfg
 	resp := newASRS3ConfigResponse(s.cfg.ASRS3)
 	cfgSnapshot := *s.cfg
 	gen := s.bumpConfigGen()
-	s.refreshRuntimeStatus(cfgSnapshot, gen)
+	s.publishMu.Unlock()
 
+	s.refreshRuntimeStatus(cfgSnapshot, gen)
 	ctx.JSON(http.StatusOK, resp)
+}
+
+// asrs3ConfigToDTO 把 ASRS3Config 转成完整下一状态 DTO(含 tombstone)。
+func asrs3ConfigToDTO(c config.ASRS3Config, managed bool) config.ASRS3SectionDTO {
+	return config.ASRS3SectionDTO{
+		Endpoint:         &c.Endpoint,
+		Bucket:           &c.Bucket,
+		AccessKeyID:      &c.AccessKeyID,
+		AccessKeyEnv:     &c.AccessKeyEnv,
+		Region:           &c.Region,
+		PublicURLPrefix:  &c.PublicURLPrefix,
+		UsePathStyle:     &c.UsePathStyle,
+		AccessKeyManaged: &managed,
+	}
 }
 
 // --- DashScope (ASR) config handlers ---
@@ -2262,10 +2432,8 @@ func (s *Server) updateDashScopeConfig(ctx *gin.Context) {
 	}
 
 	// 整体串行化:从读 oldEnv 到 secret 迁移再到写 cfg 全程持锁,
-	// 保证 env 改名 + secret 迁移原子完成,避免并发 PUT 互相迁移/删除 secret 产生孤儿
-	// (codex 审核中)。secret DB 操作在锁内,与 updateWebDAVConfig 的密码处理一致。
+	// 保证 env 改名 + secret 迁移原子完成,避免并发 PUT 互相迁移/删除 secret 产生孤儿。
 	s.publishMu.Lock()
-	defer s.publishMu.Unlock()
 
 	oldEnv := s.cfg.DashScope.EffectiveAPIKeyEnv()
 	newEnv := oldEnv
@@ -2276,13 +2444,6 @@ func (s *Server) updateDashScopeConfig(ctx *gin.Context) {
 		} else {
 			newEnv = trimmed
 		}
-	}
-
-	// 密钥:env 名变化时迁移旧 secret 到新 key,避免孤儿。
-	if err := s.applySecretEnvChange(ctx.Request.Context(),
-		oldEnv, newEnv, derefStr(input.APIKey), derefBool(input.ClearKey)); err != nil {
-		writeError(ctx, err)
-		return
 	}
 
 	// 字段提交:基于【当前】配置 patch(此时仍持锁,无并发丢更新)。
@@ -2311,13 +2472,48 @@ func (s *Server) updateDashScopeConfig(ctx *gin.Context) {
 	if input.APIKeyEnv != nil {
 		nextCfg.APIKeyEnv = strings.TrimSpace(*input.APIKeyEnv)
 	}
+	dto := dashscopeConfigToDTO(nextCfg)
+
+	// 原子:secrets 写入 + runtime_settings 写入放同一事务,commit 后才改 env/cfg。
+	var mut envMutation
+	err := runtimeconfig.WithTx(ctx.Request.Context(), s.runtimeCfg.DB(), func(tx *sql.Tx) error {
+		var secretErr error
+		mut, secretErr = s.applySecretEnvChangeTx(ctx.Request.Context(), tx,
+			oldEnv, newEnv, derefStr(input.APIKey), derefBool(input.ClearKey))
+		if secretErr != nil {
+			return secretErr
+		}
+		return s.persistSectionTx(ctx.Request.Context(), tx, "dashscope", dto)
+	})
+	if err != nil {
+		s.publishMu.Unlock()
+		writeError(ctx, err)
+		return
+	}
+	applyEnvMutation(mut)
+
 	s.cfg.DashScope = nextCfg
 	resp := newDashScopeConfigResponse(s.cfg.DashScope)
 	cfgSnapshot := *s.cfg
 	gen := s.bumpConfigGen()
-	s.refreshRuntimeStatus(cfgSnapshot, gen)
+	s.publishMu.Unlock()
 
+	s.refreshRuntimeStatus(cfgSnapshot, gen)
 	ctx.JSON(http.StatusOK, resp)
+}
+
+// dashscopeConfigToDTO 把 DashScopeConfig 转成完整下一状态 DTO。APIKey 不进 DTO（走 secrets）。
+func dashscopeConfigToDTO(c config.DashScopeConfig) config.DashScopeSectionDTO {
+	return config.DashScopeSectionDTO{
+		APIKeyEnv:          &c.APIKeyEnv,
+		ASRURL:             &c.ASRURL,
+		TasksURL:           &c.TasksURL,
+		Model:              &c.Model,
+		Language:           &c.Language,
+		DiarizationEnabled: &c.DiarizationEnabled,
+		SpeakerCount:       &c.SpeakerCount,
+		VocabularyID:       &c.VocabularyID,
+	}
 }
 
 // --- Recap AI config handlers ---
@@ -2415,14 +2611,7 @@ func (s *Server) updateRecapConfig(ctx *gin.Context) {
 		}
 	}
 
-	// 计算 env 改名的旧/新值(用于密钥迁移),基于当前配置快照。
-	// oldEnv = 当前生效的 env 名;newEnv = 本次提交后的生效 env 名。
-	// 整体串行化:从读 oldEnv 到 secret 迁移再到写 cfg 全程持锁,
-	// 保证 env 改名 + secret 迁移原子完成,避免并发 PUT 互相迁移/删除 secret 产生孤儿
-	// (codex 审核中,与 updateDashScopeConfig 一致)。secret DB 操作在锁内,
-	// 与 updateWebDAVConfig 的密码处理同款。
 	s.publishMu.Lock()
-	defer s.publishMu.Unlock()
 
 	oldEnv := s.cfg.RecapAI.EffectiveAPIKeyEnv()
 	newEnv := oldEnv // 未传 APIKeyEnv 字段时沿用旧值
@@ -2434,13 +2623,6 @@ func (s *Server) updateRecapConfig(ctx *gin.Context) {
 		} else {
 			newEnv = trimmed
 		}
-	}
-
-	// 密钥:env 名变化时迁移旧 secret 到新 key,避免孤儿(codex 审核第 3 条)。
-	if err := s.applySecretEnvChange(ctx.Request.Context(),
-		oldEnv, newEnv, derefStr(input.APIKey), derefBool(input.ClearKey)); err != nil {
-		writeError(ctx, err)
-		return
 	}
 
 	// 字段提交:基于【当前】配置 patch(此时仍持锁,无并发丢更新)。
@@ -2472,13 +2654,50 @@ func (s *Server) updateRecapConfig(ctx *gin.Context) {
 	if input.IncludeSpeakerInfo != nil {
 		nextCfg.IncludeSpeakerInfo = *input.IncludeSpeakerInfo
 	}
+	dto := recapConfigToDTO(nextCfg)
+
+	// 原子:secrets 写入 + runtime_settings 写入放同一事务,commit 后才改 env/cfg。
+	var mut envMutation
+	err := runtimeconfig.WithTx(ctx.Request.Context(), s.runtimeCfg.DB(), func(tx *sql.Tx) error {
+		var secretErr error
+		mut, secretErr = s.applySecretEnvChangeTx(ctx.Request.Context(), tx,
+			oldEnv, newEnv, derefStr(input.APIKey), derefBool(input.ClearKey))
+		if secretErr != nil {
+			return secretErr
+		}
+		return s.persistSectionTx(ctx.Request.Context(), tx, "recap_ai", dto)
+	})
+	if err != nil {
+		s.publishMu.Unlock()
+		writeError(ctx, err)
+		return
+	}
+	applyEnvMutation(mut)
+
 	s.cfg.RecapAI = nextCfg
 	resp := newRecapConfigResponse(s.cfg.RecapAI)
 	cfgSnapshot := *s.cfg
 	gen := s.bumpConfigGen()
-	s.refreshRuntimeStatus(cfgSnapshot, gen)
+	s.publishMu.Unlock()
 
+	s.refreshRuntimeStatus(cfgSnapshot, gen)
 	ctx.JSON(http.StatusOK, resp)
+}
+
+// recapConfigToDTO 把 RecapAIConfig 转成完整下一状态 DTO（仅 UI 管理字段，不含 CLIPath/GlossaryFile/EnableSummarization）。
+// APIKey 不进 DTO（走 secrets）。
+func recapConfigToDTO(c config.RecapAIConfig) config.RecapAISectionDTO {
+	return config.RecapAISectionDTO{
+		Enabled:            &c.Enabled,
+		Provider:           &c.Provider,
+		APIKeyEnv:          &c.APIKeyEnv,
+		BaseURL:            &c.BaseURL,
+		Model:              &c.Model,
+		MaxTokens:          &c.MaxTokens,
+		MaxContinuations:   &c.MaxContinuations,
+		TimeoutSeconds:     &c.TimeoutSeconds,
+		IncludeSpeakerInfo: &c.IncludeSpeakerInfo,
+	}
 }
 
 // RecapModelOption 是回顾模型的推荐快捷选项。
@@ -2524,7 +2743,8 @@ func newWebDAVConfigResponse(w config.WebDAVConfig) webDAVConfigResponse {
 		BasePath:    w.BasePath,
 		Remote:      w.Remote,
 		PasswordEnv: w.PasswordEnv,
-		PasswordSet: w.PasswordResolved() != "",
+		// EffectivePassword 遵循 tombstone(managed 时不回落明文),与运行时 copier/能力探测一致。
+		PasswordSet: w.EffectivePassword() != "",
 	}
 }
 
@@ -2570,36 +2790,82 @@ func (s *Server) updateWebDAVConfig(ctx *gin.Context) {
 	}
 
 	s.publishMu.Lock()
-	cfg := &s.cfg.WebDAV
+	// 计算 password_env 改名的旧/新值（基于当前快照），用于密钥迁移。
+	oldEnv := s.cfg.WebDAV.EffectivePasswordEnv()
+	newEnv := oldEnv
+	if input.PasswordEnv != nil {
+		trimmed := strings.TrimSpace(*input.PasswordEnv)
+		if trimmed == "" {
+			newEnv = "WEBDAV_PASSWORD" // 清空 = 用默认
+		} else {
+			newEnv = trimmed
+		}
+	}
+	// tombstone 状态机(r13 [High]):显式密钥操作(设/清/改 env 名)升 managed=true;
+	// 非密钥字段改动保持当前 managed(可能为 true,不回退)。
+	explicitSecretOp := input.Password != nil || derefBool(input.ClearPassword) || input.PasswordEnv != nil
+	nextManaged := s.cfg.WebDAV.PasswordManaged() || explicitSecretOp
+
+	// 字段提交:基于【当前】配置 patch(此时仍持锁,无并发丢更新)。
+	nextCfg := s.cfg.WebDAV
 	if input.URL != nil {
-		cfg.URL = strings.TrimSpace(*input.URL)
+		nextCfg.URL = strings.TrimSpace(*input.URL)
 	}
 	if input.Username != nil {
-		cfg.Username = strings.TrimSpace(*input.Username)
+		nextCfg.Username = strings.TrimSpace(*input.Username)
 	}
 	if input.PasswordEnv != nil {
-		cfg.PasswordEnv = strings.TrimSpace(*input.PasswordEnv)
+		nextCfg.PasswordEnv = strings.TrimSpace(*input.PasswordEnv)
 	}
 	if input.BasePath != nil {
-		cfg.BasePath = strings.TrimSpace(*input.BasePath)
+		nextCfg.BasePath = strings.TrimSpace(*input.BasePath)
 	}
 	if input.Remote != nil {
-		cfg.Remote = strings.TrimSpace(*input.Remote)
+		nextCfg.Remote = strings.TrimSpace(*input.Remote)
 	}
-	if input.ClearPassword != nil && *input.ClearPassword {
-		cfg.Password = ""
-	} else if input.Password != nil && *input.Password != "" {
-		cfg.Password = *input.Password
-	}
+	// 注意:不写 nextCfg.Password —— 密码走 secrets + env,由 EffectivePassword() 读取,
+	// managed=true 时不回落 config.yaml 明文(真正清除语义)。
+	dto := webdavConfigToDTO(nextCfg, nextManaged)
 
+	// 原子:secrets 写入 + runtime_settings 写入放同一事务,commit 后才改 env/cfg。
+	var mut envMutation
+	err := runtimeconfig.WithTx(ctx.Request.Context(), s.runtimeCfg.DB(), func(tx *sql.Tx) error {
+		var secretErr error
+		mut, secretErr = s.applySecretEnvChangeTx(ctx.Request.Context(), tx,
+			oldEnv, newEnv, derefStr(input.Password), derefBool(input.ClearPassword))
+		if secretErr != nil {
+			return secretErr
+		}
+		return s.persistSectionTx(ctx.Request.Context(), tx, "webdav", dto)
+	})
+	if err != nil {
+		s.publishMu.Unlock()
+		writeError(ctx, err)
+		return
+	}
+	applyEnvMutation(mut)
+
+	nextCfg.SetPasswordManaged(nextManaged)
+	s.cfg.WebDAV = nextCfg
 	resp := newWebDAVConfigResponse(s.cfg.WebDAV)
 	cfgSnapshot := *s.cfg
 	gen := s.bumpConfigGen()
 	s.publishMu.Unlock()
 
 	s.refreshRuntimeStatus(cfgSnapshot, gen)
-
 	ctx.JSON(http.StatusOK, resp)
+}
+
+// webdavConfigToDTO 把 WebDAVConfig 转成完整下一状态 DTO（含 tombstone）。Password 不进 DTO（走 secrets）。
+func webdavConfigToDTO(c config.WebDAVConfig, managed bool) config.WebDAVSectionDTO {
+	return config.WebDAVSectionDTO{
+		URL:             &c.URL,
+		Username:        &c.Username,
+		PasswordEnv:     &c.PasswordEnv,
+		BasePath:        &c.BasePath,
+		Remote:          &c.Remote,
+		PasswordManaged: &managed,
+	}
 }
 
 // --- Archive config handlers (发布后自动归档) ---
@@ -2645,14 +2911,23 @@ func (s *Server) updateArchiveConfig(ctx *gin.Context) {
 	}
 
 	s.publishMu.Lock()
-	cfg := &s.cfg.Archive
+	nextArchive := s.cfg.Archive
 	if input.AutoAfterPublish != nil {
-		cfg.AutoAfterPublish = *input.AutoAfterPublish
+		nextArchive.AutoAfterPublish = *input.AutoAfterPublish
 	}
 	if input.CleanupPolicy != nil {
-		cfg.CleanupPolicy = *input.CleanupPolicy
+		nextArchive.CleanupPolicy = *input.CleanupPolicy
 	}
-
+	dto := archiveConfigToDTO(nextArchive)
+	if err := runtimeconfig.WithTx(ctx.Request.Context(), s.runtimeCfg.DB(), func(tx *sql.Tx) error {
+		return s.persistSectionTx(ctx.Request.Context(), tx, "archive", dto)
+	}); err != nil {
+		s.publishMu.Unlock()
+		slog.Warn("persist archive config failed", "error", err)
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist archive config"})
+		return
+	}
+	s.cfg.Archive = nextArchive
 	resp := newArchiveConfigResponse(s.cfg.Archive)
 	cfgSnapshot := *s.cfg
 	gen := s.bumpConfigGen()
@@ -2661,6 +2936,14 @@ func (s *Server) updateArchiveConfig(ctx *gin.Context) {
 	s.refreshRuntimeStatus(cfgSnapshot, gen)
 
 	ctx.JSON(http.StatusOK, resp)
+}
+
+// archiveConfigToDTO 把 ArchiveConfig 转成完整下一状态 DTO。
+func archiveConfigToDTO(a config.ArchiveConfig) config.ArchiveSectionDTO {
+	return config.ArchiveSectionDTO{
+		AutoAfterPublish: &a.AutoAfterPublish,
+		CleanupPolicy:    &a.CleanupPolicy,
+	}
 }
 
 // --- Global glossary handlers ---

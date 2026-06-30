@@ -185,6 +185,15 @@ ALTER TABLE channels ADD COLUMN publish_topics TEXT NOT NULL DEFAULT '';`,
 	`ALTER TABLE sessions ADD COLUMN archived_at TEXT;`,
 	// v32: per-channel 自动回顾开关（ASR 成功后是否自动生成回顾；默认 1=开，保持历史行为）
 	`ALTER TABLE channels ADD COLUMN auto_recap INTEGER NOT NULL DEFAULT 1;`,
+	// v33: 全局运行时配置持久化。config.yaml 降级为只读基线，UI 改动按配置段存此表，
+	// 启动时 ApplyOverrides 用本表覆盖 viper 加载的基线值。data 是该段 DTO 的 JSON。
+	// CHECK(section) 白名单限定 6 个全局段；CHECK(json_valid(data)) 保证 JSON 完整性。
+	`CREATE TABLE IF NOT EXISTS runtime_settings (
+		section TEXT NOT NULL CHECK (section IN ('publish','asr_s3','dashscope','recap_ai','webdav','archive')),
+		data TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(data)),
+		updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (section)
+	);`,
 }
 
 func Migrate(database *sql.DB) error {
