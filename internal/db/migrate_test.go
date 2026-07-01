@@ -66,6 +66,7 @@ func TestMigrateCreatesAllTables(t *testing.T) {
 		"schema_migrations", "channels", "sessions", "tasks",
 		"secrets", "glossary_entries", "glossary_meta",
 		"recap_templates", "bili_cookie_accounts", "glossary_candidates",
+		"runtime_settings",
 	}
 	for _, table := range expected {
 		var name string

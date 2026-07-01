@@ -25,7 +25,7 @@
 
 ## 数据模型
 
-**九张核心表 + 32 个迁移版本：**
+**十张核心表 + 33 个迁移版本：**
 
 1. **channels** -- 主播配置
    - `id TEXT PK`, `name`, `uid`, `live_room_id`, `replay_source_url`, `space_url`, `title_prefix`, `cookie_file`, `enabled`, `created_at`, `updated_at`
@@ -64,6 +64,12 @@
    - 唯一索引: `(channel_id, normalized_key)`
    - 索引: `(channel_id, status, score DESC, updated_at DESC)`, `(last_session_id)`
 
+10. **runtime_settings** -- 全局运行时配置覆盖（v33 新增）
+   - `section TEXT PK`, `data TEXT NOT NULL DEFAULT '{}'`, `updated_at TEXT NOT NULL DEFAULT (datetime('now'))`
+   - `CHECK(section IN ('publish','asr_s3','dashscope','recap_ai','webdav','archive'))` 白名单限定 6 个全局段
+   - `CHECK(json_valid(data))` 保证 JSON 完整性
+   - config.yaml 降级为只读基线，UI 改动按段存此表；启动时 `config.ApplyOverrides` 用本表覆盖 viper 基线（详见 `internal/runtimeconfig/CLAUDE.md`）
+
 **迁移版本：**
 
 | 版本 | 说明 |
@@ -98,13 +104,16 @@
 | 28 | `glossary_candidates` 表（含 CHECK 约束、唯一索引、评分/状态索引） |
 | 29 | `channels` 追加 `recap_model`（默认 ''） |
 | 30 | `channels` 追加 `max_continuations`（默认 -1） |
+| 31 | `sessions` 追加 `archived_at`（发布成功后自动归档到 WebDAV 用，不推进主状态） |
+| 32 | `channels` 追加 `auto_recap`（默认 1，per-channel 自动回顾开关，ASR 成功后是否自动生成回顾） |
+| 33 | `runtime_settings` 表（全局运行时配置覆盖，per-section JSON；`CHECK(section)` 白名单 6 段 + `CHECK(json_valid(data))`） |
 
 ## 测试与质量
 
 - `migrate_test.go`: 9 个测试用例，覆盖：
   - `TestMigrateIsIdempotent`: 迁移幂等性（重复执行不报错，版本数正确）
   - `TestMigrateCreatesCoreTables`: 核心表创建验证（channels, sessions, tasks）
-  - `TestMigrateCreatesAllTables`: 全部 9 张表创建验证（含 glossary_candidates、bili_cookie_accounts）
+  - `TestMigrateCreatesAllTables`: 核心应用表创建验证（枚举 10 张：channels, sessions, tasks, secrets, glossary_entries, glossary_meta, recap_templates, bili_cookie_accounts, glossary_candidates, runtime_settings）
   - `TestMigrateCreatesIndexes`: 7 个关键索引创建验证
   - `TestMigrateDefaultRecapTemplate`: 内置默认回顾模板插入验证
   - `TestOpen_EnablesForeignKeys`: 外键约束启用验证
