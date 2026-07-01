@@ -33,6 +33,10 @@ OPUS_DRAFT_EMPTY_CONTENT_INVESTIGATION.md
 WEB_OPTIMIZATION_SUGGESTIONS.md
 直播回顾_*.md
 
+# Agent / review working notes
+plans/
+reviews/
+
 # MCP / tool caches
 .playwright-mcp/
 .serena/
