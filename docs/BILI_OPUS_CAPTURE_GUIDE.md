@@ -31,7 +31,7 @@ hikami 的 `internal/publisher/bilibili_opus.go` 构造 B 站专栏请求体时:
 2. 本地 AI 助手挂载了 `chrome-devtools-mcp`(或等价的浏览器控制 MCP / Playwright)。
 3. 抓包过程**必须用你本人的账号操作**,我不接触任何 cookie。
 
-> ⚠️ 不要用调查文档 `OPUS_DRAFT_EMPTY_CONTENT_INVESTIGATION.md` 里提到的 headless Chrome 方案——那个卡在 cookie 注入。这次用你本地真实登录的 Chrome,绕开所有鉴权问题。
+> ⚠️ 不要用早期的 headless Chrome 方案——那个卡在 cookie 注入。这次用你本地真实登录的 Chrome,绕开所有鉴权问题。
 
 ---
 

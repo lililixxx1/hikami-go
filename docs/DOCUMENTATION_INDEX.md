@@ -2,7 +2,7 @@
 
 > 本文件是 Hikami-Go 全部文档的导航索引，按「常青参考 / 活跃计划 / 归档」三类组织。
 > 维护原则：顶层 `docs/` 与 `plans/` 只保留常青与活跃文档；历史/已落地/一次性报告归档于对应 `archive/` 子目录（保留 git 历史，可追溯）。
-> 最后更新：2026-06-28
+> 最后更新：2026-07-01
 
 ---
 
@@ -28,7 +28,7 @@
 
 ## 三、模块级文档（常青，随代码演进）
 
-每个 `internal/*/` 与 `cmd/hikami/`、`web/` 下各有一份 `CLAUDE.md`，记录该模块的职责、对外接口、测试与变更记录。完整清单见根 [CLAUDE.md](../CLAUDE.md) 的「精简模块索引」表与 Mermaid 图（共 25 个内部 Go 包 + `cmd/hikami` + `web`）。
+每个 `internal/*/` 与 `cmd/hikami/`、`web/` 下各有一份 `CLAUDE.md`，记录该模块的职责、对外接口、测试与变更记录。完整清单见根 [CLAUDE.md](../CLAUDE.md) 的「精简模块索引」表与 Mermaid 图（共 26 个内部 Go 包 + `cmd/hikami` + `web` = 28 份，每份含导航面包屑）。
 
 ## 四、设计文档（docs/，常青参考）
 
@@ -40,18 +40,11 @@
 | [FRONTEND_ARCHITECTURE.md](FRONTEND_ARCHITECTURE.md) | 前端架构（重构后权威状态） |
 | [BILI_OPUS_CAPTURE_GUIDE.md](BILI_OPUS_CAPTURE_GUIDE.md) | B 站专栏抓包/诊断指南 |
 
-## 五、待办 / 调查中（docs/，保留至解决）
-
-| 文档 | 状态 |
-|------|------|
-| [OPUS_DRAFT_EMPTY_CONTENT_INVESTIGATION.md](OPUS_DRAFT_EMPTY_CONTENT_INVESTIGATION.md) | 已定位根因方向，待抓官方真实格式后修复 |
-| [WEB_OPTIMIZATION_SUGGESTIONS.md](WEB_OPTIMIZATION_SUGGESTIONS.md) | UI 优化建议清单（部分待评估） |
-
-## 六、活跃计划（plans/）
+## 五、活跃计划（plans/）
 
 > 当前无活跃计划。所有历史设计计划已随仓库重建清理。
 
-## 七、归档区（历史 / 已落地 / 一次性）
+## 六、归档区（历史 / 已落地 / 一次性）
 
 ### docs/archive/refactor/ — 前端重构三部曲（已 100% 完成）
 
@@ -65,5 +58,6 @@
 
 | 文档 | 说明 |
 |------|------|
+| [前端兜底页-embedded_web构建标签缺失.md](archive/investigations/前端兜底页-embedded_web构建标签缺失.md) | `embedded_web` build tag 缺失导致前端不嵌入、降级 API-only 兜底页的诊断报告 |
 | [recap-compare-26.04.22-优化方案.md](archive/investigations/recap-compare-26.04.22-优化方案.md) | 单次回顾质量对比决策（v4-pro 已采纳为默认） |
 | [recap-compare-26.04.22-实施计划.md](archive/investigations/recap-compare-26.04.22-实施计划.md) | 同上实施计划 |
