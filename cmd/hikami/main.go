@@ -281,6 +281,12 @@ func main() {
 			slog.Warn("auto publish skipped: publish capability unavailable")
 			return
 		}
+		// 回放类(回放下载/导入)的回顾不自动发布到B站(仅录播自动发布)。
+		// 手动 API POST /api/sessions/:sid/publish 不受此限制，由前端隐藏动作覆盖。
+		if sess, err := sessionStore.Get(ctx, task.SessionID); err == nil &&
+			(sess.SourceType == "download" || sess.SourceType == "import") {
+			return
+		}
 		if _, err := publisherHandler.CreateTask(ctx, workerPool, task.SessionID); err != nil {
 			slog.Warn("auto publish failed", "error", err, "session_id", task.SessionID)
 			_, _ = stateStore.Apply(ctx, task.SessionID, state.EventTaskFailed, "", fmt.Sprintf("auto %s task creation failed: %v", publisher.TaskType, err))

@@ -373,9 +373,60 @@ describe('getDrawerActions 表B — 能力缺失', () => {
 
 describe('buildPrimaryAction 仅返回主动作', () => {
   it('uploaded → publish,name 属 4 个主动作之一(非 fetch/retry/edit_opus)', () => {
-    const a = getRowActions(makeSession({ status: 'uploaded' }), allCaps)
+    const a = getRowActions(makeSession({ status: 'uploaded', source_type: 'live_record' }), allCaps)
     expect(a.primary?.name).toBe('publish')
     expect(['submit_asr', 'generate_recap', 'upload', 'publish']).toContain(a.primary?.name)
+  })
+})
+
+// ---------- 回放类(download/import)不发布B站:动作守卫 ----------
+
+describe('回放类来源隐藏B站发布相关动作', () => {
+  // 回放类两种 source_type(download=回放发现/链接下载,import=手动上传)
+  const replayTypes: Session['source_type'][] = ['download', 'import']
+
+  describe.each(replayTypes)('source_type=%s 行动作(表A)', (st) => {
+    it('uploaded → 不显示 publish 主动作', () => {
+      const a = getRowActions(makeSession({ status: 'uploaded', source_type: st }), allCaps)
+      expect(a.primary).toBeUndefined()
+    })
+
+    it('published + publish_target(历史已发布) → 不显示 edit/remove', () => {
+      const a = getRowActions(
+        makeSession({ status: 'published', source_type: st, publish_target: 'opus-123' }),
+        allCaps,
+      )
+      expect(a.edit).toBeUndefined()
+      expect(a.remove).toBeUndefined()
+    })
+
+    it('recap_done → 仍有 upload 归档(归档不受影响)', () => {
+      // 列表行 recap_done 走 read=true(打开抽屉),upload 在抽屉入口;这里验证抽屉
+      const d = getDrawerActions(makeSession({ status: 'recap_done', source_type: st }), allCaps)
+      expect(d.primary?.name).toBe('upload')
+    })
+
+    it('uploaded 抽屉(表B) → 不显示 publish', () => {
+      const d = getDrawerActions(makeSession({ status: 'uploaded', source_type: st }), allCaps)
+      expect(d.primary).toBeUndefined()
+    })
+  })
+
+  // 回归:录播(live_record)动作矩阵不受影响
+  describe('录播 live_record 动作不变(回归)', () => {
+    it('uploaded → publish 主动作保留', () => {
+      const a = getRowActions(makeSession({ status: 'uploaded', source_type: 'live_record' }), allCaps)
+      expect(a.primary?.name).toBe('publish')
+    })
+
+    it('published + publish_target → edit/remove 保留', () => {
+      const a = getRowActions(
+        makeSession({ status: 'published', source_type: 'live_record', publish_target: 'opus-456' }),
+        allCaps,
+      )
+      expect(a.edit).toBeDefined()
+      expect(a.remove).toBeDefined()
+    })
   })
 })
 

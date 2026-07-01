@@ -50,6 +50,11 @@ const keyword = ref('')
 const statusFilter = ref<'all' | 'processing' | 'recap' | 'published' | 'failed'>('all')
 const channelFilter = ref('')
 
+// ---------- 子 tab:录播(live_record) / 回放(download + import) ----------
+type RecapTab = 'live' | 'replay'
+const REPLAY_TYPES = ['download', 'import']
+const activeTab = ref<RecapTab>('live')
+
 // ---------- 工具栏相关 ----------
 const discovering = ref(false)
 const discoverDrawerVisible = ref(false)
@@ -79,9 +84,13 @@ const pageSize = ref(20)
 const filteredSessions = computed(() => {
   const q = keyword.value.trim().toLowerCase()
   const statuses = statusFilter.value !== 'all' ? (statusGroupMap[statusFilter.value] ?? []) : []
+  // 子 tab 按 source_type 过滤:录播=live_record;回放=download+import
+  const isReplayTab = activeTab.value === 'replay'
 
   return sessionsStore.items
     .filter((s) => {
+      const isReplay = REPLAY_TYPES.includes(s.source_type)
+      if (isReplayTab !== isReplay) return false
       if (q && !matchesKeyword(s, q)) return false
       if (channelFilter.value && s.channel_id !== channelFilter.value) return false
       if (statuses.length > 0 && !statuses.includes(s.status)) return false
@@ -96,13 +105,35 @@ const pagedSessions = computed(() => {
   return filteredSessions.value.slice(start, start + pageSize.value)
 })
 
-watch([keyword, statusFilter, channelFilter], () => { currentPage.value = 1 })
+watch([keyword, statusFilter, channelFilter, activeTab], () => { currentPage.value = 1 })
 
 // ---------- query 消费 ----------
+// 切换子 tab 时同步 ?tab query。注意:el-tabs 的 v-model 会先于 tab-change 更新 activeTab,
+// 故此处不做 activeTab 判断,只负责把 URL 补齐(刷新/分享链接落到正确 tab)。
+function changeTab(tab: RecapTab) {
+  activeTab.value = tab
+  const query = { ...route.query, tab }
+  router.replace({ path: '/recaps', query })
+}
+
+// 初始 ?tab 读入(刷新/分享链接落到正确 tab)
+watch(
+  () => route.query.tab,
+  (value) => {
+    const next = value === 'replay' ? 'replay' : 'live'
+    if (activeTab.value !== next) activeTab.value = next
+  },
+  { immediate: true },
+)
+
 watch(
   () => route.query.import,
   (value) => {
-    if (value === '1') importDrawerVisible.value = true
+    if (value === '1') {
+      // 导入产出 import 场次,属回放 tab
+      if (activeTab.value !== 'replay') changeTab('replay')
+      importDrawerVisible.value = true
+    }
   },
   { immediate: true },
 )
@@ -118,12 +149,17 @@ watch(importDrawerVisible, (visible) => {
 // Open session detail from query param
 // 注意:immediate watch 在 onMounted 的 fetchSessions 完成前触发,此时 store.items 可能为空,
 // 直接 find 会错过 session。改用 ensureLoaded 确保列表就绪后再取(并复用 inflight,不重复请求)。
+// 拿到 session 后按 source_type 自动切到对应子 tab,再打开抽屉。
 watch(
   () => route.query.sid,
   async (sid) => {
     if (sid) {
       const session = await sessionsStore.getByIdAfterLoad(String(sid))
-      if (session) openRecap(session)
+      if (session) {
+        const wantTab: RecapTab = REPLAY_TYPES.includes(session.source_type) ? 'replay' : 'live'
+        if (activeTab.value !== wantTab) changeTab(wantTab)
+        openRecap(session)
+      }
     }
   },
   { immediate: true },
@@ -379,11 +415,17 @@ onMounted(async () => {
   <div class="recaps-page">
     <RecapToolbar
       :discovering="discovering"
+      :tab="activeTab"
       @discover="handleDiscover"
       @import="importDrawerVisible = true"
       @download="downloadDrawerVisible = true"
       @clear-failed="handleClearFailed"
     />
+
+    <el-tabs v-model="activeTab" class="recap-tabs" @tab-change="changeTab($event as RecapTab)">
+      <el-tab-pane label="录播" name="live" />
+      <el-tab-pane label="回放" name="replay" />
+    </el-tabs>
 
     <SessionFilters
       v-model:keyword="keyword"

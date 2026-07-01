@@ -17,6 +17,11 @@
 import type { Session, Task, Capabilities } from '@/api/types'
 import { getNextAction } from '@/utils/lifecycle'
 
+/** 回放类来源(回放下载 / 手动导入)的回顾不发布B站,用于隐藏 publish/edit/remove 动作 */
+function isReplaySource(s: Session): boolean {
+  return s.source_type === 'download' || s.source_type === 'import'
+}
+
 /** 回顾页 UI 动作标识(覆盖列表行+抽屉全部动作) */
 export type UIActionName =
   | 'submit_asr'
@@ -99,6 +104,9 @@ function buildPrimaryAction(
 ): PrimaryAction | undefined {
   const next = getNextAction(session.status, capabilities, session.local_available)
   if (!next || !isPrimaryActionName(next.name)) return undefined
+  // 回放类(回放下载/导入)不发布B站:uploaded 状态的 publish 主动作对回放类隐藏。
+  // (归档 upload 不受影响;published 状态本就返回 fetch,已被 isPrimaryActionName 过滤掉。)
+  if (next.name === 'publish' && isReplaySource(session)) return undefined
   return {
     name: next.name,
     label: next.label,
@@ -222,7 +230,8 @@ export function getRowActions(
   }
 
   // published 且有发布目标:显示编辑/删除(列表行专属,抽屉不显示——差异点②)
-  if (session.status === 'published' && session.publish_target) {
+  // 回放类不发布B站:历史已发布的回放场次也隐藏 edit/remove(仅留取回)
+  if (session.status === 'published' && session.publish_target && !isReplaySource(session)) {
     actions.edit = publishOpusAction('edit_opus', capabilities)
     actions.remove = publishOpusAction('remove_opus', capabilities)
     return withFetch(actions, session)

@@ -3,6 +3,8 @@ import { Search, Upload, Download, ArrowDown } from '@element-plus/icons-vue'
 
 defineProps<{
   discovering: boolean
+  /** 当前子 tab:录播页隐藏「发现回放/导入/链接下载」(这些只产生回放类场次) */
+  tab: 'live' | 'replay'
 }>()
 
 const emit = defineEmits<{
@@ -17,15 +19,18 @@ const emit = defineEmits<{
   <div class="page-header">
     <h2>回顾</h2>
     <div class="page-actions">
-      <el-button type="primary" :loading="discovering" @click="emit('discover')">
-        <el-icon><Search /></el-icon> 发现回放
-      </el-button>
-      <el-button @click="emit('import')">
-        <el-icon><Upload /></el-icon> 导入
-      </el-button>
-      <el-button @click="emit('download')">
-        <el-icon><Download /></el-icon> 链接下载
-      </el-button>
+      <!-- 回放类(download/import)的创建入口仅在「回放」tab 显示 -->
+      <template v-if="tab === 'replay'">
+        <el-button type="primary" :loading="discovering" @click="emit('discover')">
+          <el-icon><Search /></el-icon> 发现回放
+        </el-button>
+        <el-button @click="emit('import')">
+          <el-icon><Upload /></el-icon> 导入
+        </el-button>
+        <el-button @click="emit('download')">
+          <el-icon><Download /></el-icon> 链接下载
+        </el-button>
+      </template>
       <el-dropdown trigger="click">
         <el-button>更多 <el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
         <template #dropdown>
