@@ -36,6 +36,7 @@ import (
 	"hikami-go/internal/publisher"
 	"hikami-go/internal/recap"
 	hzruntime "hikami-go/internal/runtime"
+	"hikami-go/internal/runtimeconfig"
 	"hikami-go/internal/scheduler"
 	"hikami-go/internal/secrets"
 	"hikami-go/internal/session"
@@ -96,6 +97,23 @@ func main() {
 	secretsStore := secrets.NewStore(database)
 	if err := secretsStore.LoadIntoEnv(context.Background()); err != nil {
 		logger.Warn("load secrets into env failed", "error", err)
+	}
+
+	// 全局运行时配置覆盖：config.yaml 是只读基线，UI 改动存 runtime_settings 表。
+	// 启动时把 DB 的 per-section 覆盖应用到内存 cfg，得到最终生效配置。
+	// Load 失败视为启动 fatal（r10 [Medium]）；section JSON 损坏由 ApplyOverrides 跳过+告警。
+	rtStore := runtimeconfig.NewStore(database)
+	overrides, err := rtStore.Load(context.Background())
+	if err != nil {
+		logger.Error("load runtime settings failed", "error", err)
+		os.Exit(1)
+	}
+	if len(overrides) > 0 {
+		if err := config.ApplyOverrides(cfg, overrides); err != nil {
+			logger.Error("apply runtime overrides failed", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("applied runtime config overrides", "sections", len(overrides))
 	}
 
 	glossaryStore := glossary.NewStore(database)
@@ -384,6 +402,7 @@ func main() {
 		archiveHandler,
 		publisherHandler,
 		secretsStore,
+		rtStore,
 		webFS,
 		glossaryStore,
 		glossaryDiscoverer,

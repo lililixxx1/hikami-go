@@ -223,6 +223,108 @@ func TestHandleTaskRecordsReconnectToPartAndConcatsSegments(t *testing.T) {
 	}
 }
 
+// TestHandleTaskPreflightCheckLiveOffline 验证拉流前的开播再确认：若明确判定已下播，
+// 应直接放弃录制（返回 ErrNotLive），且根本不调用 recorder，避免对失效流硬拉。
+func TestHandleTaskPreflightCheckLiveOffline(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.client = offlineClient{}
+	recorder := &countingRecorder{}
+	manager.audio = recorder
+
+	running := mustCreateRunningTask(t, pool)
+	err := manager.HandleTask(context.Background(), running, noopReporter{})
+	if !errors.Is(err, ErrNotLive) {
+		t.Fatalf("handle task err = %v, want ErrNotLive", err)
+	}
+	if len(recorder.outputs) != 0 {
+		t.Fatalf("recorder should not be called when offline, outputs = %+v", recorder.outputs)
+	}
+}
+
+// TestHandleTaskPreflightCheckLiveErrorProceeds 验证 preflight 探测本身出错（如风控 -352）
+// 时不阻断录制：沿用乐观策略继续拉流，任务应成功完成。
+func TestHandleTaskPreflightCheckLiveErrorProceeds(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.client = probeErrorClient{}
+	recorder := &countingRecorder{}
+	manager.audio = recorder
+
+	running := mustCreateRunningTask(t, pool)
+	if err := manager.HandleTask(context.Background(), running, noopReporter{}); err != nil {
+		t.Fatalf("handle task: %v", err)
+	}
+	if len(recorder.outputs) != 1 {
+		t.Fatalf("recorder should be called once when probe fails, outputs = %+v", recorder.outputs)
+	}
+}
+
+// TestHandleTaskReconnectSurvivesProbeError 验证重连前 CheckLive 报错时不再放弃重试：
+// 首次录制失败 + 探测持续出错，重连仍应进行并最终成功，分片合并为最终音频。
+func TestHandleTaskReconnectSurvivesProbeError(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = true
+	manager.cfg.LiveRecord.MaxReconnect = 1
+	manager.cfg.LiveRecord.ReconnectDelay = 1
+	manager.client = probeErrorClient{}
+	recorder := &interruptingOnceRecorder{}
+	manager.audio = recorder
+	stubFFmpegConcat(t)
+
+	running := mustCreateRunningTask(t, pool)
+	if err := manager.HandleTask(context.Background(), running, noopReporter{}); err != nil {
+		t.Fatalf("handle task: %v", err)
+	}
+
+	rawDir := filepath.Join(manager.cfg.OutputRoot, "huize", "live_20260427_120000", "raw")
+	audioPath := filepath.Join(rawDir, "audio.m4a")
+	content, err := os.ReadFile(audioPath)
+	if err != nil {
+		t.Fatalf("read audio: %v", err)
+	}
+	if string(content) != "segment-1\nsegment-2\n" {
+		t.Fatalf("audio content = %q", string(content))
+	}
+	if len(recorder.outputs) != 2 || recorder.outputs[1] != reconnectAudioSegmentPath(audioPath, 1) {
+		t.Fatalf("recorder outputs = %+v, want two segments including reconnect part", recorder.outputs)
+	}
+}
+
+// mustCreateRunningTask 封装「创建 + MarkRunning」的样板，返回可直接交给 HandleTask 的 task。
+func mustCreateRunningTask(t *testing.T, pool *worker.Pool) worker.Task {
+	t.Helper()
+	task, err := pool.Store().Create(context.Background(), worker.CreateInput{
+		ChannelID: "huize",
+		SessionID: "session_1",
+		Type:      TaskType,
+		Payload:   `{"room_id":123}`,
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	running, err := pool.Store().MarkRunning(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+	return running
+}
+
+// stubFFmpegConcat 用拼合 listfile 内容的方式替身 ffmpeg concat，供重连测试复用。
+func stubFFmpegConcat(t *testing.T) {
+	t.Helper()
+	original := runFFmpegConcat
+	runFFmpegConcat = func(ctx context.Context, command string, args ...string) error {
+		listIndex := slices.Index(args, "-i")
+		if listIndex < 0 || listIndex+1 >= len(args) {
+			t.Fatalf("concat args missing file list: %+v", args)
+		}
+		return copyConcatListFiles(args[listIndex+1], args[len(args)-1])
+	}
+	t.Cleanup(func() { runFFmpegConcat = original })
+}
+
 // TestWriteConcatListWritesAbsolutePaths 是针对相对 OutputRoot 导致路径叠加 bug 的回归测试。
 //
 // ffmpeg 的 concat demuxer 以 listfile 所在目录为基准解析相对条目。当 OutputRoot
@@ -497,6 +599,45 @@ func (c *streamFallbackClient) GetStream(ctx context.Context, roomID int64, audi
 		return StreamInfo{}, c.audioErr
 	}
 	return StreamInfo{URL: "https://example.com/live.flv", AudioOnly: audioOnly}, nil
+}
+
+// probeErrorClient 让 CheckLive 始终返回探测错误（模拟 B 站风控 -352 / 网络抖动），
+// 但 GetStream 正常返回，用于验证 preflight 与重连不因探测出错而中断。
+type probeErrorClient struct{}
+
+func (probeErrorClient) CheckLive(ctx context.Context, roomID int64, cookieHeader string) (LiveInfo, error) {
+	return LiveInfo{}, errors.New("bilibili room info error: code=-352")
+}
+
+func (probeErrorClient) GetStream(ctx context.Context, roomID int64, audioOnly bool, cookieHeader string) (StreamInfo, error) {
+	return StreamInfo{URL: "https://example.com/live.flv", AudioOnly: audioOnly}, nil
+}
+
+// countingRecorder 记录 Record 调用次数与目标路径，用于断言录制是否被触发。
+type countingRecorder struct {
+	outputs []string
+}
+
+func (r *countingRecorder) Record(ctx context.Context, stream StreamInfo, outputPath string) error {
+	r.outputs = append(r.outputs, outputPath)
+	return os.WriteFile(outputPath, []byte("audio"), 0o644)
+}
+
+// interruptingOnceRecorder 首次 Record 失败、之后成功，配合 probeErrorClient 验证
+// 重连不因 CheckLive 报错而被放弃。
+type interruptingOnceRecorder struct {
+	outputs []string
+}
+
+func (r *interruptingOnceRecorder) Record(ctx context.Context, stream StreamInfo, outputPath string) error {
+	r.outputs = append(r.outputs, outputPath)
+	if err := os.WriteFile(outputPath, []byte("segment-"+strconv.Itoa(len(r.outputs))+"\n"), 0o644); err != nil {
+		return err
+	}
+	if len(r.outputs) == 1 {
+		return errors.New("stream interrupted")
+	}
+	return nil
 }
 
 type fileAudioRecorder struct{}

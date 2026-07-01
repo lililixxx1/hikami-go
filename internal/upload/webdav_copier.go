@@ -21,7 +21,9 @@ type WebDAVCopier struct {
 
 func NewWebDAVCopier(cfg *config.WebDAVConfig) *WebDAVCopier {
 	return &WebDAVCopier{
-		client:   gowebdav.NewClient(cfg.URL, cfg.Username, cfg.PasswordResolved()),
+		// EffectivePassword 遵循 tombstone（managed 时不回落 config.yaml 明文），
+		// 与 GET 响应/能力探测一致（r12 Effective* 闭环）。
+		client:   gowebdav.NewClient(cfg.URL, cfg.Username, cfg.EffectivePassword()),
 		basePath: strings.Trim(cfg.BasePath, "/"),
 	}
 }

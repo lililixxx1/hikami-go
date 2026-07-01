@@ -1,8 +1,9 @@
 # Repository Guidelines
 
-> **ZCode Agent 运行时上下文**。ZCode 在每个任务启动时读取本文件(以及 `~/.zcode/AGENTS.md`)。
+> **ZCode Agent 运行时上下文**。ZCode 在每个任务启动时读取**两处** `AGENTS.md`(据官方文档,仅两级、**不**逐级合并子目录):
+> ① `~/.zcode/AGENTS.md`(用户全局,本机当前为空)、② `<repo>/AGENTS.md`(工作区,本文件)。两者存在时先追加全局、再追加工作区,工作区指令为当前任务的主源。
 > 本文件聚焦"Agent 工作时最常需要的信息":命令、约定、结构与边界。
-> 详细的架构图、模块逐一解析、数据流见根目录 [`CLAUDE.md`](./CLAUDE.md)(人类可读的完整参考,各模块目录另有本地 `CLAUDE.md`)。
+> 详细的架构图、模块逐一解析、数据流见根目录 [`CLAUDE.md`](./CLAUDE.md)(人类可读的完整参考;ZCode 仅在 onboarding 时把 CLAUDE.md 作为一次性迁移源,运行时不持续读取)。
 
 ## 项目一句话
 
@@ -97,6 +98,30 @@ cd web && npx vitest run                     # 单测
 **禁止提交**:`config.yaml`、cookies、API keys、生成的数据库(`*.db`)、本地输出目录(`data/`、`logs/`)。
 使用 `config.example.yaml`(最小)或 `config.full.example.yaml`(完整)作为模板。
 
+## ZCode Skills 与扩展能力
+
+ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zcode/server/agents/glm/zcode.cjs` 的 `WWt`/`GWt` 解析器确认):
+- `<root>/.zcode/skills/`(`source="zcode"`)
+- `<root>/.agents/skills/`(`source="agents"`)← **本项目使用的路径**
+
+二者均生效并合并。本项目在 `.agents/skills/`(本地 vendored,**已 `.gitignore`**)放了 43 个 Go Skill(`samber/cc-skills-golang`),全局 `~/.zcode/skills/` 另有 46 个(多 `codex-review`、`find-skills`、`pdf` 三个通用 skill)。本会话开头的 `system-reminder` 里两套会成对列出,是正常的去重合并结果,不是重复。
+
+**调用方式**:**用户在 chat 里用 `$skill-name` 触发 skill**(`$` 是 Skill 触发符;`/` 留给 Command,二者在 `/` 命令面板里分两组显示)。Agent 内部则通过 Skill 工具调用。仅可调用列表中或用户显式 `$<name>` 提及的 skill,禁止凭训练记忆臆造。
+
+> 例:用户输入 `$obscura 抓取 https://example.com` → ZCode 把该 skill 传给 agent,agent 遵循其指令工作。
+
+**本项目常用的几个 Skill**:
+- `golang-how-to` / `golang-code-style` / `golang-naming` — 写代码前查规范
+- `golang-lint` / `golang-testing` / `golang-stretchr-testify` — 提交前 `gofmt` + 测试
+- `golang-context` / `golang-concurrency` — 后端 `session`/`worker`/流水线大量依赖 context
+- `codex-review` — 代码审查(全局 skill)
+- `obscura` — Rust 无头浏览器(抓 JS 渲染页 / web 工具限流时的 fallback);已配置为全局 MCP server(`~/.zcode/v2/config.json` 的 `mcp.servers.obscura`),CLI 也能直接用 `obscura fetch <url>`
+
+**尚未启用的 ZCode 扩展**(本仓库当前未配置,如需可后补):
+- 自定义 slash 命令:`~/.zcode/commands/*.md`(用户级)或项目目录(工作区级),`/command-name` 调用
+- Plugin:`.zcode-plugin/plugin.json`,可捆绑 skill + command + MCP + hook + LSP
+- Output Styles 与 `hooks/hooks.json`
+
 ## 关键文件索引(遇到问题先看这些)
 
 | 需求 | 入口文件 |
@@ -114,4 +139,6 @@ cd web && npx vitest run                     # 单测
 
 ## 变更记录
 
-- 2026-06-28:依据 ZCode 文档规范重写。修正错误的 Go 环境指令(移除 `/root` 前缀要求);删除不存在的 `.agents/skills/` Go Skills 死引用;补充启动/端口/调试命令与运行时依赖表;明确 AGENTS.md(ZCode 运行时)与 CLAUDE.md(详尽人类参考)的分工。
+- 2026-06-29(二):用 Obscura 抓取 ZCode 官方文档(`/en/docs/skill`、`mcp-services`、`agents`、`commands`、`plugin`)核对,据官方表述修正两处:**① Skill 触发符为 `$`(用户 chat 输入 `$skill-name`),不是 `/`(`/` 是 Command 的触发符);② AGENTS.md 只读全局 + 工作区两级,不逐级合并子目录**。补充 Obscura(全局 MCP server + Skill)的集成说明。
+- 2026-06-29:ZCode 运行时适配修正。逆向 `zcode.cjs` 确认 ZCode 对每个目录根**同时**扫描 `.zcode/skills` 与 `.agents/skills` 两个源并合并,因此本仓库 `.agents/skills/`(43 个 Go Skill,本地 vendored 且 `.gitignore`)与全局 `~/.zcode/skills/`(46 个)均生效;新增"ZCode Skills 与扩展能力"小节说明调用方式与未启用的扩展;修正上次把 `.agents/skills` 当"死引用删除"的错误结论。联动修正 `.gitignore`(移除误入的 `引用格式`、移除与"已提交 AGENTS.md"矛盾的 `AGENTS.md` 忽略规则)。
+- 2026-06-28:依据 ZCode 文档规范重写。修正错误的 Go 环境指令(移除 `/root` 前缀要求);补充启动/端口/调试命令与运行时依赖表;明确 AGENTS.md(ZCode 运行时)与 CLAUDE.md(详尽人类参考)的分工。

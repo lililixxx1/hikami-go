@@ -466,6 +466,28 @@ func (m *Manager) HandleTask(ctx context.Context, task worker.Task, reporter wor
 	// 获取主播的 Cookie header
 	cookieHeader := m.cookieHeaderForChannel(ctx, task.ChannelID)
 
+	// 拉流前的开播再确认。从调度（CheckLive 判定开播）到真正拉流之间隔了
+	// 建 session / 排队 / worker 调度的时间，主播可能在窗口期内已下播。
+	// - 明确判定已下播（无 err）：直接放弃，避免对失效流硬拉，走干净失败路径；
+	// - 探测本身出错（如 B 站风控 -352 / 网络抖动）：不阻断，沿用“拿到 URL 就试”
+	//   的乐观策略，调度时已确认过开播，探测误判不应连累整条录制。
+	// 用 runCtx（携带 active cancel）而非 ctx，确保 Stop / 取消发生在探测期间时能及时中断。
+	// preflight 提到外层变量：成功在线时其 Cover 字段供后续下载封面复用，避免重复请求。
+	var preflight LiveInfo
+	preflight, preflightErr := m.client.CheckLive(runCtx, payload.RoomID, cookieHeader)
+	if preflightErr != nil {
+		if errors.Is(runCtx.Err(), context.Canceled) {
+			return runCtx.Err()
+		}
+		slog.Warn("preflight live check failed, proceed optimistically",
+			"channel_id", task.ChannelID, "room_id", payload.RoomID, "error", preflightErr)
+		preflight = LiveInfo{} // 探测失败，无可复用的封面信息
+	} else if !preflight.Live {
+		slog.Info("preflight live check reports offline, skip recording",
+			"channel_id", task.ChannelID, "room_id", payload.RoomID)
+		return ErrNotLive
+	}
+
 	// 获取直播流：优先纯音频，根据配置决定回退策略
 	stream, err := m.selectStream(ctx, payload.RoomID, cookieHeader)
 	if err != nil {
@@ -483,6 +505,11 @@ func (m *Manager) HandleTask(ctx context.Context, task worker.Task, reporter wor
 	}
 	if err := m.writeLiveMetadata(rawDir, payload.RoomID, stream, task); err != nil {
 		return err
+	}
+	// 下载直播间封面到 raw/cover.*（供 publisher 作为专栏封面）。仅当 preflight 成功且
+	// 在线时复用其 Cover 字段；探测失败/preflight.Cover 为空时跳过。失败不阻断录制。
+	if preflight.Cover != "" {
+		biliutil.DownloadCover(runCtx, nil, preflight.Cover, cookieHeader, rawDir)
 	}
 	reportRecording := func(pid int) error {
 		return reporter.Progress(ctx, 15, fmt.Sprintf("recording audio (pid:%d)", pid))
@@ -556,21 +583,44 @@ func (m *Manager) HandleTask(ctx context.Context, task worker.Task, reporter wor
 	err = m.recordAudio(runCtx, stream, audioPath, reportRecording)
 	addAudioSegment(audioPath)
 	for attempt := 0; err != nil && !errors.Is(runCtx.Err(), context.Canceled) && attempt < maxReconnect; attempt++ {
-		// Check if still live before reconnecting
+		// Re-check liveness before reconnecting.
+		// - 明确判定已下播（无 err 且 !Live）：主播确实停了，放弃重连；
+		// - 仍在播（无 err 且 Live）：正常重连；
+		// - 探测本身出错（如 B 站风控 -352 / 网络抖动）：仍尝试重连。这是关键——
+		//   此刻主播多半仍在播、流几秒后就绪，不应因探测被误杀而放弃整条录制。
 		liveInfo, liveErr := m.client.CheckLive(runCtx, payload.RoomID, m.cookieHeaderForChannel(ctx, task.ChannelID))
-		if liveErr != nil || !liveInfo.Live {
+		if liveErr == nil && !liveInfo.Live {
 			slog.Info("stream ended, skipping reconnect", "channel_id", task.ChannelID, "room_id", payload.RoomID)
 			break
 		}
 
-		slog.Warn("stream interrupted, attempting reconnect",
-			"channel_id", task.ChannelID, "attempt", attempt+1, "max", maxReconnect, "error", err)
+		// 探测被取消（Stop / worker 取消恰好发生在探测期间）：退出重连，让外层走取消收尾，
+		// 避免继续 sleep 与用未取消的 ctx 重新拉流，导致停止录制被延迟。
+		if liveErr != nil && errors.Is(runCtx.Err(), context.Canceled) {
+			break
+		}
+
+		if liveErr != nil {
+			slog.Warn("reconnect liveness probe failed, attempt anyway",
+				"channel_id", task.ChannelID, "attempt", attempt+1, "max", maxReconnect,
+				"room_id", payload.RoomID, "probe_error", liveErr, "stream_error", err)
+		} else {
+			slog.Warn("stream interrupted, attempting reconnect",
+				"channel_id", task.ChannelID, "attempt", attempt+1, "max", maxReconnect, "error", err)
+		}
 		_ = reporter.Progress(ctx, 15+attempt*5, fmt.Sprintf("reconnecting (attempt %d/%d)", attempt+1, maxReconnect))
 
-		time.Sleep(reconnectDelay)
+		// 可取消的等待：Stop / 取消发生在重连延迟期间时立即响应，而不是卡满整个 sleep。
+		select {
+		case <-time.After(reconnectDelay):
+		case <-runCtx.Done():
+			// 取消已发生：交由 for 条件（!errors.Is(runCtx.Err(), context.Canceled)）终止循环，
+			// 走外层取消收尾分支，跳过本次的 selectStream / recordAudio。
+			continue
+		}
 
-		// Re-select stream
-		stream, err = m.selectStream(ctx, payload.RoomID, m.cookieHeaderForChannel(ctx, task.ChannelID))
+		// Re-select stream（用 runCtx 让取消能传播到拉流请求）
+		stream, err = m.selectStream(runCtx, payload.RoomID, m.cookieHeaderForChannel(ctx, task.ChannelID))
 		if err != nil {
 			slog.Warn("reconnect stream selection failed", "error", err)
 			continue

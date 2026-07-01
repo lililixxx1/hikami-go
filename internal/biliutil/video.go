@@ -36,6 +36,7 @@ type VideoInfo struct {
 	AID   int64       `json:"aid"`
 	BVID  string      `json:"bvid"`
 	Title string      `json:"title"`
+	Pic   string      `json:"pic"` // 视频封面 URL（B 站 view 接口的 data.pic）
 	Pages []VideoPage `json:"pages"`
 }
 

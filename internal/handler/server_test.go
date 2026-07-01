@@ -27,6 +27,7 @@ import (
 	"hikami-go/internal/publisher"
 	"hikami-go/internal/recap"
 	"hikami-go/internal/runtime"
+	"hikami-go/internal/runtimeconfig"
 	"hikami-go/internal/secrets"
 	"hikami-go/internal/session"
 	"hikami-go/internal/state"
@@ -770,6 +771,7 @@ func newTestServer(t *testing.T) *Server {
 		archiveHandler,
 		publisherHandler,
 		secrets.NewStore(database),
+		runtimeconfig.NewStore(database),
 		nil,
 		glossary.NewStore(database),
 		nil,

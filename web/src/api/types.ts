@@ -331,6 +331,7 @@ export interface PublishConfig {
   aigc: number
   timer_pub_time: number
   cover_url: string
+  auto_cover: boolean
   topics: string
   topic_id: number
   topic_name: string

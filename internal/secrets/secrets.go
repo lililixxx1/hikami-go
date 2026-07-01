@@ -39,6 +39,26 @@ func (s *Store) Set(ctx context.Context, key, value string) error {
 	return err
 }
 
+// SetTx 是 Set 的事务版，与 runtimeconfig.SaveTx 共享同一 *sql.Tx，
+// 保证「密钥写入 + 全局配置段写入」原子提交（r11 [High]）。
+func (s *Store) SetTx(ctx context.Context, tx *sql.Tx, key, value string) error {
+	_, err := tx.ExecContext(ctx,
+		"INSERT OR REPLACE INTO secrets (key, value, updated_at) VALUES (?, ?, datetime('now'))",
+		key, value)
+	return err
+}
+
+// GetTx 是 Get 的事务版。env rename（oldEnv→newEnv）的「读旧值」必须在同一事务内完成，
+// 避免并发更新迁移到陈旧值（r12 [Medium]）。
+func (s *Store) GetTx(ctx context.Context, tx *sql.Tx, key string) (string, error) {
+	var value string
+	err := tx.QueryRowContext(ctx, "SELECT value FROM secrets WHERE key = ?", key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return value, err
+}
+
 func (s *Store) List(ctx context.Context) ([]Secret, error) {
 	rows, err := s.db.QueryContext(ctx, "SELECT key, value, updated_at FROM secrets ORDER BY key")
 	if err != nil {
@@ -59,6 +79,12 @@ func (s *Store) List(ctx context.Context) ([]Secret, error) {
 
 func (s *Store) Delete(ctx context.Context, key string) error {
 	_, err := s.db.ExecContext(ctx, "DELETE FROM secrets WHERE key = ?", key)
+	return err
+}
+
+// DeleteTx 是 Delete 的事务版（同 SetTx 的原子性用途）。
+func (s *Store) DeleteTx(ctx context.Context, tx *sql.Tx, key string) error {
+	_, err := tx.ExecContext(ctx, "DELETE FROM secrets WHERE key = ?", key)
 	return err
 }
 
@@ -93,7 +119,9 @@ func MaskValue(value string) string {
 	return "****" + value[len(value)-4:]
 }
 
-func KnownKeys(dashScopeEnv, recapEnv, asrS3Env string) []string {
+// KnownKeys 收集所有已知密钥 env 名，用于 updateSecret 的白名单校验。
+// webdavEnv 在 WebDAV 密码迁移到 secrets 后纳入（r15 Effective* 闭环）。
+func KnownKeys(dashScopeEnv, recapEnv, asrS3Env, webdavEnv string) []string {
 	var keys []string
 	if dashScopeEnv != "" {
 		keys = append(keys, dashScopeEnv)
@@ -103,6 +131,9 @@ func KnownKeys(dashScopeEnv, recapEnv, asrS3Env string) []string {
 	}
 	if asrS3Env != "" {
 		keys = append(keys, asrS3Env)
+	}
+	if webdavEnv != "" {
+		keys = append(keys, webdavEnv)
 	}
 	return keys
 }

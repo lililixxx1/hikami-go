@@ -20,7 +20,6 @@ cover_final.out
 snapshot.txt
 *.network-request
 internal/runtime/assets/
-引用格式
 
 # Runtime data (recordings, transcriptions, cookies)
 data/
@@ -44,9 +43,6 @@ reviews/
 
 # Test data
 test-recap/
-
-# Design docs temp
-AGENTS.md
 
 # Temp plan files
 plan_*.md
