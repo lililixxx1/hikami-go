@@ -81,6 +81,17 @@
   line-height: 1.5;
 }
 
+/*
+ * 当 column-note 作为 column-row 的第三个直接子元素时(见 PublishSettingsCard:
+ * label / control / note 三段平铺),2 列 grid 的 auto-placement 会把它放进
+ * 第二行第一列(label 列,96px),导致长文字被挤成窄竖条。
+ * 显式令其从第二行起占据 content 列(grid-column 2),其余卡片不受影响
+ * (它们的 note 在 column-control 内部或 column-main 里,本就不触发此规则)。
+ */
+.column-row > .column-note {
+  grid-column: 2;
+}
+
 .column-actions {
   display: flex;
   justify-content: flex-end;
