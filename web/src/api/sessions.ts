@@ -1,8 +1,22 @@
 import { get, post, put, del, delJson } from './client'
-import type { Session, SessionDetail, Task, ListResponse, DiscoverResult, RecapContent } from './types'
+import type { Session, SessionDetail, Task, ListResponse, DiscoverResult, DiscoverPickItem, RecapContent } from './types'
 
+// discoverSessions 是「一键全部下载」入口（旧两步式发现的行为：建场次 + 入队下载）。
+// 保留作为抽屉「全部下载」快捷按钮的后端调用。
 export function discoverSessions(): Promise<ListResponse<DiscoverResult>> {
   return post('/api/sessions/discover')
+}
+
+// previewDiscoverSessions 是两步式发现的「第一步预览」：列出所有频道会发现哪些回放，
+// 但不建场次、不入队。返回的每条带 exists 标记（是否已建过 download 场次）。
+export function previewDiscoverSessions(): Promise<ListResponse<DiscoverResult>> {
+  return post('/api/sessions/discover/preview')
+}
+
+// executeDiscoverSessions 是两步式发现的「第二步执行」：按前端勾选的 entry 列表建场次 + 入队下载。
+// 不重跑 yt-dlp，复用预览阶段已拿到的 entry 信息；CreateDownload 幂等，已存在的不会重复下载。
+export function executeDiscoverSessions(items: DiscoverPickItem[]): Promise<ListResponse<DiscoverResult>> {
+  return post('/api/sessions/discover/execute', { items })
 }
 
 export function listSessions(): Promise<ListResponse<Session>> {

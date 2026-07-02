@@ -7,6 +7,7 @@ import { useChannelsStore } from '@/stores/channels'
 import { useRuntimeStore } from '@/stores/runtime'
 import { useTasksStore } from '@/stores/tasks'
 import { useExpertMode } from '@/composables/useExpertMode'
+import { useDiscoverReplay } from '@/composables/useDiscoverReplay'
 import { statusGroupMap } from '@/utils/friendlyStatus'
 import {
   decideRetry,
@@ -21,7 +22,6 @@ import DiscoverResultDrawer from '@/components/session/DiscoverResultDrawer.vue'
 import ImportSessionDrawer from '@/components/session/ImportSessionDrawer.vue'
 import DownloadByURLDrawer from '@/components/session/DownloadByURLDrawer.vue'
 import {
-  discoverSessions,
   editOpus,
   fetchSession,
   generateRecap,
@@ -35,7 +35,7 @@ import {
 import { deleteFailedSessions } from '@/api/sessions'
 import { retryTask } from '@/api/tasks'
 import { upsertChannelEntry } from '@/api/glossary'
-import type { DiscoverResult, RecapContent, Session, Task } from '@/api/types'
+import type { RecapContent, Session, Task } from '@/api/types'
 
 const router = useRouter()
 const route = useRoute()
@@ -56,11 +56,9 @@ const REPLAY_TYPES = ['download', 'import']
 const activeTab = ref<RecapTab>('live')
 
 // ---------- 工具栏相关 ----------
-const discovering = ref(false)
-const discoverDrawerVisible = ref(false)
 const importDrawerVisible = ref(false)
 const downloadDrawerVisible = ref(false)
-const discoverResult = ref<DiscoverResult[] | null>(null)
+const { drawerVisible: discoverDrawerVisible, openDiscover, onExecuted: onDiscoverExecuted } = useDiscoverReplay()
 
 // ---------- 动作 loading ----------
 const actionLoadingId = ref('')
@@ -365,22 +363,6 @@ async function handleRetry(session: Session) {
 }
 
 // ---------- 工具栏动作 ----------
-async function handleDiscover() {
-  discoverDrawerVisible.value = true
-  discovering.value = true
-  discoverResult.value = null
-  try {
-    const result = await discoverSessions()
-    discoverResult.value = result.items
-    const created = result.items.filter((i) => i.created && !i.error).length
-    if (created > 0) ElMessage.success(`发现 ${created} 条新回放`)
-    else ElMessage.info('未发现新回放')
-    await sessionsStore.fetchSessions()
-  } finally {
-    discovering.value = false
-  }
-}
-
 function handleImportSubmitted() {
   sessionsStore.fetchSessions()
   tasksStore.fetchTasks()
@@ -414,9 +396,10 @@ onMounted(async () => {
 <template>
   <div class="recaps-page">
     <RecapToolbar
-      :discovering="discovering"
+      :discovering="false"
       :tab="activeTab"
-      @discover="handleDiscover"
+      :capabilities="capabilities"
+      @discover="openDiscover"
       @import="importDrawerVisible = true"
       @download="downloadDrawerVisible = true"
       @clear-failed="handleClearFailed"
@@ -472,8 +455,7 @@ onMounted(async () => {
 
     <DiscoverResultDrawer
       v-model:visible="discoverDrawerVisible"
-      :loading="discovering"
-      :result="discoverResult"
+      @executed="onDiscoverExecuted"
     />
 
     <ImportSessionDrawer

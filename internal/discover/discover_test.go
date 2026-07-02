@@ -211,3 +211,174 @@ func TestDiscoverLimitZeroNoLimit(t *testing.T) {
 		t.Fatalf("created count = %d, want 4", createdCount)
 	}
 }
+
+// TestPreviewAll_MarksExists 验证 PreviewAll 为已建过 download 场次的回放标注 Exists=true。
+// 流程：先 DiscoverAll 建 BV1 场次（标题带前缀会命中），再 PreviewAll 检查 BV1 的 Exists。
+func TestPreviewAll_MarksExists(t *testing.T) {
+	database := newDiscoverTestDB(t)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, fakeLister{})
+
+	// 先 DiscoverAll：BV1（【直播回放】测试）会建场次，BV2（普通投稿）被 title_prefix 过滤
+	if _, err := manager.DiscoverAll(context.Background()); err != nil {
+		t.Fatalf("discover all: %v", err)
+	}
+
+	// 再 PreviewAll：BV1 应标 Exists=true
+	results, err := manager.PreviewAll(context.Background())
+	if err != nil {
+		t.Fatalf("preview all: %v", err)
+	}
+	// fakeLister 的 BV1 带前缀会进 PreviewChannel 结果；BV2 被过滤掉
+	var bv1 *Result
+	for i := range results {
+		if results[i].SourceID == "BV1" {
+			bv1 = &results[i]
+		}
+	}
+	if bv1 == nil {
+		t.Fatalf("BV1 not in preview results: %+v", results)
+	}
+	if !bv1.Exists {
+		t.Fatalf("BV1 should be marked Exists=true after DiscoverAll: %+v", bv1)
+	}
+	// Created 在 preview 阶段应为零值 false
+	if bv1.Created {
+		t.Fatalf("preview result Created should be false: %+v", bv1)
+	}
+	// SessionID/TaskID 在 preview 阶段应为空
+	if bv1.SessionID != "" || bv1.TaskID != "" {
+		t.Fatalf("preview result should not have SessionID/TaskID: %+v", bv1)
+	}
+}
+
+// countingLister 记录 List 调用次数，用于验证 Execute 不重跑 yt-dlp。
+type countingLister struct {
+	calls int
+}
+
+func (c *countingLister) List(ctx context.Context, sourceURL string, cookieFile string) ([]Entry, error) {
+	c.calls++
+	return []Entry{{ID: "BV1", Title: "【直播回放】测试", WebpageURL: "https://www.bilibili.com/video/BV1"}}, nil
+}
+
+// TestExecute_DoesNotRunYTDLP 验证 Execute 不调用 lister（预览阶段已拿到 entry，执行阶段直接建场次）。
+func TestExecute_DoesNotRunYTDLP(t *testing.T) {
+	database := newDiscoverTestDB(t)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	lister := &countingLister{}
+	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, lister)
+
+	// Execute 直接用前端勾选的 entry，不应触发 lister
+	results := manager.Execute(context.Background(), []ExecuteItem{
+		{ChannelID: "huize", SourceID: "BV1", Title: "【直播回放】测试", SourceURL: "https://www.bilibili.com/video/BV1"},
+	})
+	if len(results) != 1 || !results[0].Created {
+		t.Fatalf("execute result unexpected: %+v", results)
+	}
+	if lister.calls != 0 {
+		t.Fatalf("Execute should not call lister, got %d calls", lister.calls)
+	}
+	// 验证场次已建 + 任务已入队
+	tasks, err := pool.Store().List(context.Background())
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].Type != "download" {
+		t.Fatalf("expected 1 download task, got: %+v", tasks)
+	}
+}
+
+// TestExecute_Idempotent 验证 Execute 对同一 source_id 重复调用不重复建场次/入队。
+func TestExecute_Idempotent(t *testing.T) {
+	database := newDiscoverTestDB(t)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, fakeLister{})
+	item := ExecuteItem{ChannelID: "huize", SourceID: "BV1", Title: "【直播回放】测试", SourceURL: "https://www.bilibili.com/video/BV1"}
+
+	// 第一次：created=true
+	first := manager.Execute(context.Background(), []ExecuteItem{item})
+	if len(first) != 1 || !first[0].Created || first[0].TaskID == "" {
+		t.Fatalf("first execute should create: %+v", first)
+	}
+
+	// 第二次：created=false，TaskID 空，不重复入队
+	second := manager.Execute(context.Background(), []ExecuteItem{item})
+	if len(second) != 1 {
+		t.Fatalf("second execute result count = %d, want 1", len(second))
+	}
+	if second[0].Created {
+		t.Fatalf("second execute should not create: %+v", second)
+	}
+	if second[0].TaskID != "" {
+		t.Fatalf("second execute should not enqueue task: %+v", second)
+	}
+
+	// 任务总数仍为 1
+	tasks, err := pool.Store().List(context.Background())
+	if err != nil {
+		t.Fatalf("list tasks: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1 (idempotent)", len(tasks))
+	}
+}
+
+// TestPreviewAllRespectsDiscoverLimit 验证 PreviewAll 复用 DiscoverChannel 的 discover_limit 语义：
+// 仅保留前 DiscoverLimit 个「新」（!Exists）项，超限的截断（codex 审核 P1 回归测试）。
+// fakeListerMany 返回 4 个带前缀的视频（BV1-3,5），limit=2 时预览应只含 2 个新项。
+func TestPreviewAllRespectsDiscoverLimit(t *testing.T) {
+	database := newDiscoverTestDBWithLimit(t, 2)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, fakeListerMany{})
+
+	results, err := manager.PreviewAll(context.Background())
+	if err != nil {
+		t.Fatalf("preview all: %v", err)
+	}
+	// 4 个带前缀的视频都是新的（未建过场次），limit=2 应只保留前 2 个
+	newCount := 0
+	for _, r := range results {
+		if !r.Exists {
+			newCount++
+		}
+	}
+	if newCount != 2 {
+		t.Fatalf("new item count = %d, want 2 (discover_limit): %+v", newCount, results)
+	}
+	if len(results) != 2 {
+		t.Fatalf("total result count = %d, want 2 (truncated by limit): %+v", len(results), results)
+	}
+}
+
+// TestPreviewAllLimitBreaksAfterExistingItem 验证 limit 达限后该频道剩余项（含已存在项）全部 break，
+// 完全镜像 DiscoverChannel 语义（codex 审核 P2 第3轮：达限后紧跟的已存在项也应丢弃）。
+// 构造：先 Execute 建 BV1（Exists=true），fakeListerMany 顺序 BV1(存在),BV2(新),BV3(新),BV5(新)，limit=2。
+// 期望：BV1(不计数)→BV2(计数1)→BV3(计数2 达限)→BV5 break 丢弃。结果含 BV1,BV2,BV3，不含 BV5。
+func TestPreviewAllLimitBreaksAfterExistingItem(t *testing.T) {
+	database := newDiscoverTestDBWithLimit(t, 2)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, fakeListerMany{})
+
+	// 先让 BV1 已存在（建过 download 场次）
+	manager.Execute(context.Background(), []ExecuteItem{
+		{ChannelID: "huize", SourceID: "BV1", Title: "【直播回放】测试1", SourceURL: "https://www.bilibili.com/video/BV1"},
+	})
+
+	results, err := manager.PreviewAll(context.Background())
+	if err != nil {
+		t.Fatalf("preview all: %v", err)
+	}
+	// 收集返回的 source_id 集合
+	got := make(map[string]bool)
+	for _, r := range results {
+		got[r.SourceID] = true
+	}
+	// BV1(存在,不计数) + BV2(新,计数1) + BV3(新,计数2 达限) 应保留；BV5(新) 达限后 break 应丢弃
+	if !got["BV1"] || !got["BV2"] || !got["BV3"] {
+		t.Fatalf("should contain BV1,BV2,BV3: %+v", got)
+	}
+	if got["BV5"] {
+		t.Fatalf("BV5 should be truncated after limit reached: %+v", got)
+	}
+}

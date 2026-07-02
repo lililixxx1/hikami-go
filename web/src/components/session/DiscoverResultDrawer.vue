@@ -1,66 +1,285 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { useRouter } from 'vue-router'
-import type { DiscoverResult } from '@/api/types'
+/**
+ * 发现回放抽屉（两步式：预览 → 勾选 → 下载）。
+ *
+ * 三态：
+ *  - loading：打开后立即调 previewDiscoverSessions() 列出所有频道会发现什么（不建场次）
+ *  - preview：按频道分组展示，每项标 [新]/[已处理]，默认勾选「新」、不勾「已处理」
+ *  - done：执行 executeDiscoverSessions() 后展示结果（新建/跳过/错误）
+ *
+ * 自管理 preview/execute 调用；父组件只需 v-model:visible + @executed（刷新 sessions 列表）。
+ * 保留「全部下载」按钮调旧的 discoverSessions()（一键行为，等于改版前的流程）。
+ */
+import { computed, ref, watch } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import {
+  discoverSessions,
+  previewDiscoverSessions,
+  executeDiscoverSessions,
+} from '@/api/sessions'
+import type { DiscoverResult, DiscoverPickItem } from '@/api/types'
 
-const props = defineProps<{
-  visible: boolean
-  loading: boolean
-  result: DiscoverResult[] | null
-}>()
+type Phase = 'loading' | 'preview' | 'done'
 
+const props = defineProps<{ visible: boolean }>()
 const emit = defineEmits<{
   'update:visible': [value: boolean]
+  executed: []
 }>()
 
-const router = useRouter()
+const phase = ref<Phase>('loading')
+const previewItems = ref<DiscoverResult[]>([])
+const doneItems = ref<DiscoverResult[]>([])
+const selected = ref<Set<string>>(new Set()) // key = channel_id + '|' + source_id
+const executing = ref(false)
 
-const drawerVisible = computed({
-  get: () => props.visible,
-  set: (value: boolean) => emit('update:visible', value),
+// 预览阶段的错误项（频道级 yt-dlp 失败等），单独展示、不参与分组勾选。
+const previewErrors = computed(() => previewItems.value.filter((i) => Boolean(i.error)))
+
+// 可勾选的有效预览项（排除错误项和空 source_id——后者无法建场次）。
+const validPreviewItems = computed(() =>
+  previewItems.value.filter((i) => !i.error && i.channel_id && i.source_id),
+)
+
+// 按频道分组的预览结果（仅有效项）
+const grouped = computed(() => {
+  const map = new Map<string, DiscoverResult[]>()
+  for (const item of validPreviewItems.value) {
+    const list = map.get(item.channel_id) ?? []
+    list.push(item)
+    map.set(item.channel_id, list)
+  }
+  return Array.from(map.entries()).map(([channelId, items]) => ({ channelId, items }))
 })
 
-const items = computed(() => props.result ?? [])
-const createdItems = computed(() => items.value.filter((item) => item.created && !item.error))
-const skippedItems = computed(() => items.value.filter((item) => !item.created && !item.error))
-const errorItems = computed(() => items.value.filter((item) => Boolean(item.error)))
+const selectedCount = computed(() => selected.value.size)
 
-function openSession(sessionId: string): void {
-  if (!sessionId) return
-  drawerVisible.value = false
-  router.push(`/sessions/${sessionId}`)
+const doneStats = computed(() => {
+  const created = doneItems.value.filter((i) => i.created && !i.error).length
+  const skipped = doneItems.value.filter((i) => !i.created && !i.error).length
+  const error = doneItems.value.filter((i) => Boolean(i.error)).length
+  return { created, skipped, error }
+})
+
+function itemKey(channelId: string, sourceId: string): string {
+  return `${channelId}|${sourceId}`
+}
+
+function isSelected(item: DiscoverResult): boolean {
+  return selected.value.has(itemKey(item.channel_id, item.source_id))
+}
+
+function toggleItem(item: DiscoverResult, checked: boolean): void {
+  const key = itemKey(item.channel_id, item.source_id)
+  if (checked) selected.value.add(key)
+  else selected.value.delete(key)
+  // 触发响应式更新（Set 的 add/delete 不被 Vue 直接追踪）
+  selected.value = new Set(selected.value)
+}
+
+function toggleGroup(channelId: string, checked: boolean): void {
+  const group = grouped.value.find((g) => g.channelId === channelId)
+  if (!group) return
+  for (const item of group.items) {
+    const key = itemKey(item.channel_id, item.source_id)
+    if (checked) selected.value.add(key)
+    else selected.value.delete(key)
+  }
+  selected.value = new Set(selected.value)
+}
+
+function groupAllSelected(channelId: string): boolean {
+  const group = grouped.value.find((g) => g.channelId === channelId)
+  if (!group || group.items.length === 0) return false
+  return group.items.every((i) => selected.value.has(itemKey(i.channel_id, i.source_id)))
+}
+
+// 打开抽屉时触发预览
+watch(
+  () => props.visible,
+  async (visible) => {
+    if (!visible) return
+    phase.value = 'loading'
+    previewItems.value = []
+    selected.value = new Set()
+    try {
+      const result = await previewDiscoverSessions()
+      previewItems.value = result.items
+      // 默认勾选「新」（未处理的）项；排除错误项和空 source_id（无法建场次——codex 审核 P2）
+      const validNew = result.items.filter((i) => !i.error && !i.exists && i.channel_id && i.source_id)
+      for (const item of validNew) {
+        selected.value.add(itemKey(item.channel_id, item.source_id))
+      }
+      selected.value = new Set(selected.value)
+      phase.value = 'preview'
+      const errorCount = result.items.filter((i) => i.error).length
+      if (validNew.length > 0) {
+        ElMessage.info(`预览到 ${validNew.length} 条新回放，请勾选后下载`)
+      } else if (errorCount > 0) {
+        ElMessage.warning(`部分主播发现失败（${errorCount} 条错误），其余回放均已处理`)
+      } else {
+        ElMessage.info('未发现新回放（全部已处理）')
+      }
+    } finally {
+      // previewDiscoverSessions 失败由 client.ts 拦截器统一 toast；
+      // 这里只需确保 phase 不卡在 loading（出错时 items 为空，展示空态）
+      if (phase.value === 'loading') phase.value = 'preview'
+    }
+  },
+)
+
+async function handleExecuteSelected(): Promise<void> {
+  const picks: DiscoverPickItem[] = []
+  for (const item of previewItems.value) {
+    if (selected.value.has(itemKey(item.channel_id, item.source_id))) {
+      picks.push({
+        channel_id: item.channel_id,
+        source_id: item.source_id,
+        title: item.title,
+        source_url: item.source_url,
+      })
+    }
+  }
+  if (picks.length === 0) {
+    ElMessage.warning('请先勾选要下载的回放')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(`确定下载选中的 ${picks.length} 个回放？将自动开始下载。`, '下载确认', {
+      confirmButtonText: '下载',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+  } catch {
+    return // 用户取消
+  }
+  executing.value = true
+  try {
+    const result = await executeDiscoverSessions(picks)
+    doneItems.value = result.items
+    phase.value = 'done'
+    const created = result.items.filter((i) => i.created && !i.error).length
+    if (created > 0) ElMessage.success(`已开始下载 ${created} 个新回放`)
+    else ElMessage.info('选中项均已处理，无新下载')
+    emit('executed')
+  } finally {
+    executing.value = false
+  }
+}
+
+async function handleDownloadAll(): Promise<void> {
+  try {
+    await ElMessageBox.confirm('将立即下载所有新回放（不经过勾选），确定继续？', '全部下载', {
+      confirmButtonText: '全部下载',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+  } catch {
+    return
+  }
+  executing.value = true
+  try {
+    const result = await discoverSessions()
+    doneItems.value = result.items
+    phase.value = 'done'
+    const created = result.items.filter((i) => i.created && !i.error).length
+    if (created > 0) ElMessage.success(`已开始下载 ${created} 个新回放`)
+    else ElMessage.info('未发现新回放')
+    emit('executed')
+  } finally {
+    executing.value = false
+  }
+}
+
+function handleClose(value: boolean): void {
+  emit('update:visible', value)
 }
 </script>
 
 <template>
   <el-drawer
-    v-model="drawerVisible"
-    title="发现回放结果"
+    :model-value="visible"
     direction="rtl"
-    size="520px"
+    size="560px"
+    title="发现回放"
+    @update:model-value="handleClose"
   >
-    <div v-loading="loading" class="discover-drawer">
-      <div class="result-stats">
-        <div class="stat-item success">
-          <span>新建</span>
-          <strong>{{ createdItems.length }}</strong>
-        </div>
-        <div class="stat-item">
-          <span>跳过</span>
-          <strong>{{ skippedItems.length }}</strong>
-        </div>
-        <div class="stat-item danger">
-          <span>错误</span>
-          <strong>{{ errorItems.length }}</strong>
+    <!-- 顶部动作栏：预览态显示下载按钮 -->
+    <template v-if="phase === 'preview'">
+      <div class="toolbar-row">
+        <el-button type="primary" :loading="executing" :disabled="selectedCount === 0" @click="handleExecuteSelected">
+          下载选中 ({{ selectedCount }})
+        </el-button>
+        <el-button :loading="executing" @click="handleDownloadAll">全部下载</el-button>
+      </div>
+    </template>
+
+    <!-- loading 态 -->
+    <div v-if="phase === 'loading'" v-loading="true" class="discover-loading" />
+
+    <!-- 预览勾选态 -->
+    <div v-else-if="phase === 'preview'" class="discover-body">
+      <!-- 错误项（频道级 yt-dlp 失败等），单独展示、不可勾选 -->
+      <div v-if="previewErrors.length > 0" class="error-block">
+        <div class="error-block-title">发现失败的主播（{{ previewErrors.length }}）</div>
+        <div v-for="(item, idx) in previewErrors" :key="`err-${idx}`" class="error-row">
+          <span class="row-title">{{ item.channel_id || '-' }}</span>
+          <span class="row-error">{{ item.error }}</span>
         </div>
       </div>
 
-      <el-empty v-if="!loading && items.length === 0" description="暂无发现结果" />
+      <el-empty v-if="validPreviewItems.length === 0" description="未发现任何回放" />
 
-      <div v-else class="result-list">
+      <div v-for="group in grouped" :key="group.channelId" class="group-block">
+        <div class="group-header">
+          <el-checkbox
+            :model-value="groupAllSelected(group.channelId)"
+            @change="(v: boolean) => toggleGroup(group.channelId, v)"
+          >
+            <strong>{{ group.channelId }}</strong>
+            <span class="group-count">({{ group.items.length }})</span>
+          </el-checkbox>
+        </div>
+
         <div
-          v-for="item in items"
-          :key="`${item.channel_id}-${item.source_id}-${item.task_id}`"
+          v-for="item in group.items"
+          :key="`${item.channel_id}-${item.source_id}`"
+          class="preview-row"
+          :class="{ 'is-exists': item.exists }"
+        >
+          <el-checkbox
+            :model-value="isSelected(item)"
+            @change="(v: boolean) => toggleItem(item, v)"
+          >
+            <div class="row-title">{{ item.title || item.source_id }}</div>
+          </el-checkbox>
+          <el-tag v-if="item.exists" type="info" size="small">已处理</el-tag>
+          <el-tag v-else type="success" size="small">新</el-tag>
+        </div>
+      </div>
+    </div>
+
+    <!-- 执行结果态 -->
+    <div v-else class="discover-body">
+      <div class="result-stats">
+        <div class="stat-item success">
+          <span>新建</span>
+          <strong>{{ doneStats.created }}</strong>
+        </div>
+        <div class="stat-item">
+          <span>跳过</span>
+          <strong>{{ doneStats.skipped }}</strong>
+        </div>
+        <div class="stat-item danger">
+          <span>错误</span>
+          <strong>{{ doneStats.error }}</strong>
+        </div>
+      </div>
+
+      <div class="result-list">
+        <div
+          v-for="item in doneItems"
+          :key="`${item.channel_id}-${item.source_id}-${item.task_id ?? ''}`"
           class="result-row"
           :class="{ 'is-error': item.error, 'is-created': item.created && !item.error }"
         >
@@ -70,26 +289,12 @@ function openSession(sessionId: string): void {
             <el-tag v-else-if="item.created" type="success" size="small">新建</el-tag>
             <el-tag v-else type="info" size="small">跳过</el-tag>
           </div>
-
           <div class="row-fields">
             <span>主播：{{ item.channel_id || '-' }}</span>
             <span>来源：{{ item.source_id || '-' }}</span>
-            <span>
-              场次：
-              <el-button
-                v-if="item.session_id"
-                type="primary"
-                link
-                size="small"
-                @click="openSession(item.session_id)"
-              >
-                {{ item.session_id }}
-              </el-button>
-              <template v-else>-</template>
-            </span>
-            <span>任务：{{ item.task_id || '-' }}</span>
+            <span v-if="item.session_id">场次：{{ item.session_id }}</span>
+            <span v-if="item.task_id">任务：{{ item.task_id }}</span>
           </div>
-
           <div v-if="item.error" class="row-error">{{ item.error }}</div>
         </div>
       </div>
@@ -98,15 +303,88 @@ function openSession(sessionId: string): void {
 </template>
 
 <style scoped>
-.discover-drawer {
+.toolbar-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.discover-loading {
   min-height: 240px;
+}
+
+.discover-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.error-block {
+  border: 1px solid #fcd3d3;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fef0f0;
+}
+
+.error-block-title {
+  color: #f56c6c;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.error-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0;
+  border-top: 1px solid #fde2e2;
+}
+
+.error-row:first-of-type {
+  border-top: none;
+}
+
+.group-block {
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fff;
+}
+
+.group-header {
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.group-count {
+  color: #909399;
+  font-weight: normal;
+  margin-left: 4px;
+}
+
+.preview-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+}
+
+.preview-row.is-exists {
+  opacity: 0.7;
+}
+
+.preview-row .row-title {
+  color: #303133;
+  font-size: 13px;
+  word-break: break-word;
 }
 
 .result-stats {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
-  margin-bottom: 16px;
 }
 
 .stat-item {

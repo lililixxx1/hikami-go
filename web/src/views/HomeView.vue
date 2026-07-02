@@ -9,10 +9,10 @@ import { useChannelsStore } from '@/stores/channels'
 import { useRuntimeStore } from '@/stores/runtime'
 import { useLiveStatusStore } from '@/stores/liveStatus'
 import { useExpertMode } from '@/composables/useExpertMode'
+import { useDiscoverReplay } from '@/composables/useDiscoverReplay'
 import { usePolling } from '@/composables/usePolling'
 import { getFriendlySessionStatus } from '@/utils/friendlyStatus'
 import { checkAllLive, startRecord, stopRecord } from '@/api/live'
-import { discoverSessions } from '@/api/sessions'
 import { getDashboardStats } from '@/api/stats'
 import { cancelTask } from '@/api/tasks'
 import { formatDateTime } from '@/utils/format'
@@ -30,10 +30,8 @@ const liveStatusStore = useLiveStatusStore()
 const { isExpert } = useExpertMode()
 
 const checkingLive = ref(false)
-const discovering = ref(false)
 const cancellingTaskId = ref<string | null>(null)
-const discoverDrawerVisible = ref(false)
-const discoverResult = ref<import('@/api/types').DiscoverResult[] | null>(null)
+const { drawerVisible: discoverDrawerVisible, openDiscover: handleDiscoverReplay, onExecuted: onDiscoverExecuted } = useDiscoverReplay()
 const dashboard = ref<DashboardData | null>(null)
 
 const capabilities = computed(() => runtimeStore.status?.capabilities ?? null)
@@ -124,22 +122,6 @@ async function handleCheckLive() {
     ElMessage.success('检查完成')
   } finally {
     checkingLive.value = false
-  }
-}
-
-async function handleDiscoverReplay() {
-  discoverDrawerVisible.value = true
-  discovering.value = true
-  discoverResult.value = null
-  try {
-    const result = await discoverSessions()
-    discoverResult.value = result.items
-    const created = result.items.filter((i) => i.created && !i.error).length
-    if (created > 0) ElMessage.success(`发现 ${created} 条新回放`)
-    else ElMessage.info('未发现新回放')
-    await sessionsStore.fetchSessions()
-  } finally {
-    discovering.value = false
   }
 }
 
@@ -298,7 +280,7 @@ onMounted(async () => {
       <el-button type="primary" @click="goToStreamers">
         <el-icon><Plus /></el-icon> 添加主播
       </el-button>
-      <el-button :loading="discovering" @click="handleDiscoverReplay">
+      <el-button :loading="false" @click="handleDiscoverReplay">
         <el-icon><Search /></el-icon> 发现回放
       </el-button>
     </div>
@@ -386,8 +368,7 @@ onMounted(async () => {
 
   <DiscoverResultDrawer
     v-model:visible="discoverDrawerVisible"
-    :loading="discovering"
-    :result="discoverResult"
+    @executed="onDiscoverExecuted"
   />
 </template>
 

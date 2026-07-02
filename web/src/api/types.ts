@@ -264,12 +264,22 @@ export interface TaskProgressEvent {
 
 export interface DiscoverResult {
   channel_id: string
-  session_id: string
   source_id: string
   title: string
+  source_url?: string
+  session_id?: string
   created: boolean
-  task_id: string
-  error: string
+  task_id?: string
+  error?: string
+  exists?: boolean
+}
+
+// 前端从预览结果勾选后回传给 execute 端点的单项（不含 created/session_id/task_id，那些由后端返回）。
+export interface DiscoverPickItem {
+  channel_id: string
+  source_id: string
+  title: string
+  source_url?: string
 }
 
 // ---------- Generic ----------

@@ -291,6 +291,8 @@ func (s *Server) routes() {
 	p.POST("/api/live/:channel_id/record/stop", s.stopLiveRecord)
 
 	p.POST("/api/sessions/discover", s.discoverSessions)
+	p.POST("/api/sessions/discover/preview", s.discoverPreviewAll)
+	p.POST("/api/sessions/discover/execute", s.discoverExecute)
 	p.GET("/api/sessions", s.listSessions)
 	p.GET("/api/sessions/:sid", s.getSession)
 	p.DELETE("/api/sessions/failed", s.deleteFailedSessions)
@@ -994,6 +996,31 @@ func (s *Server) discoverSessions(ctx *gin.Context) {
 		writeError(ctx, err)
 		return
 	}
+	ctx.JSON(http.StatusAccepted, gin.H{"items": results})
+}
+
+// discoverPreviewAll 遍历所有频道预览回放（不建场次、不入队），供两步式发现的「第一步预览」。
+// 返回的每条 Result 带 Exists 标记（是否已建过 download 场次），前端据此标记「已处理」。
+func (s *Server) discoverPreviewAll(ctx *gin.Context) {
+	results, err := s.discoveries.PreviewAll(ctx.Request.Context())
+	if err != nil {
+		writeError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, gin.H{"items": results})
+}
+
+// discoverExecute 按前端勾选的 entry 列表建 download 场并入队下载任务，供两步式发现的「第二步执行」。
+// 不重跑 yt-dlp：复用预览阶段已拿到的 entry 信息。复用 CreateDownload 幂等性去重。
+func (s *Server) discoverExecute(ctx *gin.Context) {
+	var input struct {
+		Items []discover.ExecuteItem `json:"items"`
+	}
+	if err := ctx.ShouldBindJSON(&input); err != nil {
+		writeBadRequest(ctx, "invalid json body")
+		return
+	}
+	results := s.discoveries.Execute(ctx.Request.Context(), input.Items)
 	ctx.JSON(http.StatusAccepted, gin.H{"items": results})
 }
 
