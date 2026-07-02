@@ -126,8 +126,8 @@ defineExpose({ reload: fetchAccounts })
   align-items: center;
   gap: 12px;
   padding: 12px;
-  background: var(--el-fill-color-light);
-  border-radius: 6px;
+  background: #fafafa;
+  border-radius: 8px;
 }
 
 .account-info {

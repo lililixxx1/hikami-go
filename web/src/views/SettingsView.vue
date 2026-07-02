@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import '@/features/settings/components/settings-cards.css'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Refresh, CircleCheck, CircleClose, ArrowDown, ArrowRight } from '@element-plus/icons-vue'
+import { Refresh, CircleCheck, CircleClose } from '@element-plus/icons-vue'
 import { useRoute } from 'vue-router'
 import { useRuntimeStore } from '@/stores/runtime'
 import { useExpertMode } from '@/composables/useExpertMode'
-import { listSecrets, updateSecret } from '@/api/settings'
-import type { Capabilities, SecretEntry, ToolStatus } from '@/api/types'
+import type { Capabilities, ToolStatus } from '@/api/types'
 import GlossaryEditor from '@/components/channel/GlossaryEditor.vue'
 import RecapTemplateEditor from '@/components/channel/RecapTemplateEditor.vue'
 import PublishSettingsCard from '@/features/settings/components/PublishSettingsCard.vue'
@@ -23,24 +22,12 @@ import ConfigBackupCard from '@/features/settings/components/ConfigBackupCard.vu
 const route = useRoute()
 const runtimeStore = useRuntimeStore()
 const { isExpert } = useExpertMode()
-// Secrets
-const secrets = ref<SecretEntry[]>([])
-const secretsLoading = ref(false)
-const secretDialogVisible = ref(false)
-const editingKey = ref('')
-const editingValue = ref('')
-const secretSaving = ref(false)
 
-// Advanced sections
-const showAdvanced = ref(false)
+// 顶层折叠分组(默认展开 overview + pipeline,收起 accounts + advanced)
+// name 加 grp- 前缀避免与子卡片内部 collapse-item 常用的 name="advanced" 混淆
+const activeGroups = ref<string[]>(['grp-overview', 'grp-pipeline'])
 
-const keyMeta: Record<string, { label: string; description: string; helpUrl: string }> = {
-  // ASR 密钥(DASHSCOPE_API_KEY)和回顾密钥(AI_API_KEY)已迁移到各自的设置卡片:
-  // DashScopeSettingsCard / RecapSettingsCard,含完整字段配置与密钥清除。此处仅保留
-  // 其他可能存在的通用密钥元信息(secrets store 中的其余 key 仍在此列表展示)。
-}
-
-type CapActionType = 'secret' | 'section' | 'hint'
+type CapActionType = 'section' | 'hint'
 
 const toolsList = computed(() => {
   if (!runtimeStore.status?.tools) return []
@@ -49,7 +36,6 @@ const toolsList = computed(() => {
 
 const capabilities = computed(() => runtimeStore.status?.capabilities ?? null)
 const configStatus = computed(() => runtimeStore.status?.config_status ?? null)
-const dashScopeSecretKey = computed(() => configStatus.value?.dashscope_key_env || 'DASHSCOPE_API_KEY')
 
 // 配置卡子组件引用(供配置导入后 reload)
 const publishCard = ref<{ reload: () => Promise<void> } | null>(null)
@@ -60,64 +46,62 @@ const webdavCard = ref<{ reload: () => Promise<void> } | null>(null)
 const archiveCard = ref<{ reload: () => Promise<void> } | null>(null)
 const biliAccountsCard = ref<{ reload: () => Promise<void> } | null>(null)
 
-// 子配置卡保存后的统一处理:重拉 secrets,使顶部"API 密钥"卡片同步刷新
-// (DashScope/Recap 卡片改了密钥后,通用密钥列表的 set/masked_value 才会更新)。
+// 子配置卡保存后重拉 runtime,使总览卡的能力状态同步刷新
 function onConfigSaved() {
-  fetchSecrets()
+  runtimeStore.fetchRuntime(true)
 }
 
-const capItems = computed(() => {
+// 统一总览项(合并原"配置进度"+"系统状态")。每项含完成度 + 能力红绿灯 + 跳转动作。
+const overviewItems = computed(() => {
   const caps = capabilities.value
+  const cs = configStatus.value
   if (!caps) return []
   return [
     {
-      key: 'asr_submit' as const,
+      key: 'asr' as const,
       label: 'ASR 转写',
+      done: !!cs?.dashscope_key_set,
       ok: caps.asr_submit,
       reason: capReason('asr_submit', caps),
-      // 密钥已配但能力仍红，根因通常是缺临时音频后端/yt-dlp，按钮指向后端配置指引而非密钥
-      ...(configStatus.value?.dashscope_key_set
+      // 密钥已配但能力仍红,根因通常是缺临时音频后端/yt-dlp,指向 hint 而非跳卡片
+      ...(cs?.dashscope_key_set
         ? { actionLabel: '配置 ASR 后端', actionType: 'hint' as CapActionType, actionTarget: 'asr_backend' }
-        : { actionLabel: '配置密钥', actionType: 'secret' as CapActionType, actionTarget: dashScopeSecretKey.value }),
+        : { actionLabel: '配置', actionType: 'section' as CapActionType, actionTarget: 'dashscope' }),
     },
-    { key: 'recap_generate' as const, label: '回顾 AI', ok: caps.recap_generate, reason: capReason('recap_generate', caps), actionLabel: '配置回顾', actionType: 'section' as CapActionType, actionTarget: 'recap' },
-    { key: 'webdav_upload' as const, label: 'WebDAV 上传', ok: caps.webdav_upload, reason: capReason('webdav_upload', caps), actionLabel: '配置 WebDAV', actionType: 'section' as CapActionType, actionTarget: 'webdav' },
-    { key: 'publish_opus' as const, label: 'B站发布', ok: caps.publish_opus, reason: capReason('publish_opus', caps), actionLabel: '启用发布', actionType: 'section' as CapActionType, actionTarget: 'publish' },
+    {
+      key: 'recap' as const,
+      label: '回顾 AI',
+      done: !!caps.recap_generate,
+      ok: caps.recap_generate,
+      reason: capReason('recap_generate', caps),
+      actionLabel: '配置',
+      actionType: 'section' as CapActionType,
+      actionTarget: 'recap',
+    },
+    {
+      key: 'webdav' as const,
+      label: 'WebDAV 上传',
+      done: !!cs?.webdav_configured,
+      ok: caps.webdav_upload,
+      reason: capReason('webdav_upload', caps),
+      actionLabel: '配置',
+      actionType: 'section' as CapActionType,
+      actionTarget: 'webdav',
+    },
+    {
+      key: 'publish' as const,
+      label: 'B站发布',
+      done: !!cs?.publish_enabled,
+      ok: caps.publish_opus,
+      reason: capReason('publish_opus', caps),
+      actionLabel: '配置',
+      actionType: 'section' as CapActionType,
+      actionTarget: 'publish',
+    },
   ]
 })
 
-const setupItems = computed(() => [
-  {
-    key: 'dashscope',
-    label: 'ASR 转写',
-    done: !!configStatus.value?.dashscope_key_set,
-    actionLabel: '配置',
-    action: () => scrollToSection('dashscope'),
-  },
-  {
-    key: 'recap',
-    label: '回顾 AI',
-    done: !!capabilities.value?.recap_generate,
-    actionLabel: '检查',
-    action: () => scrollToSection('recap'),
-  },
-  {
-    key: 'webdav',
-    label: 'WebDAV 上传',
-    done: !!capabilities.value?.webdav_upload,
-    actionLabel: '配置',
-    action: () => scrollToSection('webdav'),
-  },
-  {
-    key: 'publish',
-    label: 'B站发布',
-    done: !!configStatus.value?.publish_enabled,
-    actionLabel: '设置',
-    action: () => scrollToSection('publish'),
-  },
-])
-
-const setupDoneCount = computed(() => setupItems.value.filter(item => item.done).length)
+const overviewDoneCount = computed(() => overviewItems.value.filter(i => i.done).length)
 
 function capReason(key: keyof Capabilities, caps: Capabilities): string {
   if (caps[key]) return ''
@@ -129,104 +113,52 @@ function capReason(key: keyof Capabilities, caps: Capabilities): string {
 }
 
 onMounted(async () => {
-  // publish/recap/webdav/bili/admin 各自在子组件 onMounted 加载;壳只负责 runtime/secrets
-  await Promise.all([
-    runtimeStore.fetchRuntime(),
-    fetchSecrets(),
-  ])
+  // 各配置卡在子组件 onMounted 自加载;壳只负责 runtime
+  await runtimeStore.fetchRuntime()
 })
 
-// Handle /health redirect -> /settings?section=runtime
+// Handle /health redirect -> ?section=runtime:系统状态已并入 overview 分组,展开它即可
 watch(
   () => route.query.section,
   (section) => {
-    if (section === 'runtime') {
-      showAdvanced.value = true
+    if (section === 'runtime' && !activeGroups.value.includes('grp-overview')) {
+      activeGroups.value = [...activeGroups.value, 'grp-overview']
     }
   },
   { immediate: true },
 )
 
-// Secrets
-async function fetchSecrets() {
-  secretsLoading.value = true
-  try {
-    const resp = await listSecrets()
-    secrets.value = resp.items ?? []
-  } finally {
-    secretsLoading.value = false
+// scroll 目标 → 所属折叠分组(用于跨分组跳转前自动展开)
+const groupOf: Record<string, string> = {
+  dashscope: 'grp-pipeline',
+  'asr-s3': 'grp-pipeline',
+  recap: 'grp-pipeline',
+  webdav: 'grp-pipeline',
+  publish: 'grp-pipeline',
+  archive: 'grp-pipeline',
+}
+
+async function scrollToSection(section: string) {
+  const group = groupOf[section]
+  if (group && !activeGroups.value.includes(group)) {
+    activeGroups.value = [...activeGroups.value, group]
+    await nextTick()
+    // el-collapse 展开有 ~300ms 高度过渡,nextTick 只等 DOM patch 不等 transitionend;
+    // 不等的话 scrollIntoView 在目标高度 0→auto 过渡中会定位偏。
+    await new Promise(r => setTimeout(r, 320))
   }
+  document.querySelector(`[data-section="${section}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
-function openEdit(key: string) {
-  editingKey.value = key
-  editingValue.value = ''
-  secretDialogVisible.value = true
-}
-
-async function saveSecret() {
-  if (!editingValue.value.trim()) { ElMessage.warning('请输入密钥'); return }
-  secretSaving.value = true
-  try {
-    await updateSecret(editingKey.value, editingValue.value.trim())
-    ElMessage.success('已保存')
-    secretDialogVisible.value = false
-    await fetchSecrets()
-    await runtimeStore.fetchRuntime(true)
-  } finally {
-    secretSaving.value = false
-  }
-}
-
-async function clearKey(item: SecretEntry) {
-  try {
-    await ElMessageBox.confirm(`确认清除 ${label(item.key)}？`, '清除', {
-      confirmButtonText: '清除', cancelButtonText: '取消', type: 'warning',
-    })
-  } catch { return }
-  await updateSecret(item.key, '')
-  ElMessage.success('已清除')
-  await fetchSecrets()
-  await runtimeStore.fetchRuntime(true)
-}
-
-function label(key: string): string {
-  return keyMeta[key]?.label || key
-}
-
-function description(key: string): string {
-  return keyMeta[key]?.description || ''
-}
-
-function helpUrl(key: string): string {
-  return keyMeta[key]?.helpUrl || ''
-}
-
-function openHelp(url: string) {
-  if (!url) return
-  window.open(url, '_blank', 'noopener,noreferrer')
-}
-
-function scrollToSection(section: string) {
-  const target = document.querySelector(`[data-section="${section}"]`)
-  target?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-}
-
-function handleCapAction(item: { actionType: CapActionType; actionTarget: string }) {
-  if (item.actionType === 'secret') {
-    openEdit(item.actionTarget)
-    return
-  }
+function handleOverviewAction(item: { actionType: CapActionType; actionTarget: string }) {
   if (item.actionType === 'hint') {
-    if (item.actionTarget === 'asr_backend') {
-      showASRBackendHint()
-    }
+    if (item.actionTarget === 'asr_backend') showASRBackendHint()
     return
   }
   scrollToSection(item.actionTarget)
 }
 
-// ASR 转写能力红但密钥已配时，提示用户需配置临时音频发布后端（DashScope 通过 URL 拉取音频）+ yt-dlp
+// ASR 转写能力红但密钥已配时,提示用户需配置临时音频发布后端(DashScope 通过 URL 拉取音频)+ yt-dlp
 function showASRBackendHint() {
   const reason = capabilities.value?.reason || ''
   const needYtDlp = reason.includes('yt-dlp')
@@ -241,10 +173,9 @@ function copyInstallHint(hint: string) {
   navigator.clipboard.writeText(hint).then(() => ElMessage.success('已复制安装命令')).catch(() => ElMessage.error('复制失败'))
 }
 
-// 配置导入后(ConfigBackupCard emit imported)重拉所有配置
+// 配置导入后(ConfigBackupCard emit imported)重拉 runtime + 各配置卡
 async function onConfigImported() {
   await Promise.all([
-    fetchSecrets(),
     runtimeStore.fetchRuntime(true),
     publishCard.value?.reload(),
     dashScopeCard.value?.reload(),
@@ -266,193 +197,137 @@ async function onConfigImported() {
       </el-button>
     </div>
 
-    <div class="settings-card setup-card">
-      <div class="card-header-row">
-        <h3>配置进度</h3>
-        <el-tag size="small" :type="setupDoneCount === setupItems.length ? 'success' : 'warning'">
-          {{ setupDoneCount }}/{{ setupItems.length }}
-        </el-tag>
-      </div>
-      <div class="setup-list">
-        <div v-for="item in setupItems" :key="item.key" class="setup-item" :class="{ done: item.done }">
-          <el-icon :size="16"><CircleCheck v-if="item.done" /><CircleClose v-else /></el-icon>
-          <span>{{ item.label }}</span>
-          <el-button v-if="!item.done" link type="primary" size="small" @click="item.action">
-            {{ item.actionLabel }}
-          </el-button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Card 1: System Status -->
-    <div class="settings-card">
-      <h3>系统状态</h3>
-      <div class="cap-grid">
-        <div v-for="item in capItems" :key="item.key" class="cap-item" :class="item.ok ? 'ok' : 'off'">
-          <el-icon :size="18"><CircleCheck v-if="item.ok" /><CircleClose v-else /></el-icon>
-          <div class="cap-text">
-            <strong>{{ item.label }}</strong>
-            <span>{{ item.ok ? '可用' : item.reason || '不可用' }}</span>
+    <el-collapse v-model="activeGroups" class="settings-groups">
+      <!-- 分组 1: 总览(默认展开) -->
+      <el-collapse-item name="grp-overview" title="总览">
+        <div class="settings-card overview-card">
+          <div class="card-header-row">
+            <h3>配置进度</h3>
+            <el-tag size="small" :type="overviewDoneCount === overviewItems.length ? 'success' : 'warning'">
+              {{ overviewDoneCount }}/{{ overviewItems.length }}
+            </el-tag>
           </div>
-          <el-button v-if="!item.ok" link type="danger" size="small" @click="handleCapAction(item)">
-            {{ item.actionLabel }}
-          </el-button>
-        </div>
-      </div>
-      <div v-if="runtimeStore.status?.disk_usage?.length" class="disk-info">
-        <span v-for="d in runtimeStore.status.disk_usage" :key="d.path" class="disk-item">
-          {{ d.path }}: {{ d.used_percent.toFixed(0) }}%
-        </span>
-      </div>
-    </div>
 
-    <!-- Card 2: API Keys -->
-    <div class="settings-card">
-      <h3>API 密钥</h3>
-      <div v-loading="secretsLoading" class="key-list">
-        <div v-for="item in secrets" :key="item.key" class="key-row">
-          <div class="key-info">
-            <div class="key-title">
-              <strong>{{ label(item.key) }}</strong>
-              <span v-if="item.set" class="key-masked">{{ item.masked_value }}</span>
-              <el-tag v-else type="danger" size="small">未配置</el-tag>
-            </div>
-            <span v-if="description(item.key)" class="key-description">{{ description(item.key) }}</span>
-          </div>
-          <div class="key-actions">
-            <el-button v-if="helpUrl(item.key)" size="small" link type="primary" @click="openHelp(helpUrl(item.key))">获取</el-button>
-            <el-button size="small" @click="openEdit(item.key)">{{ item.set ? '更新' : '配置' }}</el-button>
-            <el-button v-if="item.set" size="small" type="danger" plain @click="clearKey(item)">清除</el-button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <BiliAccountsCard ref="biliAccountsCard" />
-
-    <ConfigBackupCard @imported="onConfigImported" />
-    <PublishSettingsCard ref="publishCard" :is-expert="isExpert" @saved="onConfigSaved" />
-    <DashScopeSettingsCard ref="dashScopeCard" @saved="onConfigSaved" />
-    <ASRS3SettingsCard ref="asrS3Card" @saved="onConfigSaved" />
-    <RecapSettingsCard
-      ref="recapCard"
-      @saved="onConfigSaved"
-    />
-    <WebDAVSettingsCard ref="webdavCard" @saved="onConfigSaved" />
-    <ArchiveSettingsCard ref="archiveCard" :is-expert="isExpert" @saved="onConfigSaved" />
-    <AdminTokenCard />
-
-    <!-- Advanced (collapsed) -->
-    <div class="advanced-toggle" @click="showAdvanced = !showAdvanced">
-      <el-icon><component :is="showAdvanced ? ArrowDown : ArrowRight" /></el-icon>
-      <span>高级设置</span>
-    </div>
-
-    <template v-if="showAdvanced">
-      <div class="settings-card">
-        <h3>全局术语表</h3>
-        <GlossaryEditor scope="global" />
-      </div>
-      <div class="settings-card">
-        <h3>回顾模板</h3>
-        <RecapTemplateEditor scope="global" />
-      </div>
-    </template>
-
-    <!-- Expert: tools & config -->
-    <template v-if="isExpert">
-      <div class="settings-card">
-        <h3>外部工具</h3>
-        <el-table :data="toolsList" size="small" stripe>
-          <el-table-column prop="name" label="工具" width="140" />
-          <el-table-column prop="path" label="路径" min-width="200" show-overflow-tooltip />
-          <el-table-column label="状态" width="100">
-            <template #default="{ row }">
-              <el-tag :type="row.available ? 'success' : 'danger'" size="small">
-                {{ row.available ? '可用' : '缺失' }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column v-if="toolsList.some((t) => t.install_hint)" label="安装提示" min-width="220">
-            <template #default="{ row }">
-              <div v-if="!row.available && row.install_hint" class="install-hint">
-                <el-text type="info" size="small" style="font-family: monospace">
-                  {{ row.install_hint }}
-                </el-text>
-                <el-button link size="small" type="primary" @click="copyInstallHint(row.install_hint)">
-                  复制
-                </el-button>
+          <div class="cap-grid">
+            <div v-for="item in overviewItems" :key="item.key" class="cap-item" :class="item.ok ? 'ok' : 'off'">
+              <el-icon :size="18"><CircleCheck v-if="item.ok" /><CircleClose v-else /></el-icon>
+              <div class="cap-text">
+                <strong>{{ item.label }}</strong>
+                <span>{{ item.ok ? '可用' : item.reason || '不可用' }}</span>
               </div>
-            </template>
-          </el-table-column>
-        </el-table>
-      </div>
+              <el-button v-if="!item.ok" link :type="item.ok ? 'primary' : 'danger'" size="small" @click="handleOverviewAction(item)">
+                {{ item.actionLabel }}
+              </el-button>
+            </div>
+          </div>
 
-      <div class="settings-card">
-        <h3>配置状态</h3>
-        <el-descriptions :column="2" border size="small">
-          <el-descriptions-item label="DashScope">
-            <el-tag :type="configStatus?.dashscope_key_set ? 'success' : 'danger'" size="small">
-              {{ configStatus?.dashscope_key_set ? '已配置' : '未配置' }}
-            </el-tag>
-          </el-descriptions-item>
-          <el-descriptions-item label="回顾 Provider">
-            {{ configStatus?.recap_provider || '-' }}
-          </el-descriptions-item>
-          <el-descriptions-item label="AI Key">
-            <el-tag :type="configStatus?.recap_key_set ? 'success' : 'danger'" size="small">
-              {{ configStatus?.recap_key_set ? '已配置' : '未配置' }}
-            </el-tag>
-          </el-descriptions-item>
-          <el-descriptions-item label="WebDAV">
-            <el-tag :type="configStatus?.webdav_configured ? 'success' : 'danger'" size="small">
-              {{ configStatus?.webdav_configured ? '已配置' : '未配置' }}
-            </el-tag>
-          </el-descriptions-item>
-        </el-descriptions>
-      </div>
-    </template>
+          <div v-if="runtimeStore.status?.disk_usage?.length" class="disk-info">
+            <span v-for="d in runtimeStore.status.disk_usage" :key="d.path" class="disk-item">
+              {{ d.path }}: {{ d.used_percent.toFixed(0) }}%
+            </span>
+          </div>
 
-    <!-- Secret edit dialog -->
-    <el-dialog v-model="secretDialogVisible" :title="`编辑 ${label(editingKey)}`" width="440px">
-      <el-input v-model="editingValue" type="textarea" :rows="3" placeholder="输入 API Key" show-password />
-      <template #footer>
-        <el-button @click="secretDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="secretSaving" @click="saveSecret">保存</el-button>
-      </template>
-    </el-dialog>
+          <!-- 专家段:仍门控,不泄露给非专家 -->
+          <template v-if="isExpert">
+            <el-divider content-position="left" class="expert-divider">配置状态</el-divider>
+            <el-descriptions :column="2" border size="small">
+              <el-descriptions-item label="DashScope">
+                <el-tag :type="configStatus?.dashscope_key_set ? 'success' : 'danger'" size="small">
+                  {{ configStatus?.dashscope_key_set ? '已配置' : '未配置' }}
+                </el-tag>
+              </el-descriptions-item>
+              <el-descriptions-item label="回顾 Provider">
+                {{ configStatus?.recap_provider || '-' }}
+              </el-descriptions-item>
+              <el-descriptions-item label="AI Key">
+                <el-tag :type="configStatus?.recap_key_set ? 'success' : 'danger'" size="small">
+                  {{ configStatus?.recap_key_set ? '已配置' : '未配置' }}
+                </el-tag>
+              </el-descriptions-item>
+              <el-descriptions-item label="WebDAV">
+                <el-tag :type="configStatus?.webdav_configured ? 'success' : 'danger'" size="small">
+                  {{ configStatus?.webdav_configured ? '已配置' : '未配置' }}
+                </el-tag>
+              </el-descriptions-item>
+            </el-descriptions>
+          </template>
+        </div>
+      </el-collapse-item>
+
+      <!-- 分组 2: 流水线配置(默认展开) -->
+      <el-collapse-item name="grp-pipeline" title="流水线配置">
+        <DashScopeSettingsCard ref="dashScopeCard" @saved="onConfigSaved" />
+        <ASRS3SettingsCard ref="asrS3Card" @saved="onConfigSaved" />
+        <RecapSettingsCard ref="recapCard" @saved="onConfigSaved" />
+        <WebDAVSettingsCard ref="webdavCard" @saved="onConfigSaved" />
+        <PublishSettingsCard ref="publishCard" :is-expert="isExpert" @saved="onConfigSaved" />
+        <ArchiveSettingsCard ref="archiveCard" :is-expert="isExpert" @saved="onConfigSaved" />
+      </el-collapse-item>
+
+      <!-- 分组 3: 账号与备份(默认收起) -->
+      <el-collapse-item name="grp-accounts" title="账号与备份">
+        <BiliAccountsCard ref="biliAccountsCard" />
+        <AdminTokenCard />
+        <ConfigBackupCard @imported="onConfigImported" />
+      </el-collapse-item>
+
+      <!-- 分组 4: 高级(默认收起) -->
+      <el-collapse-item name="grp-advanced" title="高级设置">
+        <div class="settings-card">
+          <h3>全局术语表</h3>
+          <GlossaryEditor scope="global" />
+        </div>
+        <div class="settings-card">
+          <h3>回顾模板</h3>
+          <RecapTemplateEditor scope="global" />
+        </div>
+
+        <!-- Expert: tools -->
+        <template v-if="isExpert">
+          <div class="settings-card">
+            <h3>外部工具</h3>
+            <el-table :data="toolsList" size="small" stripe>
+              <el-table-column prop="name" label="工具" width="140" />
+              <el-table-column prop="path" label="路径" min-width="200" show-overflow-tooltip />
+              <el-table-column label="状态" width="100">
+                <template #default="{ row }">
+                  <el-tag :type="row.available ? 'success' : 'danger'" size="small">
+                    {{ row.available ? '可用' : '缺失' }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column v-if="toolsList.some((t) => t.install_hint)" label="安装提示" min-width="220">
+                <template #default="{ row }">
+                  <div v-if="!row.available && row.install_hint" class="install-hint">
+                    <el-text type="info" size="small" style="font-family: monospace">
+                      {{ row.install_hint }}
+                    </el-text>
+                    <el-button link size="small" type="primary" @click="copyInstallHint(row.install_hint)">
+                      复制
+                    </el-button>
+                  </div>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+        </template>
+      </el-collapse-item>
+    </el-collapse>
   </div>
 </template>
 
 <style scoped>
-/* 高级设置折叠入口(壳内专属,非共享) */
-.advanced-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 10px 0;
-  cursor: pointer;
-  color: #909399;
-  font-size: 14px;
-  user-select: none;
-}
-
-.advanced-toggle:hover {
-  color: #409eff;
-}
-
 .settings-page {
   padding: 24px;
-  max-width: 800px;
+  max-width: 960px;
   margin: 0 auto;
-  display: grid;
-  gap: 16px;
 }
 
 .page-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  margin-bottom: 8px;
 }
 
 .page-header h2 {
@@ -461,37 +336,39 @@ async function onConfigImported() {
   color: #303133;
 }
 
-/* Setup checklist */
-.setup-list {
+/* 顶层折叠分组容器 */
+.settings-groups {
+  border-top: none;
+  border-bottom: none;
+}
+
+/* 分组项之间留白 */
+.settings-groups :deep(.el-collapse-item) {
+  margin-bottom: 8px;
+}
+
+/* 分组标题:比卡片内 collapse 更醒目 */
+.settings-groups :deep(.el-collapse-item__header) {
+  font-size: 15px;
+  font-weight: 600;
+  color: #303133;
+  height: 44px;
+  line-height: 44px;
+  padding: 0 4px;
+}
+
+.settings-groups :deep(.el-collapse-item__wrap) {
+  background: transparent;
+}
+
+/* 分组内容区:卡片之间纵向间距 */
+.settings-groups :deep(.el-collapse-item__content) {
+  padding: 12px 4px 8px;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+  gap: 16px;
 }
 
-.setup-item {
-  min-height: 36px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid #f1f3f5;
-  border-radius: 8px;
-  color: #909399;
-  background: #fafafa;
-}
-
-.setup-item.done {
-  color: #67c23a;
-  background: #f0f9eb;
-}
-
-.setup-item span {
-  min-width: 0;
-  flex: 1;
-  font-size: 13px;
-}
-
-/* Capability grid */
+/* Capability grid(总览卡内) */
 .cap-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -531,191 +408,29 @@ async function onConfigImported() {
   color: #909399;
 }
 
-/* Keys */
-.key-list {
-  display: grid;
-  gap: 12px;
+.expert-divider {
+  margin: 16px 0 12px;
 }
 
-.key-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 0;
-  border-bottom: 1px solid #f0f0f0;
-}
-
-.key-row:last-child { border-bottom: none; }
-
-.key-info {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.key-title {
+.install-hint {
   display: flex;
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.key-info strong {
-  font-size: 14px;
-}
-
-.key-description {
-  font-size: 12px;
-  line-height: 1.5;
-  color: #8a94a6;
-}
-
-.key-masked {
-  font-size: 13px;
-  color: #909399;
-  font-family: monospace;
-}
-
-.key-actions {
-  display: flex;
   gap: 8px;
-  align-items: center;
-  flex-shrink: 0;
 }
-
-/* Bili accounts */
-.empty-hint {
-  text-align: center;
-  color: #909399;
-  font-size: 14px;
-  padding: 20px 0;
-}
-
-.account-list {
-  display: grid;
-  gap: 12px;
-}
-
-.account-card {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 16px;
-  border: 1px solid #ebeef5;
-  border-radius: 8px;
-  gap: 16px;
-}
-
-.account-info {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.account-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: #303133;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-.account-uid {
-  font-size: 12px;
-  color: #909399;
-  font-family: monospace;
-}
-
-.account-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-shrink: 0;
-}
-
-/* Column-style form (B站专栏设置风格) */
 
 @media (max-width: 600px) {
   .settings-page {
     padding: 16px;
   }
 
-  .card-header-row {
+  .page-header {
     flex-direction: column;
     align-items: flex-start;
     gap: 10px;
-  }
-
-  .setup-list {
-    grid-template-columns: 1fr;
   }
 
   .cap-grid {
     grid-template-columns: 1fr;
-  }
-
-  .form-row {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .account-card {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .account-actions {
-    width: 100%;
-    justify-content: flex-start;
-    flex-wrap: wrap;
-  }
-
-  .key-row {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 10px;
-  }
-
-  .key-actions {
-    width: 100%;
-    justify-content: flex-start;
-    flex-wrap: wrap;
-  }
-
-  .publish-mode-control {
-    width: 100%;
-    align-items: flex-start;
-  }
-
-  .collapsed-settings {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .column-row {
-    grid-template-columns: 1fr;
-    gap: 6px;
-  }
-
-  .column-label {
-    line-height: 1.4;
-  }
-
-  .compact-control,
-  .compact-number-control {
-    max-width: none;
-    width: 100%;
-  }
-
-  .column-actions {
-    justify-content: stretch;
-  }
-
-  .column-actions .el-button {
-    flex: 1;
   }
 }
 </style>
