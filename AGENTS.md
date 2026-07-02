@@ -142,9 +142,9 @@ graph LR
 
 - `api/` — 类型化 HTTP 客户端,**唯一**与后端通信处(新包装器不得含 UI 副作用)。
 - `stores/` — Pinia 实体缓存,`loaded`/`byId`/`ensureLoaded()`(inflight 去重)+ `getByIdAfterLoad(id)`。当前 5 个:`channels`、`sessions`、`tasks`、`liveStatus`、`runtime`(运行时状态/能力)。
-- `composables/` — 跨域复用 hooks(共 6 个):`useAdminToken`、`useExpertMode`、`usePolling`、`useWebSocket`、`useAppRefreshCoordinator`(WebSocket + 降级轮询 + 终态会话刷新的唯一拥有者)、`useRecapModels`(按厂商分组的推荐回顾模型下拉,全局/主播级复用)。
+- `composables/` — 跨域复用 hooks(共 7 个):`useAdminToken`、`useExpertMode`、`usePolling`、`useWebSocket`、`useAppRefreshCoordinator`(WebSocket + 降级轮询 + 终态会话刷新的唯一拥有者)、`useRecapModels`(按厂商分组的推荐回顾模型下拉,全局/主播级复用)、`useDiscoverReplay`(发现回放抽屉可见性 + 执行后刷新,RecapsView/HomeView 共用)。
 - `features/` — 按业务域组织(本次重构核心):
-  - `features/recaps/sessionActions.ts` — 两个回顾页入口(行 vs 抽屉)的显式动作矩阵(`UIActionName` 8 个动作,区别于生命周期的 `SessionActionName`);覆盖测试 `sessionActions.test.ts`。
+  - `features/recaps/sessionActions.ts` — 两个回顾页入口(行 vs 抽屉)的显式动作矩阵(`UIActionName` 8 个动作,区别于生命周期的 `SessionActionName`);`isReplaySource` 对回放类(download/import)隐藏 publish/edit/remove(归档 upload 保留);覆盖测试 `sessionActions.test.ts`。
   - `features/recaps/components/`、`features/settings/components/`、`features/channel/`、`features/onboarding/` — 拆分后的子组件与自管理 hooks。
 - `components/` — 共享/展示组件;`components/shared/` **不得**自取 store。
 - `views/` — 薄路由壳:数据加载分发、store 编排、动作处理;业务 UI 委托给 `features/`。
@@ -206,6 +206,7 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
 
 ## 变更记录
 
+- 2026-07-02(四):`/init-project` 增量更新(跟随 `83ef024` 发现回放两步式 + `e9cb624` 回放类不自动发布)。① `composables/` 计数 6→7(新增 `useDiscoverReplay`,发现回放抽屉可见性 + 执行后刷新);`features/recaps/sessionActions.ts` 补 `isReplaySource` 说明(回放类隐藏 publish/edit/remove)。② 同步更新 5 处模块文档:`internal/discover/CLAUDE.md`(新增 `PreviewAll`/`Execute`/`ExecuteItem`/`Result.Exists`/`annotateExists` + 2 端点,测试 5→10)、`internal/handler/CLAUDE.md`(+2 路由)、`cmd/hikami/CLAUDE.md`(recap→publish 回调按 source_type 拦截回放类)、`web/CLAUDE.md`(录播/回放子 tab + 两步式抽屉,Vitest 90→96)、`CLAUDE-detail/api-routes.md`(+2 路由)。③ 根 `CLAUDE.md` 精简模块索引同步 discover(测试 5→10)/web(测试 90→96)两行 + 新增本轮 changelog。28 个模块级 CLAUDE.md 面包屑齐全,本轮无新增模块。
 - 2026-07-01(二):`/init-project` 增量更新。**新增 Mermaid 模块依赖概览图**(本节"模块依赖概览",运行时自包含、无需跳转 CLAUDE.md);后端"支撑"组补 `runtimeconfig`(全局运行时配置覆盖持久化,与 secrets 共享 `*sql.Tx`)。配合新增的 `internal/runtimeconfig/CLAUDE.md`(26 个 internal 模块 + `cmd/hikami` + `web` 文档齐),并修正 `internal/db/CLAUDE.md` 漂移(schema v32→v33、补 v31/v32/v33 迁移、业务表数 9→10,另含 `schema_migrations` 账本)。注:DB schema 现为 v33(`runtime_settings` 表),`TestMigrateCreatesAllTables` 的 `expected` 清单**已**纳入该表(见 `internal/db/migrate_test.go:69`)。
 - 2026-07-01(二):`/init-project` 复核修正。核对代码树与文档漂移:① 前端 `composables/` 实为 6 个(补 `useRecapModels`),`stores/` 实为 5 个(补 `runtime`);② 修正 `docs/DOCUMENTATION_INDEX.md` —— 删除指向**已不存在**的 `OPUS_DRAFT_EMPTY_CONTENT_INVESTIGATION.md` / `WEB_OPTIMIZATION_SUGGESTIONS.md` 两行,补登 `docs/archive/investigations/前端兜底页-embedded_web构建标签缺失.md`,更新索引日期;③ 清理本文件结构性重复(全文正文被意外粘贴两遍,合并去重)。模块级 27 份 `CLAUDE.md`(26 包 + cmd + web)均含导航面包屑,本轮无新增,验证一致。
 - 2026-06-29(二):用 Obscura 抓取 ZCode 官方文档(`/en/docs/skill`、`mcp-services`、`agents`、`commands`、`plugin`)核对,据官方表述修正两处:**① Skill 触发符为 `$`(用户 chat 输入 `$skill-name`),不是 `/`(`/` 是 Command 的触发符);② AGENTS.md 只读全局 + 工作区两级,不逐级合并子目录**。补充 Obscura(全局 MCP server + Skill)的集成说明。

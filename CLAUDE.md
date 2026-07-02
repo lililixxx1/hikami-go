@@ -137,7 +137,7 @@ graph TD
 | `internal/state` | 场次聚合状态机与失败恢复、ApplyWithPublishTarget、ApplyRevertPublish | 12 | [CLAUDE.md](./internal/state/CLAUDE.md) |
 | `internal/worker` | 任务池、任务存储、Hub 广播、重试取消、Register+WithBypassFailState（状态旁路任务元数据）、live_record 进程接管回调 | 38 | [CLAUDE.md](./internal/worker/CLAUDE.md) |
 | `internal/handler` | Gin REST API、WebSocket、引导、诊断、配置导出/导入、回顾模型列表、DashScope/ASR S3/archive 配置端点、stats/dashboard（单连接查询，已修复自死锁）、opus 编辑/删除、运行时状态代际校验、admin token 认证中间件 | 57 | [CLAUDE.md](./internal/handler/CLAUDE.md) |
-| `internal/discover` | B 站回放发现 | 5 | [CLAUDE.md](./internal/discover/CLAUDE.md) |
+| `internal/discover` | B 站回放发现（两步式预览勾选下载：PreviewAll 预览→Execute 执行；保留一步式 DiscoverAll 作回退） | 10 | [CLAUDE.md](./internal/discover/CLAUDE.md) |
 | `internal/download` | 回放音频下载（native 单 P/多 P + yt-dlp 双后端，concat list 路径转义）、单链接触发、CookieAccountStore cookie 解析 | 48 | [CLAUDE.md](./internal/download/CLAUDE.md) |
 | `internal/live_record` | 直播音频与弹幕录制、ffmpeg 进程接管（Adopt） | 36 | [CLAUDE.md](./internal/live_record/CLAUDE.md) |
 | `internal/importer` | 手动 multipart 导入 | 15 | [CLAUDE.md](./internal/importer/CLAUDE.md) |
@@ -152,7 +152,7 @@ graph TD
 | `internal/runtimeconfig` | 全局运行时配置覆盖持久化（runtime_settings 表 per-section JSON，含 SaveTx/WithTx 与 secrets 原子写入；启动由 ApplyOverrides 覆盖 config.yaml 基线） | 8 | [CLAUDE.md](./internal/runtimeconfig/CLAUDE.md) |
 | `internal/glossary` | 术语表与 AI 术语发现候选 | 63 | [CLAUDE.md](./internal/glossary/CLAUDE.md) |
 | `internal/notify` | 通知事件与发送器 | 12 | [CLAUDE.md](./internal/notify/CLAUDE.md) |
-| `web` | Vue 3 前端管理界面（features 分域 + composables 收敛 + Vitest 测试） | 90 | [CLAUDE.md](./web/CLAUDE.md) |
+| `web` | Vue 3 前端管理界面（features 分域 + composables 收敛 + Vitest 测试；录播/回放子 tab + 两步式发现回放抽屉） | 96 | [CLAUDE.md](./web/CLAUDE.md) |
 
 完整路径、入口文件、测试数量见下方「精简模块索引」表。
 
@@ -222,6 +222,18 @@ make tidy
 优先运行与改动相关的最小测试；跨模块、迁移、API 或前端类型变更后运行 `make test`，前端变更运行 `cd web && npm run type-check` 或 `make web-build`。
 
 ## 变更记录 (Changelog)
+
+### 2026-07-02 · `/init-project` 增量更新
+
+- **校验类型**:增量更新(跟随 2 个功能提交 `83ef024` 发现回放两步式 + `e9cb624` 回放类不自动发布,仅文档)。
+- **更新模块**:
+  - `internal/discover/CLAUDE.md`:新增 `PreviewAll`/`Execute`/`ExecuteItem`/`Result.Exists`/`annotateExists`,2 个 API 端点(`/discover/preview`、`/discover/execute`),测试计数 5→10。
+  - `internal/handler/CLAUDE.md`:路由表 +2(两步式发现 preview/execute),关键设计 +1 条。
+  - `cmd/hikami/CLAUDE.md`:recap→publish 自动触发链回调按 `session.SourceType`(download/import)拦截回放类自动发布。
+  - `web/CLAUDE.md`:新增 `composables/useDiscoverReplay.ts`(composables 6→7),RecapsView 录播/回放子 tab + 回放类动作隐藏,`sessionActions.test.ts` 41→47,Vitest 90→96。
+  - `CLAUDE-detail/api-routes.md`:+2 discover 路由。
+- **根模块索引**:`discover` 行描述+测试数(5→10)、`web` 行测试数(90→96)同步更新。
+- **建议下一步**:无新增模块或孤儿目录,文档与代码树一致;后续重跑 `/init-project` 按本索引增量。
 
 ### 2026-07-01 · `/init-project` 增量更新
 

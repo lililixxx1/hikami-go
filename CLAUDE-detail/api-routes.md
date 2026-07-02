@@ -44,7 +44,9 @@
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/api/sessions/discover` | 为所有已配置 `replay_source_url` 的主播自动发现回放并排队下载 |
+| POST | `/api/sessions/discover` | 为所有已配置 `replay_source_url` 的主播自动发现回放并排队下载（一步式：发现+下载） |
+| POST | `/api/sessions/discover/preview` | 两步式发现·第一步：列出所有频道可发现的回放，不建场次不入队；每条返回 `exists` 标记（是否已建过 download 场次），供前端标注「已处理」 |
+| POST | `/api/sessions/discover/execute` | 两步式发现·第二步：body `{items: ExecuteItem[]}`（前端勾选项），按列表建 download 场次并入队；不重跑 yt-dlp，复用 `CreateDownload` 幂等去重 |
 | POST | `/api/sessions/download` | 按 `session_id` 重跑下载任务 |
 | POST | `/api/sessions/download-by-url` | 按视频链接（BV 号等）+ `channel_id` 创建下载场次并入队；受 `ReplayDownload` 能力守卫；同 BV 重复返回 409 |
 | POST | `/api/sessions/import` | multipart 上传本地媒体文件导入场次 |

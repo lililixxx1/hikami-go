@@ -53,6 +53,8 @@ publisher.SetOnSuccess -(auto_after_publish)-> archive.CreateTask  (状态旁路
 
 每段回调内：获取主播配置 → 检查对应能力（`runtimeStatus.Capabilities.*`）→ 调用下一阶段 `CreateTask`；失败仅记录警告，不阻断主流程，已成功阶段不会被回滚。归档段从 `published` 出发，是「状态旁路任务」——不调用 `states.Apply`、不发 Event，成功仅写 `archived_at`。
 
+**回放类不自动发布（2026-07-02，`e9cb624`）**：`recap.SetOnSuccess` 回调在提交 publish 任务前，先查 `sessionStore.Get(task.SessionID)`；若 `session.SourceType == "download"` 或 `"import"`（即回放类来源），**直接 return 跳过自动发布**——只有录播（`live_record`）才会随 `auto_publish` 自动发B站。手动 API `POST /api/sessions/:sid/publish` 不受此限制（由前端按 source_type 隐藏动作覆盖）。覆盖 recap 重跑场景（重跑仍按 source_type 判断）。
+
 ## 旧版术语表迁移
 
 启动时检查 `recap_ai.glossary_file` 配置：
@@ -89,20 +91,21 @@ A: 已标记为 deprecated。启动时自动导入到数据库，后续通过 We
 A: 启动阶段调用 `biliutil.SetCookieEncryptionKey` 校验密钥。非空密钥必须是 64 位 hex（32 字节）；格式错误会记录错误并终止启动，避免后续 Cookie 文件写入不可预期格式。
 
 **Q: 自动发布如何触发？**
-A: 回顾任务成功后，`recapHandler.SetOnSuccess` 回调检查主播的 `auto_publish` 配置和发布能力可用性，自动提交发布任务；发布成功后再由 `publisherHandler.SetOnSuccess` 按 `archive.auto_after_publish` 决定是否自动归档。详见「自动触发链」章节。
+A: 回顾任务成功后，`recapHandler.SetOnSuccess` 回调检查主播的 `auto_publish` 配置和发布能力可用性，自动提交发布任务；**但回放类（download/import）来源的回顾不自动发布**（仅录播 live_record 会），由回调内查 session.SourceType 判断。发布成功后再由 `publisherHandler.SetOnSuccess` 按 `archive.auto_after_publish` 决定是否自动归档。详见「自动触发链」章节。
 
 **Q: 回顾模板如何初始化？**
 A: DB 迁移 v21-v23 自动创建 `recap_templates` 表、唯一索引并插入内置默认模板（system_prompt='__builtin__', is_default=1）。无需手动初始化。
 
 ## 相关文件清单
 
-- `main.go` -- 启动流程、Cookie 加密密钥初始化、依赖组装、优雅关闭、自动触发链（normalize→asr→recap→publish→archive 的 SetOnSuccess 回调）、archive Handler 创建与 WithBypassFailState 注册、旧版术语表导入、回顾模板 Store 创建
+- `main.go` -- 启动流程、Cookie 加密密钥初始化、依赖组装、优雅关闭、自动触发链（normalize→asr→recap→publish→archive 的 SetOnSuccess 回调；recap→publish 回调按 session.SourceType 拦截回放类自动发布）、archive Handler 创建与 WithBypassFailState 注册、旧版术语表导入、回顾模板 Store 创建
 - `embed.go` -- 前端静态文件嵌入（`//go:build embedded_web`，`//go:embed all:webdist`）；`embed_none.go` 为无 tag 时的空占位（API-only 构建）
 
 ## 变更记录 (Changelog)
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-07-02 | 功能 | **回放类回顾不自动发布B站**（`e9cb624`）：`recapHandler.SetOnSuccess` 回调在提交 publish 任务前，先查 `sessionStore.Get(task.SessionID)`，若 `session.SourceType` 为 `download`/`import`（回放类）则 `return` 跳过自动发布——只有录播（live_record）随 `auto_publish` 自动发B站。手动 `POST /api/sessions/:sid/publish` 不受此限制（由前端按 source_type 隐藏动作）。覆盖 recap 重跑场景。配合前端 RecapsView 拆「录播/回放」子 tab |
 | 2026-06-27 | 修复 | **release 二进制漏带 embedded_web 导致前端缺失**（`1781937`）：CI release 工作流的 TAGS 此前仅 Windows 完整版带 `embed_ffmpeg`，其余矩阵 `TAGS=""` 致 `//go:build embedded_web` 的 `embed.go` 被排除、前端静默丢失。修复：TAGS 始终含 `embedded_web`（embed_ffmpeg 仅叠加）；main.go 的 webFS 降级分支补醒目 WARN（"binary built without -tags embedded_web"），漏 tag 在启动日志立即暴露；Makefile `build-go` 追加 `strings ./hikami \| grep 'webdist/'` 静态自检，构建后立即可验证前端是否嵌入。同步修正本文件 DB 迁移版本引用 31→32 |
 | 2026-06-23 | 功能 | 自动触发链加固（设计 4.1/4.3）：串联完整 `normalize→asr→recap→publish→archive` 的 `SetOnSuccess` 回调；新增 `archiveHandler` 创建、注入 `handler.NewServer` 并 `Register(workerPool, worker.WithBypassFailState())`；publisher 回顾能力 gate 下沉到 `recap.CreateTask`；旁路任务失败经 `SetFailSessionStateFn(..., bypassState)` 仅写 `last_error` 不降级状态（替代 task.Type 硬编码特判）；DB 迁移版本 27→31 |
 | 2026-05-23 | 安全更新 | 启动流程新增 `biliutil.SetCookieEncryptionKey(cfg.CookieEncryptionKey)`，在目录创建前初始化 Cookie 文件 AES-256-GCM 加密密钥 |
