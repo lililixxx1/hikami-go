@@ -302,6 +302,7 @@ func (s *Server) routes() {
 	p.POST("/api/sessions/import", s.importSession)
 	p.POST("/api/sessions/:sid/asr/submit", s.submitASR)
 	p.POST("/api/sessions/:sid/recap/generate", s.generateRecap)
+	p.POST("/api/sessions/:sid/recap/regenerate", s.regenerateRecap)
 	p.POST("/api/sessions/:sid/recap-partial", s.generateRecapPartial)
 	p.POST("/api/sessions/:sid/recap-with-range", s.generateRecapWithRange)
 	p.GET("/api/sessions/:sid/recap", s.getRecapContent)
@@ -310,8 +311,6 @@ func (s *Server) routes() {
 	p.POST("/api/sessions/:sid/fetch", s.fetchSession)
 	p.POST("/api/sessions/:sid/publish", s.publishSession)
 	p.POST("/api/sessions/:sid/archive", s.archiveSession)
-	p.POST("/api/sessions/:sid/opus/edit", s.editOpus)
-	p.DELETE("/api/sessions/:sid/opus", s.removeOpus)
 	p.POST("/api/sessions/:sid/glossary/discover", s.discoverSessionGlossary)
 
 	p.GET("/api/tasks", s.listTasks)
@@ -1171,6 +1170,25 @@ func (s *Server) generateRecap(ctx *gin.Context) {
 	ctx.JSON(http.StatusAccepted, task)
 }
 
+// regenerateRecap 重新生成整场回顾（覆盖本地 md，不碰 B站）。仅 recap_done/published 状态允许。
+// 任务带 BypassFailState=true：失败时仅写 last_error，不降级 published/recap_done 主状态。
+func (s *Server) regenerateRecap(ctx *gin.Context) {
+	status := s.currentRuntimeStatus()
+	if status != nil && !status.Capabilities.RecapGenerate {
+		ctx.JSON(http.StatusConflict, gin.H{
+			"error":  "recap capability unavailable",
+			"reason": status.Capabilities.Reason,
+		})
+		return
+	}
+	task, err := s.recaps.CreateRegenTask(ctx.Request.Context(), s.workerPool, ctx.Param("sid"))
+	if err != nil {
+		writeError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusAccepted, task)
+}
+
 func (s *Server) generateRecapWithRange(ctx *gin.Context) {
 	s.generateRecapPartial(ctx)
 }
@@ -1342,42 +1360,6 @@ func (s *Server) publishSession(ctx *gin.Context) {
 		return
 	}
 	ctx.JSON(http.StatusAccepted, task)
-}
-
-// editOpus 编辑已发布专栏（删旧专栏 + 用最新 recap 重新发布），同步执行。
-// 受 PublishOpus 能力守卫保护；成功返回新的 publish_target。
-func (s *Server) editOpus(ctx *gin.Context) {
-	status := s.currentRuntimeStatus()
-	if status != nil && !status.Capabilities.PublishOpus {
-		ctx.JSON(http.StatusConflict, gin.H{
-			"error":  "publish capability unavailable",
-			"reason": status.Capabilities.Reason,
-		})
-		return
-	}
-	target, err := s.publisher.EditOpus(ctx.Request.Context(), ctx.Param("sid"))
-	if err != nil {
-		writeError(ctx, err)
-		return
-	}
-	ctx.JSON(http.StatusOK, gin.H{"publish_target": target.Marshal()})
-}
-
-// removeOpus 删除已发布专栏，同步执行；删除后状态回退 uploaded（可重新发布）。
-func (s *Server) removeOpus(ctx *gin.Context) {
-	status := s.currentRuntimeStatus()
-	if status != nil && !status.Capabilities.PublishOpus {
-		ctx.JSON(http.StatusConflict, gin.H{
-			"error":  "publish capability unavailable",
-			"reason": status.Capabilities.Reason,
-		})
-		return
-	}
-	if err := s.publisher.RemoveOpus(ctx.Request.Context(), ctx.Param("sid")); err != nil {
-		writeError(ctx, err)
-		return
-	}
-	ctx.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 func (s *Server) listTasks(ctx *gin.Context) {

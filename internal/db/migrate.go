@@ -189,11 +189,15 @@ ALTER TABLE channels ADD COLUMN publish_topics TEXT NOT NULL DEFAULT '';`,
 	// 启动时 ApplyOverrides 用本表覆盖 viper 加载的基线值。data 是该段 DTO 的 JSON。
 	// CHECK(section) 白名单限定 6 个全局段；CHECK(json_valid(data)) 保证 JSON 完整性。
 	`CREATE TABLE IF NOT EXISTS runtime_settings (
-		section TEXT NOT NULL CHECK (section IN ('publish','asr_s3','dashscope','recap_ai','webdav','archive')),
-		data TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(data)),
-		updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-		PRIMARY KEY (section)
-	);`,
+			section TEXT NOT NULL CHECK (section IN ('publish','asr_s3','dashscope','recap_ai','webdav','archive')),
+			data TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(data)),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+			PRIMARY KEY (section)
+		);`,
+	// v34: 任务实例级 bypass fail state。重新生成回顾等"非推进型"任务失败时，
+	// 仅写 last_error 不降级 session 主状态（避免 published/recap_done 被打成 failed）。
+	// 与 worker.WithBypassFailState（类型级）叠加：syncSessionState 取 task.BypassFailState || 类型级。
+	`ALTER TABLE tasks ADD COLUMN bypass_fail_state INTEGER NOT NULL DEFAULT 0;`,
 }
 
 func Migrate(database *sql.DB) error {

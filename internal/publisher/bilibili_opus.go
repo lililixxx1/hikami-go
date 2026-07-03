@@ -32,9 +32,6 @@ type OpusClient interface {
 	SaveDraft(ctx context.Context, cookie *BiliCookie, req *DraftRequest) (draftID string, err error)
 	PublishOpus(ctx context.Context, cookie *BiliCookie, req *PublishRequest) (dynID string, dynType int64, dynRid string, err error)
 	DeleteDraft(ctx context.Context, cookie *BiliCookie, draftID string) error
-	// RemoveOpus 删除已发布的 opus 动态专栏（B 站 operate/remove）。
-	// dynID 为 dyn_id_str（必填）；dynType/ridStr 对应 dyn_type/rid_str（可选，传零值则不带）。
-	RemoveOpus(ctx context.Context, cookie *BiliCookie, dynID string, dynType int64, ridStr string) error
 }
 
 type OpusCoverUploader interface {
@@ -353,28 +350,6 @@ func (c *BiliOpusClient) PublishOpus(ctx context.Context, cookie *BiliCookie, re
 		return "", 0, "", fmt.Errorf("parse publish response: %w", err)
 	}
 	return result.DynIDStr, result.DynType, rawJSONString(result.DynRid), nil
-}
-
-// RemoveOpus 删除已发布的 opus 动态专栏，走 B 站 operate/remove 接口（与发布同级风控：
-// buvid 注入 + gaia 验证，复用 doRequestWithGaia）。
-func (c *BiliOpusClient) RemoveOpus(ctx context.Context, cookie *BiliCookie, dynID string, dynType int64, ridStr string) error {
-	body := map[string]any{
-		"dyn_id_str": dynID,
-	}
-	if dynType != 0 {
-		body["dyn_type"] = dynType
-	}
-	if ridStr != "" {
-		body["rid_str"] = ridStr
-	}
-	data, err := json.Marshal(body)
-	if err != nil {
-		return fmt.Errorf("marshal remove body: %w", err)
-	}
-
-	url := "https://api.bilibili.com/x/dynamic/feed/operate/remove?csrf=" + cookie.BiliJct + "&platform=web"
-	_, err = c.doRequestWithGaia(ctx, cookie, url, data)
-	return err
 }
 
 // rawJSONString 将 JSON 原始字节安全转为字符串：字符串去引号、数字/其他原样返回、空值返回 ""。

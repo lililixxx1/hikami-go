@@ -237,8 +237,8 @@ func (h *Handler) HandleTask(ctx context.Context, task worker.Task, reporter wor
 
 // publishRecap 执行「读取最新 recap → 转 opus → 存草稿 → (publish 模式)发布」核心流程，
 // 返回组装好的 PublishTarget（序列化为 JSON 存入 publish_target）。HandleTask（异步，带进度
-// 上报与失败状态推进）和 EditOpus（同步删+重发）共用此方法。progress 为可选进度回调，
-// nil 表示不上报进度（同步路径）。
+// 上报与失败状态推进）调用此方法。progress 为可选进度回调，
+// nil 表示不上报进度。
 func (h *Handler) publishRecap(
 	ctx context.Context,
 	sessionInfo session.Session,
@@ -371,92 +371,6 @@ func (h *Handler) publishRecap(
 	}
 
 	return PublishTarget{DraftID: draftID}, nil
-}
-
-// RemoveOpus 删除已发布专栏并将会话状态回退到 uploaded（本地产物仍在，可重新发布）。
-// 同步执行：读取 publish_target 取 dyn_id → 调 B 站 operate/remove → 状态机 published→uploaded。
-// 仅对真正发布（有 dyn_id）的专栏有效；草稿模式或未发布返回 ErrNotPublished。
-func (h *Handler) RemoveOpus(ctx context.Context, sessionID string) error {
-	sessionInfo, err := h.sessions.Get(ctx, sessionID)
-	if err != nil {
-		return err
-	}
-	if sessionInfo.Status != string(state.StatusPublished) {
-		return fmt.Errorf("%w: status must be published, got %s", ErrNotPublished, sessionInfo.Status)
-	}
-	target := ParsePublishTarget(sessionInfo.PublishTarget)
-	if target.DynID == "" {
-		return fmt.Errorf("%w: only a published opus (with dyn_id) can be removed", ErrNotPublished)
-	}
-	ch, err := h.channels.Get(ctx, sessionInfo.ChannelID)
-	if err != nil {
-		return err
-	}
-	cookie, err := h.resolvePublishCookie(ctx, ch)
-	if err != nil {
-		return err
-	}
-	if err := h.client.RemoveOpus(ctx, cookie, target.DynID, target.DynType, target.DynRid); err != nil {
-		return err
-	}
-	// 删除成功：状态 published→uploaded，清空 publish_target（保留 published_at 作历史）
-	if _, err := h.states.ApplyRevertPublish(ctx, sessionID, ""); err != nil {
-		return err
-	}
-	return nil
-}
-
-// EditOpus 编辑已发布专栏：用最新 recap markdown 重新发布一个新专栏，再删除旧专栏，
-// 最后把 publish_target 更新为新专栏。状态保持 published（原地替换，不走状态机回退）。
-// 顺序上「先发新再删旧」——若发新失败，旧专栏仍在；若删旧失败，仅记录 warn 不阻断（新专栏已生效）。
-func (h *Handler) EditOpus(ctx context.Context, sessionID string) (PublishTarget, error) {
-	sessionInfo, err := h.sessions.Get(ctx, sessionID)
-	if err != nil {
-		return PublishTarget{}, err
-	}
-	if sessionInfo.Status != string(state.StatusPublished) {
-		return PublishTarget{}, fmt.Errorf("%w: status must be published, got %s", ErrNotPublished, sessionInfo.Status)
-	}
-	// LocalAvailable 守卫：归档 cleanup=all（或 upload cleanup=all）删除本地目录后，
-	// EditOpus 需读本地 recap markdown，无守卫会报底层 os.ReadDir 错误。明确提示先 Fetch。
-	if !sessionInfo.LocalAvailable {
-		return PublishTarget{}, fmt.Errorf("%w: local files removed, fetch from webdav first", ErrRecapMissing)
-	}
-	ch, err := h.channels.Get(ctx, sessionInfo.ChannelID)
-	if err != nil {
-		return PublishTarget{}, err
-	}
-	cookie, err := h.resolvePublishCookie(ctx, ch)
-	if err != nil {
-		return PublishTarget{}, err
-	}
-
-	// 1. 先用最新 recap 发布新专栏（失败则旧专栏仍在，安全）
-	newTarget, err := h.publishRecap(ctx, sessionInfo, ch, cookie, nil)
-	if err != nil {
-		return PublishTarget{}, err
-	}
-
-	// 2. 删除旧专栏（仅当新旧 dyn_id 不同且旧专栏确实已发布）
-	oldTarget := ParsePublishTarget(sessionInfo.PublishTarget)
-	if oldTarget.DynID != "" && oldTarget.DynID != newTarget.DynID {
-		if rmErr := h.client.RemoveOpus(ctx, cookie, oldTarget.DynID, oldTarget.DynType, oldTarget.DynRid); rmErr != nil {
-			// 新专栏已发布成功，旧专栏删除失败：新旧可能并存，仅记录告警不阻断
-			slog.Warn("删除旧专栏失败，新旧专栏可能并存，请到 B 站手动清理",
-				"channel_id", ch.ID, "session_id", sessionID, "old_dyn_id", oldTarget.DynID, "error", rmErr)
-		}
-	}
-
-	// 3. 更新 publish_target 为新专栏，状态保持 published（无需状态机转换）
-	if err := h.sessions.SetPublishTarget(ctx, sessionID, newTarget.Marshal()); err != nil {
-		return PublishTarget{}, err
-	}
-
-	if h.notifyMgr != nil {
-		h.notifyMgr.Send(ctx, notify.EventPublishDone, "专栏已更新",
-			fmt.Sprintf("频道 %s 的专栏已用最新回顾重新发布", ch.ID))
-	}
-	return newTarget, nil
 }
 
 func canHandlePublish(status string) bool {

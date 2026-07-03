@@ -273,6 +273,11 @@ func main() {
 	publisherHandler.SetCookieAccountStore(cookieAccountStore)
 	publisherHandler.SetNotifyManager(notifyMgr)
 	recapHandler.SetOnSuccess(func(ctx context.Context, task worker.Task) {
+		// 重新生成回顾（CreateRegenTask 标记 BypassFailState=true）只覆盖本地 md，绝不触碰 B站：
+		// 不触发自动发布。按"任务意图"判断——recap_done 场重新生成也不该自动发布。
+		if task.BypassFailState {
+			return
+		}
 		ch, err := channelStore.Get(ctx, task.ChannelID)
 		if err != nil || !ch.AutoPublish {
 			return
@@ -283,8 +288,11 @@ func main() {
 		}
 		// 回放类(回放下载/导入)的回顾不自动发布到B站(仅录播自动发布)。
 		// 手动 API POST /api/sessions/:sid/publish 不受此限制，由前端隐藏动作覆盖。
+		// 同样跳过 published 状态：防御性兜底（局部回顾/重新生成虽已由 BypassFailState 早退覆盖，
+		// 但 published 场景下 publisher 守卫本就拒绝，自动发布会触发 EventTaskFailed 把 published 降级 failed）。
 		if sess, err := sessionStore.Get(ctx, task.SessionID); err == nil &&
-			(sess.SourceType == "download" || sess.SourceType == "import") {
+			((sess.SourceType == "download" || sess.SourceType == "import") ||
+				sess.Status == string(state.StatusPublished)) {
 			return
 		}
 		if _, err := publisherHandler.CreateTask(ctx, workerPool, task.SessionID); err != nil {

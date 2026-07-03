@@ -865,33 +865,6 @@ func TestCreateLiveNewSessionAfterTerminal(t *testing.T) {
 	}
 }
 
-func TestSetPublishTarget(t *testing.T) {
-	database := setupDB(t)
-	insertChannel(t, database)
-	store := NewStore(database)
-
-	sess, err := store.CreateImport(context.Background(), CreateImportInput{
-		ChannelID: "test_ch",
-		Title:     "发布测试",
-		StartedAt: time.Date(2026, 5, 1, 10, 0, 0, 0, time.Local),
-	})
-	if err != nil {
-		t.Fatalf("CreateImport: %v", err)
-	}
-
-	if err := store.SetPublishTarget(context.Background(), sess.ID, "opus_draft_12345"); err != nil {
-		t.Fatalf("SetPublishTarget: %v", err)
-	}
-
-	updated, err := store.Get(context.Background(), sess.ID)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if updated.PublishTarget != "opus_draft_12345" {
-		t.Fatalf("expected publish_target 'opus_draft_12345', got %q", updated.PublishTarget)
-	}
-}
-
 func TestSanitizeSlug(t *testing.T) {
 	tests := []struct {
 		input    string

@@ -912,42 +912,6 @@ func TestPublishSessionRouteRejectsUnavailableCapability(t *testing.T) {
 	}
 }
 
-func TestEditOpusRouteRejectsUnavailableCapability(t *testing.T) {
-	server := newTestServer(t)
-	server.runtimeStatus = &runtime.Status{
-		Capabilities: runtime.Capabilities{
-			PublishOpus: false,
-			Reason:      "publish not enabled",
-		},
-	}
-
-	response := performRequest(server, http.MethodPost, "/api/sessions/session_1/opus/edit", "")
-	if response.Code != http.StatusConflict {
-		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
-	}
-	if !strings.Contains(response.Body.String(), "publish capability unavailable") {
-		t.Fatalf("body missing publish capability error: %s", response.Body.String())
-	}
-}
-
-func TestRemoveOpusRouteRejectsUnavailableCapability(t *testing.T) {
-	server := newTestServer(t)
-	server.runtimeStatus = &runtime.Status{
-		Capabilities: runtime.Capabilities{
-			PublishOpus: false,
-			Reason:      "publish not enabled",
-		},
-	}
-
-	response := performRequest(server, http.MethodDelete, "/api/sessions/session_1/opus", "")
-	if response.Code != http.StatusConflict {
-		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
-	}
-	if !strings.Contains(response.Body.String(), "publish capability unavailable") {
-		t.Fatalf("body missing publish capability error: %s", response.Body.String())
-	}
-}
-
 // decodeRecapResponse 解析回顾配置响应。
 func decodeRecapResponse(t *testing.T, body io.Reader) recapConfigResponse {
 	t.Helper()

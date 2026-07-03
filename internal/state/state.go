@@ -43,7 +43,6 @@ const (
 	EventRecapSucceeded      Event = "recap_succeeded"
 	EventUploadSucceeded     Event = "upload_succeeded"
 	EventPublishSucceeded    Event = "publish_succeeded"
-	EventPublishReverted     Event = "publish_reverted"
 	EventTaskFailed          Event = "task_failed"
 )
 
@@ -82,25 +81,6 @@ func (s *Store) ApplyWithPublishTarget(ctx context.Context, sessionID string, ta
 	defer tx.Rollback()
 
 	next, err := applyInTx(ctx, tx, sessionID, EventPublishSucceeded, taskID, "", publishTarget)
-	if err != nil {
-		return "", err
-	}
-	if err := tx.Commit(); err != nil {
-		return "", err
-	}
-	return next, nil
-}
-
-// ApplyRevertPublish 提交 EventPublishReverted：已发布专栏删除后状态 published→uploaded，
-// 在**同一事务**内清空 publish_target（保留 published_at 作历史）。
-func (s *Store) ApplyRevertPublish(ctx context.Context, sessionID string, taskID string) (Status, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return "", err
-	}
-	defer tx.Rollback()
-
-	next, err := applyInTx(ctx, tx, sessionID, EventPublishReverted, taskID, "", "")
 	if err != nil {
 		return "", err
 	}
@@ -153,13 +133,6 @@ func applyInTx(ctx context.Context, tx *sql.Tx, sessionID string, event Event, t
 				WHERE id = ?
 			`, next, nullable(taskID), sessionID)
 		}
-	} else if event == EventPublishReverted {
-		// 删除已发布专栏：状态回退 uploaded，清空 publish_target；保留 published_at 作历史。
-		_, err = tx.ExecContext(ctx, `
-			UPDATE sessions
-			SET status = ?, current_task_id = ?, last_error = NULL, publish_target = NULL, updated_at = datetime('now')
-			WHERE id = ?
-		`, next, nullable(taskID), sessionID)
 	} else {
 		_, err = tx.ExecContext(ctx, `
 			UPDATE sessions
@@ -235,8 +208,6 @@ var transitions = map[Status]map[Event]Status{
 		EventRecapSucceeded:   StatusRecapDone,
 		EventPublishSucceeded: StatusPublished,
 	},
-	// published 的唯一出口：删除已发布专栏后回退到 uploaded（本地产物仍在，可重新发布）。
-	StatusPublished: {
-		EventPublishReverted: StatusUploaded,
-	},
+	// published 是终态：B站专栏只能由用户手动去 B站管理，本系统不删不改（无 publish_reverted 出口）。
+	// 重新生成回顾走 recap/regenerate（覆盖本地 md，状态保持 published 不变）。
 }

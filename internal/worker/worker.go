@@ -362,7 +362,10 @@ func (p *Pool) syncSessionState(ctx context.Context, task Task, message string) 
 	}
 	// 设计 4.3：旁路任务（upload/archive）失败不降级主状态——由注册时的 WithBypassFailState
 	// 声明，替代原先 cmd/hikami 对 task.Type 的硬编码特判。
-	bypass := p.bypassFailState(task.Type)
+	// 任务实例级 bypass（task.BypassFailState）与类型级（WithBypassFailState）取 OR：
+	// "重新生成回顾"等非推进型任务通过 CreateInput.BypassFailState=true 标记，
+	// 失败时不降级 published/recap_done 主状态，仅写 last_error。
+	bypass := task.BypassFailState || p.bypassFailState(task.Type)
 	if err := p.failSessionState(ctx, task, "task_failed", task.ID, message, bypass); err != nil {
 		slog.Error("failed to update session state on task recovery failure",
 			"task_id", task.ID, "session_id", task.SessionID, "error", err)

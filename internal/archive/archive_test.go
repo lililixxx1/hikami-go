@@ -318,31 +318,6 @@ func TestHandleTaskCleanupAllRemovesDirAndSetsLocalAvailable(t *testing.T) {
 	}
 }
 
-// TestHandleTaskCleanupAllSkipsWhenStatusReverted 验证 cleanupAll 的 published 守卫：
-// 归档期间状态被并发回退（published→uploaded）时，不删除本地目录。
-func TestHandleTaskCleanupAllSkipsWhenStatusReverted(t *testing.T) {
-	fix := setupArchiveTest(t)
-	fix.cfg.Archive.CleanupPolicy = "all"
-	// copy 成功后、cleanup 前把状态改成 uploaded，模拟并发「删除专栏」
-	fix.copier.copyFunc = func(ctx context.Context, source, target string) error {
-		_, _ = fix.states.Apply(ctx, "ch1_live_1", state.EventPublishReverted, "t1", "")
-		return nil
-	}
-	fix.handler = NewHandler(fix.cfg, fix.sessions, fix.states, fix.copier, fix.deleter)
-	fix.insertChannel(t, "ch1")
-	fix.insertSession(t, "ch1_live_1", "live_1", "ch1", string(state.StatusPublished))
-	dir := fix.createSessionDir(t, "ch1", "live_1")
-
-	task := worker.Task{ID: "t1", ChannelID: "ch1", SessionID: "ch1_live_1", Type: TaskType}
-	if err := fix.handler.HandleTask(context.Background(), task, noopReporter{}); err != nil {
-		t.Fatalf("HandleTask: %v", err)
-	}
-	// 守卫生效：目录仍在（状态已回退到 uploaded，不该删）
-	if _, err := os.Stat(dir); err != nil {
-		t.Errorf("session dir removed despite status revert, err=%v", err)
-	}
-}
-
 func TestHandleTaskCleanupGeneratedRemovesAsrOnly(t *testing.T) {
 	fix := setupArchiveTest(t)
 	fix.cfg.Archive.CleanupPolicy = "generated"

@@ -44,6 +44,10 @@ type Task struct {
 	FinishedAt string `json:"finished_at,omitempty"`
 	CreatedAt  string `json:"created_at"`
 	UpdatedAt  string `json:"updated_at"`
+	// BypassFailState 为 true 时，任务失败不降级 session 主状态（仅写 last_error）。
+	// 用于"重新生成回顾"等非推进型任务：published/recap_done 状态下重跑 recap，
+	// 失败不应把已发布/已生成的 session 打成 failed。与类型级 WithBypassFailState 取 OR。
+	BypassFailState bool `json:"bypass_fail_state,omitempty"`
 }
 
 type CreateInput struct {
@@ -51,6 +55,8 @@ type CreateInput struct {
 	SessionID string
 	Type      string
 	Payload   string
+	// BypassFailState 置 true 时，入队任务失败不降级 session 主状态（见 Task.BypassFailState）。
+	BypassFailState bool
 }
 
 type Store struct {
@@ -80,9 +86,10 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (Task, error) {
 			session_id,
 			type,
 			status,
-			payload
-		) VALUES (?, ?, ?, ?, ?, ?)
-	`, taskID, input.ChannelID, nullable(input.SessionID), input.Type, StatusPending, payload)
+			payload,
+			bypass_fail_state
+		) VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, taskID, input.ChannelID, nullable(input.SessionID), input.Type, StatusPending, payload, boolToInt(input.BypassFailState))
 	if err != nil {
 		return Task{}, err
 	}
@@ -417,6 +424,7 @@ func scanTask(row scanner) (Task, error) {
 		&finishedAt,
 		&task.CreatedAt,
 		&task.UpdatedAt,
+		&task.BypassFailState,
 	)
 	task.SessionID = sessionID.String
 	task.Error = errorMessage.String
@@ -430,6 +438,14 @@ func nullable(value string) any {
 		return nil
 	}
 	return value
+}
+
+// boolToInt 把 bool 转成 SQLite 的整数布尔表示（1/0）。
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 const selectTaskColumns = `
@@ -446,7 +462,8 @@ const selectTaskColumns = `
 	started_at,
 	finished_at,
 	created_at,
-	updated_at
+	updated_at,
+	bypass_fail_state
 `
 
 const listSQL = `SELECT ` + selectTaskColumns + ` FROM tasks ORDER BY created_at DESC, id DESC`

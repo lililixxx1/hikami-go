@@ -524,13 +524,6 @@ func (s *Store) CountByChannel(ctx context.Context, channelID string) (int64, er
 	return count, err
 }
 
-func (s *Store) SetPublishTarget(ctx context.Context, sessionID string, target string) error {
-	_, err := s.db.ExecContext(ctx, `
-		UPDATE sessions SET publish_target = ?, updated_at = datetime('now') WHERE id = ?
-	`, target, sessionID)
-	return err
-}
-
 // SessionStats holds aggregate statistics for the dashboard.
 type SessionStats struct {
 	TotalSessions   int              `json:"total_sessions"`

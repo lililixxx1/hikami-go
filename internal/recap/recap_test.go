@@ -127,6 +127,122 @@ func TestCreateTaskWrongStatus(t *testing.T) {
 	}
 }
 
+// --- Handler CreateRegenTask tests (重新生成：覆盖本地 md，不碰 B站) ---
+
+// setupRecapReadySession 预置一个已有转写文件、状态为指定 status 的场次，供重新生成测试复用。
+func setupRecapReadySession(t *testing.T, fix *recapTestFixture, status string) {
+	t.Helper()
+	fix.insertChannel(t, "ch1")
+	fix.insertSession(t, "ch1_live_20260101_120000", "live_20260101_120000", "ch1", status)
+	sessionDir := filepath.Join(fix.cfg.OutputRoot, "ch1", "live_20260101_120000")
+	pkgDir := filepath.Join(sessionDir, "package")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "transcript.txt"), []byte("hello world"), 0o644); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+}
+
+func TestCreateRegenTaskSuccess(t *testing.T) {
+	fix := setupRecapTest(t)
+	setupRecapReadySession(t, fix, string(state.StatusRecapDone))
+
+	h := NewHandler(fix.cfg, fix.sessions, fix.states, LocalProvider{}, fix.glossaryStore, nil, nil)
+	task, err := h.CreateRegenTask(context.Background(), fix.pool, "ch1_live_20260101_120000")
+	if err != nil {
+		t.Fatalf("CreateRegenTask: %v", err)
+	}
+	// 重新生成任务必须带 BypassFailState：失败时不降级 recap_done/published 主状态
+	if !task.BypassFailState {
+		t.Fatalf("regen task BypassFailState = false, want true (failure must not demote session state)")
+	}
+	if task.Type != TaskType {
+		t.Fatalf("task type = %q, want %q", task.Type, TaskType)
+	}
+}
+
+func TestCreateRegenTaskAcceptsPublished(t *testing.T) {
+	fix := setupRecapTest(t)
+	setupRecapReadySession(t, fix, string(state.StatusPublished))
+
+	h := NewHandler(fix.cfg, fix.sessions, fix.states, LocalProvider{}, fix.glossaryStore, nil, nil)
+	task, err := h.CreateRegenTask(context.Background(), fix.pool, "ch1_live_20260101_120000")
+	if err != nil {
+		t.Fatalf("CreateRegenTask on published: %v", err)
+	}
+	if !task.BypassFailState {
+		t.Fatalf("published regen task must have BypassFailState=true")
+	}
+}
+
+func TestCreateRegenTaskRejectsWrongStatus(t *testing.T) {
+	fix := setupRecapTest(t)
+	// asr_done/uploaded 走首次生成(CreateTask)，不应被 CreateRegenTask 接受
+	setupRecapReadySession(t, fix, string(state.StatusASRDone))
+
+	h := NewHandler(fix.cfg, fix.sessions, fix.states, LocalProvider{}, fix.glossaryStore, nil, nil)
+	_, err := h.CreateRegenTask(context.Background(), fix.pool, "ch1_live_20260101_120000")
+	if err == nil {
+		t.Fatalf("expected error: regen should reject asr_done (use CreateTask for first generation)")
+	}
+	if !strings.Contains(err.Error(), ErrSessionNotReady.Error()) {
+		t.Fatalf("error = %v, want ErrSessionNotReady", err)
+	}
+}
+
+// TestHandleTaskAcceptsRegenStatuses 验证 HandleTask 入口守卫(canHandleRecap)不拒绝
+// 重新生成场景的状态。Codex 复审发现：CreateRegenTask 允许 recap_done/published，
+// 但 canHandleRecap 原先只认 asr_done/uploaded，导致重新生成任务执行时被立即拒绝。
+// 此测试确保 recap_done/published 不会被入口守卫拦下（后续 AI 调用由 LocalProvider 驱动）。
+func TestHandleTaskAcceptsRegenStatuses(t *testing.T) {
+	for _, status := range []string{string(state.StatusRecapDone), string(state.StatusPublished)} {
+		t.Run(status, func(t *testing.T) {
+			fix := setupRecapTest(t)
+			setupRecapReadySession(t, fix, status)
+
+			h := NewHandler(fix.cfg, fix.sessions, fix.states, LocalProvider{}, fix.glossaryStore, nil, nil)
+			task := worker.Task{ID: "t1", ChannelID: "ch1", SessionID: "ch1_live_20260101_120000", Type: TaskType, Payload: "{}"}
+			err := h.HandleTask(context.Background(), task, &noopReporter{})
+			// 关键断言：不应返回 "session state ... is not valid for recap"（入口守卫错误）
+			// AI 调用可能因测试环境返回其他错误，但必须是守卫之后的原因，而非 canHandleRecap 拒绝
+			if err != nil && strings.Contains(err.Error(), "is not valid for") {
+				t.Fatalf("HandleTask rejected %s at entry guard: %v (canHandleRecap should accept regen statuses)", status, err)
+			}
+		})
+	}
+}
+
+// TestCreateTaskWithRangeBypassOnRegenStatuses 验证局部回顾(CreateTaskWithRange)在
+// recap_done/published 状态下入队带 BypassFailState=true（与重新生成同语义：覆盖式重跑，
+// 失败不降级、成功不触发自动发布）；asr_done/uploaded（主线）不带 bypass。
+// Codex 第 3 轮复审发现：recap_done 局部回顾不带 bypass 会触发自动发布。
+func TestCreateTaskWithRangeBypassOnRegenStatuses(t *testing.T) {
+	cases := []struct {
+		status     string
+		wantBypass bool
+	}{
+		{string(state.StatusASRDone), false},
+		{string(state.StatusUploaded), false},
+		{string(state.StatusRecapDone), true},
+		{string(state.StatusPublished), true},
+	}
+	for _, c := range cases {
+		t.Run(c.status, func(t *testing.T) {
+			fix := setupRecapTest(t)
+			setupRecapReadySession(t, fix, c.status)
+			h := NewHandler(fix.cfg, fix.sessions, fix.states, LocalProvider{}, fix.glossaryStore, nil, nil)
+			task, err := h.CreateTaskWithRange(context.Background(), fix.pool, "ch1_live_20260101_120000", 0, 60)
+			if err != nil {
+				t.Fatalf("CreateTaskWithRange on %s: %v", c.status, err)
+			}
+			if task.BypassFailState != c.wantBypass {
+				t.Fatalf("%s range task BypassFailState = %v, want %v", c.status, task.BypassFailState, c.wantBypass)
+			}
+		})
+	}
+}
+
 func TestCreateTaskTranscriptMissing(t *testing.T) {
 	fix := setupRecapTest(t)
 	fix.insertChannel(t, "ch1")

@@ -287,14 +287,11 @@ func writeFile(t *testing.T, dir, name, content string) {
 
 // fakeOpusClient 实现 OpusClient 接口，记录调用并返回预设结果。
 type fakeOpusClient struct {
-	saveDraftFn     func(ctx context.Context, cookie *BiliCookie, req *DraftRequest) (string, error)
-	publishOpusFn   func(ctx context.Context, cookie *BiliCookie, req *PublishRequest) (string, int64, string, error)
-	deleteDraftFn   func(ctx context.Context, cookie *BiliCookie, draftID string) error
-	removeOpusFn    func(ctx context.Context, cookie *BiliCookie, dynID string, dynType int64, ridStr string) error
-	lastDraftReq    *DraftRequest
-	lastPublishReq  *PublishRequest
-	lastRemoveDynID string
-	removeCalls     int
+	saveDraftFn    func(ctx context.Context, cookie *BiliCookie, req *DraftRequest) (string, error)
+	publishOpusFn  func(ctx context.Context, cookie *BiliCookie, req *PublishRequest) (string, int64, string, error)
+	deleteDraftFn  func(ctx context.Context, cookie *BiliCookie, draftID string) error
+	lastDraftReq   *DraftRequest
+	lastPublishReq *PublishRequest
 }
 
 func (f *fakeOpusClient) SaveDraft(ctx context.Context, cookie *BiliCookie, req *DraftRequest) (string, error) {
@@ -316,15 +313,6 @@ func (f *fakeOpusClient) PublishOpus(ctx context.Context, cookie *BiliCookie, re
 func (f *fakeOpusClient) DeleteDraft(ctx context.Context, cookie *BiliCookie, draftID string) error {
 	if f.deleteDraftFn != nil {
 		return f.deleteDraftFn(ctx, cookie, draftID)
-	}
-	return nil
-}
-
-func (f *fakeOpusClient) RemoveOpus(ctx context.Context, cookie *BiliCookie, dynID string, dynType int64, ridStr string) error {
-	f.removeCalls++
-	f.lastRemoveDynID = dynID
-	if f.removeOpusFn != nil {
-		return f.removeOpusFn(ctx, cookie, dynID, dynType, ridStr)
 	}
 	return nil
 }
@@ -1405,173 +1393,6 @@ func TestHandleTask_UploadedStatus(t *testing.T) {
 	}
 	if got := ParsePublishTarget(updated.PublishTarget); got.DraftID != "12345" {
 		t.Errorf("PublishTarget DraftID = %q, want %q (raw=%s)", got.DraftID, "12345", updated.PublishTarget)
-	}
-}
-
-// ==================== RemoveOpus / EditOpus 测试 ====================
-
-func TestRemoveOpus_Success(t *testing.T) {
-	h := newTestHelper(t)
-	ctx := context.Background()
-
-	cookiePath := h.createCookieFile("")
-	_, sess := h.setupSessionAndChannel(ctx, cookiePath)
-	// 推进到 published 并写入含 dyn_id 的 publish_target
-	target := PublishTarget{DynID: "dyn_old_123", DynType: 2, DynRid: "rid_old"}.Marshal()
-	if _, err := h.states.ApplyWithPublishTarget(ctx, sess.ID, "", target); err != nil {
-		t.Fatalf("推进到 published 失败: %v", err)
-	}
-
-	fake := &fakeOpusClient{}
-	handler := NewHandler(h.cfg, h.sessions, h.states, h.channels, fake)
-
-	if err := handler.RemoveOpus(ctx, sess.ID); err != nil {
-		t.Fatalf("RemoveOpus 失败: %v", err)
-	}
-
-	if fake.lastRemoveDynID != "dyn_old_123" {
-		t.Errorf("RemoveOpus dynID = %q, want dyn_old_123", fake.lastRemoveDynID)
-	}
-	if fake.removeCalls != 1 {
-		t.Errorf("removeCalls = %d, want 1", fake.removeCalls)
-	}
-
-	updated, _ := h.sessions.Get(ctx, sess.ID)
-	if updated.Status != string(state.StatusUploaded) {
-		t.Errorf("Status = %q, want uploaded", updated.Status)
-	}
-	if updated.PublishTarget != "" {
-		t.Errorf("PublishTarget = %q, want empty", updated.PublishTarget)
-	}
-	if updated.PublishedAt == "" {
-		t.Error("PublishedAt 应保留历史值")
-	}
-}
-
-func TestRemoveOpus_NotPublished(t *testing.T) {
-	h := newTestHelper(t)
-	ctx := context.Background()
-
-	cookiePath := h.createCookieFile("")
-	_, sess := h.setupSessionAndChannel(ctx, cookiePath) // recap_done，未 published
-
-	fake := &fakeOpusClient{}
-	handler := NewHandler(h.cfg, h.sessions, h.states, h.channels, fake)
-
-	err := handler.RemoveOpus(ctx, sess.ID)
-	if err == nil {
-		t.Fatal("期望非 published 状态返回错误")
-	}
-	if !errors.Is(err, ErrNotPublished) {
-		t.Errorf("错误 = %v, want ErrNotPublished", err)
-	}
-	if fake.removeCalls != 0 {
-		t.Error("不应调用 RemoveOpus")
-	}
-}
-
-func TestRemoveOpus_DraftTargetCannotRemove(t *testing.T) {
-	h := newTestHelper(t)
-	ctx := context.Background()
-
-	cookiePath := h.createCookieFile("")
-	_, sess := h.setupSessionAndChannel(ctx, cookiePath)
-	// published 但 publish_target 是草稿（无 dyn_id，无法删除已发布专栏）
-	if _, err := h.states.ApplyWithPublishTarget(ctx, sess.ID, "", PublishTarget{DraftID: "d1"}.Marshal()); err != nil {
-		t.Fatalf("推进失败: %v", err)
-	}
-
-	fake := &fakeOpusClient{}
-	handler := NewHandler(h.cfg, h.sessions, h.states, h.channels, fake)
-
-	err := handler.RemoveOpus(ctx, sess.ID)
-	if err == nil {
-		t.Fatal("期望草稿 target 返回错误")
-	}
-	if !errors.Is(err, ErrNotPublished) {
-		t.Errorf("错误 = %v, want ErrNotPublished", err)
-	}
-	if fake.removeCalls != 0 {
-		t.Error("不应调用 RemoveOpus")
-	}
-}
-
-func TestEditOpus_Success(t *testing.T) {
-	h := newTestHelper(t)
-	ctx := context.Background()
-
-	cookiePath := h.createCookieFile("")
-	ch, sess := h.setupSessionAndChannel(ctx, cookiePath, func(input *channel.UpsertInput) {
-		input.PublishMode = "publish"
-	})
-	// 推进到 published（旧专栏 dyn_old_123）
-	target := PublishTarget{DynID: "dyn_old_123"}.Marshal()
-	if _, err := h.states.ApplyWithPublishTarget(ctx, sess.ID, "", target); err != nil {
-		t.Fatalf("推进到 published 失败: %v", err)
-	}
-	h.createRecapMarkdown(ch, sess, "# 编辑测试\n\n新内容。")
-
-	fake := &fakeOpusClient{}
-	handler := NewHandler(h.cfg, h.sessions, h.states, h.channels, fake)
-
-	newTarget, err := handler.EditOpus(ctx, sess.ID)
-	if err != nil {
-		t.Fatalf("EditOpus 失败: %v", err)
-	}
-
-	// 默认 PublishOpus 返回 dyn_999 → 发新专栏
-	if newTarget.DynID != "dyn_999" {
-		t.Errorf("new DynID = %q, want dyn_999", newTarget.DynID)
-	}
-	// 应删除旧专栏 dyn_old_123
-	if fake.lastRemoveDynID != "dyn_old_123" {
-		t.Errorf("应删除旧 dyn_old_123, got lastRemoveDynID=%q", fake.lastRemoveDynID)
-	}
-	if fake.removeCalls != 1 {
-		t.Errorf("removeCalls = %d, want 1", fake.removeCalls)
-	}
-
-	// 状态保持 published，publish_target 更新为新 dyn_999
-	updated, _ := h.sessions.Get(ctx, sess.ID)
-	if updated.Status != string(state.StatusPublished) {
-		t.Errorf("Status = %q, want published", updated.Status)
-	}
-	if got := ParsePublishTarget(updated.PublishTarget); got.DynID != "dyn_999" {
-		t.Errorf("PublishTarget DynID = %q, want dyn_999 (raw=%s)", got.DynID, updated.PublishTarget)
-	}
-}
-
-// --- archive 链路相关测试（SetOnSuccess + EditOpus LocalAvailable 守卫）---
-
-// TestEditOpus_LocalUnavailable 验证 EditOpus 的 LocalAvailable 守卫：归档 cleanup=all
-// 删除本地目录后（local_available=false），EditOpus 应返回明确错误而非底层 os 错误。
-func TestEditOpus_LocalUnavailable(t *testing.T) {
-	h := newTestHelper(t)
-	ctx := context.Background()
-
-	cookiePath := h.createCookieFile("")
-	ch, sess := h.setupSessionAndChannel(ctx, cookiePath, func(input *channel.UpsertInput) {
-		input.PublishMode = "publish"
-	})
-	target := PublishTarget{DynID: "dyn_old_123"}.Marshal()
-	if _, err := h.states.ApplyWithPublishTarget(ctx, sess.ID, "", target); err != nil {
-		t.Fatalf("推进到 published 失败: %v", err)
-	}
-	// 模拟归档 cleanup=all 删除本地后置 local_available=false
-	if err := h.sessions.SetLocalAvailable(ctx, sess.ID, false); err != nil {
-		t.Fatalf("SetLocalAvailable: %v", err)
-	}
-	h.createRecapMarkdown(ch, sess, "# 编辑\n内容") // 目录存在但守卫应先拦截
-
-	fake := &fakeOpusClient{}
-	handler := NewHandler(h.cfg, h.sessions, h.states, h.channels, fake)
-
-	_, err := handler.EditOpus(ctx, sess.ID)
-	if !errors.Is(err, ErrRecapMissing) {
-		t.Fatalf("err = %v, want ErrRecapMissing (LocalAvailable guard)", err)
-	}
-	if fake.lastDraftReq != nil {
-		t.Error("LocalAvailable=false 时不应调用 SaveDraft")
 	}
 }
 

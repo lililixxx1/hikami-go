@@ -976,4 +976,12 @@ func TestSyncSessionStateBypassFlag(t *testing.T) {
 	if gotBypass == nil || !*gotBypass {
 		t.Fatalf("bypass task bypass flag = %v, want true", gotBypass)
 	}
+
+	// 实例级 bypass：普通任务类型 + Task.BypassFailState=true（重新生成回顾场景）→ OR 逻辑透传 true
+	// 这是本次新增的实例级标志核心路径，与类型级（WithBypassFailState）取 OR。
+	gotBypass = nil
+	pool.syncSessionState(context.Background(), Task{Type: "normal_type", SessionID: "sess1", BypassFailState: true}, "boom")
+	if gotBypass == nil || !*gotBypass {
+		t.Fatalf("instance-level bypass (normal type + BypassFailState=true) = %v, want true (OR logic)", gotBypass)
+	}
 }

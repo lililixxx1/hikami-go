@@ -157,6 +157,56 @@ func TestRecoverRunningMarksFailed(t *testing.T) {
 	}
 }
 
+// TestCreateBypassFailStateRoundTrip 验证 CreateInput.BypassFailState 正确持久化并能回读。
+// 重新生成回顾等非推进型任务依赖此标志：失败时不降级 session 主状态（仅写 last_error）。
+func TestCreateBypassFailStateRoundTrip(t *testing.T) {
+	store := newTaskTestStore(t)
+	ctx := context.Background()
+
+	// 带 BypassFailState=true 的任务
+	bypassTask, err := store.Create(ctx, CreateInput{
+		ChannelID:       "huize",
+		Type:            "recap",
+		Payload:         "{}",
+		BypassFailState: true,
+	})
+	if err != nil {
+		t.Fatalf("create bypass task: %v", err)
+	}
+	if !bypassTask.BypassFailState {
+		t.Fatalf("created task BypassFailState = false, want true")
+	}
+
+	// 回读验证（经 Get 走 scanTask）
+	got, err := store.Get(ctx, bypassTask.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !got.BypassFailState {
+		t.Fatalf("reread task BypassFailState = false, want true")
+	}
+
+	// 对照：默认任务 BypassFailState=false
+	normalTask, err := store.Create(ctx, CreateInput{
+		ChannelID: "huize",
+		Type:      "discover",
+		Payload:   "{}",
+	})
+	if err != nil {
+		t.Fatalf("create normal task: %v", err)
+	}
+	if normalTask.BypassFailState {
+		t.Fatalf("default task BypassFailState = true, want false")
+	}
+	gotNormal, err := store.Get(ctx, normalTask.ID)
+	if err != nil {
+		t.Fatalf("get normal: %v", err)
+	}
+	if gotNormal.BypassFailState {
+		t.Fatalf("reread default task BypassFailState = true, want false")
+	}
+}
+
 func newTaskTestStore(t *testing.T) *Store {
 	t.Helper()
 
