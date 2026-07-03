@@ -25,7 +25,6 @@
 | `ActiveLiveForChannel(ctx, channelID)` | 获取主播当前活跃的直播场次（状态为 recording/discovered/downloading/importing） |
 | `Delete(ctx, id)` | 删除单个场次（未找到返回 ErrNotFound） |
 | `DeleteFailed(ctx)` | 批量删除所有失败场次，返回删除数量 |
-| `SetPublishTarget(ctx, sessionID, target)` | 设置场次的发布目标标识 |
 | `SetLocalAvailable(ctx, sessionID, available)` | 标记本地产物是否可用（上传清理后置 `false`、Fetch 取回后置回 `true`；未找到返回 ErrNotFound） |
 | `SetArchivedAt(ctx, sessionID, archivedAt)` | 标记场次已归档到 WebDAV 的时间戳。归档任务不推进 session 主状态（保持 `published`），仅写 `archived_at` 并清空 `last_error`（归档失败后重试成功场景）；未找到返回 ErrNotFound |
 | `GetStats(ctx)` | 返回 `SessionStats`（总场次/回顾数、按月计数、Top 主播排行），用于 `/api/stats/overview`、`/api/stats/cost` |
@@ -77,21 +76,21 @@
 
 ## 测试与质量
 
-- `session_test.go`: 共 40 个测试函数，覆盖：
+- `session_test.go`: 共 39 个测试函数，覆盖：
   - `CreateLive`: 成功创建、默认标题、默认时间、缺少 channel_id 拒绝、无效 room_id 拒绝、**同槽 UNIQUE 冲突返回 `ErrAlreadyLive`（不再复用/重置）**、**FK（channel 不存在）错误不被误判为已存在**、ID 格式
   - `CreateDownload`: 成功创建、重复去重、缺少 source_id 拒绝、默认标题、slug 回退
   - `CreateImport`: 成功创建、默认标题、有/无结束时间
   - `Get` / `GetBySource`: 成功 / 未找到
   - `List`: 空列表、创建时间倒序
   - `ActiveLiveForChannel`: 有活跃 / 无活跃
-  - `SetPublishTarget` / `SetLocalAvailable` / `SetArchivedAt`: 成功设置 / 未找到
+  - `SetLocalAvailable` / `SetArchivedAt`: 成功设置 / 未找到
   - `GetStats` / `DeleteFailed` 等统计与批量删除路径
   - `sanitizeSlug`: 多种输入验证
 
 ## 相关文件清单
 
 - `session.go` -- 唯一源文件（含 `ErrAlreadyLive` 哨兵、`isConstraintViolation` helper）
-- `session_test.go` -- 单元测试（40 个测试函数）
+- `session_test.go` -- 单元测试（39 个测试函数）
 
 ## 变更记录 (Changelog)
 

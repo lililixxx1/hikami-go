@@ -20,6 +20,7 @@
 | `NewPool(store, hub, workerCount, cfg)` | 创建任务池 |
 | `Register(taskType, handler, opts...)` | 注册任务处理器，可传 `WithBypassFailState()` 标记为状态旁路任务（失败不降级主状态，设计 4.3） |
 | `bypassFailState(taskType)` | 查询某任务类型是否注册为旁路任务（替代原先对 upload/archive 的硬编码类型特判） |
+| `Task.BypassFailState` / `CreateInput.BypassFailState` | 任务实例级 bypass（v34 加列 `bypass_fail_state`）：重新生成回顾等非推进型任务置 true，失败不降级主状态；`syncSessionState` 取 `task.BypassFailState \|\| 类型级`（OR） |
 | `Start(ctx, workerCount)` | 启动 worker goroutine，恢复中断任务 |
 | `Stop()` | 停止所有 worker |
 | `Enqueue(ctx, input)` | 创建并排队任务 |
@@ -131,7 +132,7 @@
 - 任务状态转换通过 `MarkRunning/MarkSucceeded/MarkFailed` 方法控制，`MarkSucceeded` 要求当前状态为 `running`。
 - Pool 持有 `notifyMgr`，任务失败时发送 `notify.EventTaskFailed`。
 - handler 层在任务详情 API（`GET /api/tasks/:id`）中返回 `friendly_error` 字段和 `auto_retry` 信息。
-- **状态旁路任务**（设计 4.3）：任务类型在 `Register` 时用 `WithBypassFailState()` 声明旁路属性，存于 `registeredHandler{bypassFailState bool}`。worker 失败路径据此调用 `SetFailSessionStateFn(..., bypassState)`，旁路任务（如 `archive`）仅写 `last_error`、**不**降级主状态；这取代了原先 `nonRetryableTypes` 集合 + `cmd/hikami` 对 `upload`/`archive` task.Type 的硬编码特判。
+- **状态旁路任务**（设计 4.3）：任务类型在 `Register` 时用 `WithBypassFailState()` 声明旁路属性，存于 `registeredHandler{bypassFailState bool}`。worker 失败路径据此调用 `SetFailSessionStateFn(..., bypassState)`，旁路任务（如 `archive`）仅写 `last_error`、**不**降级主状态。另有**任务实例级 bypass**（`Task.BypassFailState`，DB v34 `bypass_fail_state` 列）：重新生成回顾等非推进型任务置 true，`syncSessionState` 取 `task.BypassFailState || 类型级`（OR），失败同样不降级；这取代了原先 `nonRetryableTypes` 集合 + `cmd/hikami` 对 `upload`/`archive` task.Type 的硬编码特判。
 - **双重降级收敛**：各业务 handler 内冗余的 `Apply(EventTaskFailed)` 已移除，失败状态降级统一由 worker 在失败路径处理，避免重复降级。
 
 ## 测试与质量

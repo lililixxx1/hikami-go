@@ -48,7 +48,7 @@
 - **失败兜底走 worker 旁路机制**（设计 4.3）：`Register` 声明 `worker.WithBypassFailState()`；worker 失败路径据此在 `SetFailSessionStateFn(..., bypassState=true)` 透传旁路标志，`cmd/hikami` 的回调据此仅写 `last_error` 不降级状态，取代原先对 `archive`/`upload` task.Type 的硬编码特判。
 - **与 upload 互斥**：`CreateTask` 拒绝同 session 活跃的 `upload` 任务——两者操作同一场次目录与同一 WebDAV 目标，并发复制/删除会竞态（一方 `cleanup=all` 删目录时另一方可能复制到一半失败）。反之 upload 侧亦对 archive 做对称互斥检查。
 - **WebDAV 后端复用而非重写**：直接复用 `upload.Copier` / `upload.Deleter` 接口与 `NewConfiguredCopier` / `NewConfiguredDeleter` 工厂（native WebDAV 或 rclone 由 `WebDAVConfig.NativeConfigured()` 自动选择）。
-- **清理复用共享函数**：归档成功后调用 `upload.CleanupSession(...)`（派发到 `cleanupTempShared`/`cleanupGeneratedShared`/`cleanupAllShared`），以 `guardStatus=published` 区分守卫态（upload 调用时传 `uploaded`）；`cleanupAllShared` 在执行前再次确认状态仍为 `guardStatus`，覆盖「归档期间可能被『删除专栏』并发回退到 `uploaded`」的竞态。
+- **清理复用共享函数**：归档成功后调用 `upload.CleanupSession(...)`（派发到 `cleanupTempShared`/`cleanupGeneratedShared`/`cleanupAllShared`），以 `guardStatus=published` 区分守卫态（upload 调用时传 `uploaded`）；`cleanupAllShared` 在执行前再次确认状态仍为 `guardStatus`，覆盖「归档期间 session 状态被并发变更而偏离 guardStatus」的竞态。
 - **后端类型启动时固定**：`nativeWebDAV` 与 `copier`/`deleter` 在 `NewHandler` 时按启动时 `cfg.WebDAV` 固定；运行时改 WebDAV 后端类型需重启服务（与 `upload.Handler` 同一既有约束，属架构级限制）。
 
 ## 自动归档触发
@@ -69,7 +69,7 @@
 | `generated` | 删除可重新生成的中间文件（`asr/` 目录），保留 `raw/`、`package/`、`recap/` |
 | `all` | 再次确认仍为 `published` 后删除整个本地场次目录，置 `local_available=false`；再次编辑专栏需先 `Fetch` 取回 |
 
-清理是 best-effort：归档（复制）已成功，删除失败仅记 `slog` 不阻断。`all` 策略下若 `RemoveAll` 成功而 `SetLocalAvailable(false)` 失败，会出现「目录已删但 UI 仍认为 `local_available=true`」的中间态，依赖 `publisher.EditOpus` 的 `LocalAvailable` 守卫在读目录时报错兜底。
+清理是 best-effort：归档（复制）已成功，删除失败仅记 `slog` 不阻断。`all` 策略下若 `RemoveAll` 成功而 `SetLocalAvailable(false)` 失败，会出现「目录已删但 UI 仍认为 `local_available=true`」的中间态，依赖各处 `local_available` 守卫在读目录时报错兜底。
 
 ## 目标路径计算
 

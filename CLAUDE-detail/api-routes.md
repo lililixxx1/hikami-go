@@ -54,14 +54,13 @@
 | POST | `/api/sessions/:sid/fetch` | 从 WebDAV 取回本地目录（取回后 `local_available` 置 true） |
 | POST | `/api/sessions/:sid/publish` | 发布 B 站专栏 |
 | POST | `/api/sessions/:sid/archive` | 手动归档已发布场次到 WebDAV（自动归档失败时的手动重试入口；状态必须为 published；错误 archive.ErrSessionNotReady/ErrArchiveMissing/ErrConfigMissing→409） |
-| POST | `/api/sessions/:sid/opus/edit` | 编辑已发布专栏（删旧+用最新 recap 重发，同步，受 `PublishOpus` 能力守卫） |
-| DELETE | `/api/sessions/:sid/opus` | 删除已发布专栏（删除后状态回退 `uploaded`，可重新发布） |
 
 ### 场次与回顾 API
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | POST | `/api/sessions/:sid/recap/generate` | 生成完整回顾（`local_available=false` 时返回 409，提示先 Fetch） |
+| POST | `/api/sessions/:sid/recap/regenerate` | 重新生成整场回顾（覆盖本地 md，不碰 B站；仅 recap_done/published；任务带 BypassFailState，失败不降级主状态） |
 | POST | `/api/sessions/:sid/recap-partial` | 按 `start_time`/`end_time` 生成指定时间段回顾 |
 | POST | `/api/sessions/:sid/recap-with-range` | `recap-partial` 兼容别名 |
 | GET | `/api/sessions/:sid/recap` | 获取回顾内容，包含 `suggested_terms` 术语建议 |

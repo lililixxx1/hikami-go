@@ -25,7 +25,7 @@ web/src/
 ├── api/            # HTTP API 封装（Axios 实例 + 各模块请求）
 │   ├── client.ts   # Axios 实例配置（get/post/put/del），注入 X-Admin-Token
 │   ├── channels.ts # 主播 CRUD API
-│   ├── sessions.ts # 场次 CRUD/ASR/回顾/上传/发布/发现/导入 API（含 editOpus/removeOpus）
+│   ├── sessions.ts # 场次 CRUD/ASR/回顾/上传/发布/发现/导入 API（含 regenerateRecap 重新生成）
 │   ├── tasks.ts    # 任务查询/取消/删除 API
 │   ├── live.ts     # 直播状态/录制 API
 │   ├── health.ts   # 运行时健康检查 API
@@ -44,7 +44,7 @@ web/src/
 │   └── runtime.ts     # 运行时能力状态（fetchRuntime 支持 force 强制刷新）
 ├── features/       # 分域特性（自管理逻辑收敛为 composables + 拆分子组件）
 │   ├── recaps/
-│   │   ├── sessionActions.ts          # 场次操作纯函数（getRowActions/getDrawerActions/canFetchLocal/decideRetry/...；isReplaySource 回放类隐藏 publish/edit/remove，2026-07-02）
+│   │   ├── sessionActions.ts          # 场次操作纯函数（getRowActions/getDrawerActions/canFetchLocal/decideRetry/...；UIActionName 6 个状态推进型动作，edit/remove 已移除；isReplaySource 回放类隐藏 publish）
 │   │   ├── sessionActions.test.ts     # sessionActions 单测（47 用例）
 │   │   └── components/                # RecapsView 拆分子组件（阶段 3）
 │   │       ├── RecapDrawer.vue        # 回顾预览/编辑抽屉
@@ -53,14 +53,16 @@ web/src/
 │   │       └── SessionTable.vue       # 场次表格
 │   ├── settings/
 │   │   └── components/                # SettingsView 拆分为卡片组件（阶段 4a/4b）
+│   │       ├── DashScopeSettingsCard.vue  # DashScope ASR 配置卡（API Key env + 转写参数）
+│   │       ├── ASRS3SettingsCard.vue      # ASR S3 兼容存储配置卡（endpoint/bucket/public_url）
+│   │       ├── RecapSettingsCard.vue      # 回顾 AI 配置卡（provider/model/prompt 概要）
 │   │       ├── PublishSettingsCard.vue    # 全局发布配置卡
-│   │       ├── RecapSettingsCard.vue      # 回顾配置卡（含 DashScope / ASR S3 卡内密钥管理）
 │   │       ├── WebDAVSettingsCard.vue     # WebDAV 配置卡
 │   │       ├── AdminTokenCard.vue         # 管理员令牌卡（阶段 4b）
 │   │       ├── BiliAccountsCard.vue       # B 站账号卡（阶段 4b）
 │   │       ├── ConfigBackupCard.vue       # 配置备份（导入/导出）卡（阶段 4b）
 │   │       ├── ArchiveSettingsCard.vue    # 发布后归档配置卡（auto_after_publish / cleanup_policy）
-│   │       └── settings-cards.css         # 卡片共享样式
+│   │       └── settings-cards.css         # 卡片共享样式（.column-row grid + 卡片外观）
 │   ├── channel/                       # 主播组件自管理逻辑（阶段 5 收敛）
 │   │   ├── useBiliQRCodeLogin.ts      # QR 登录状态机（props 全 getter 化）
 │   │   ├── useGlossaryEntries.ts      # 术语条目 CRUD 状态
@@ -177,32 +179,28 @@ web/src/
 - 7 个状态组映射：处理中/音频就绪/转写中/转写完成/回顾已生成/已上传/已发布
 - `statusGroupMap` 提供过滤用状态分组：processing/recap/published/failed
 
-### views/SettingsView.vue -- 设置中心（5 分区）
+### views/SettingsView.vue -- 设置中心（4 折叠分组）
 
-设置中心扩展为 5 个分区导航：
+设置页自 `af9df47`（2026-07-02）由原 13 张平铺卡片重构为 **4 个 `el-collapse` 折叠分组**（顶层 `activeGroups` 默认展开 `grp-overview`+`grp-pipeline`，收起 `grp-accounts`+`grp-advanced`；`grp-` 前缀避免与子卡内部 collapse-item name 混淆）：
 
-1. **系统能力**: 4 个能力卡片 + 配置状态摘要 + 外部工具路径表格（含 InstallHint）
-2. **API 密钥**: 密钥卡片列表 + 编辑/清除操作
-3. **全局发布**: 4 个设置卡片
-4. **全局术语**: 内嵌 GlossaryEditor（global 作用域）
-5. **回顾模板**: 内嵌 RecapTemplateEditor（global 作用域）
+1. **总览（grp-overview）**：合并原「配置进度」+「系统状态」+「专家配置状态」三处重叠为单个总览卡。`overviewItems` computed 渲染 4 项能力（ASR 转写/回顾 AI/WebDAV 上传/B站发布），每项含完成度 `done` + 能力红绿灯 `ok` + 根因 `reason` + 跳转动作；磁盘用量挂载底部；专家段仍门控（`el-descriptions` 显配置状态明细，`isExpert` 时展开）。
+2. **流水线配置（grp-pipeline）**：6 张配置卡——DashScopeSettingsCard / ASRS3SettingsCard / RecapSettingsCard / WebDAVSettingsCard / PublishSettingsCard / ArchiveSettingsCard，各卡 `@saved` → `onConfigSaved()` → `fetchRuntime(true)` 同步总览。
+3. **账号与备份（grp-accounts）**：BiliAccountsCard / AdminTokenCard / ConfigBackupCard（导入后 `onConfigImported()` 并发重拉 runtime + 各配置卡 reload）。
+4. **高级（grp-advanced）**：全局术语表（GlossaryEditor `scope="global"`）+ 回顾模板（RecapTemplateEditor `scope="global"`）+ 专家段外部工具表格（tools install_hint 复制）。
 
-**密钥环境变量动态化：** SettingsView 不再硬编码 `AI_API_KEY` / `DASHSCOPE_API_KEY`，改为从 `config_status.dashscope_key_env` / `recap_key_env` 派生：
-- `dashScopeSecretKey` computed = `configStatus.dashscope_key_env || 'DASHSCOPE_API_KEY'`（兜底）
-- `recapSecretKey` computed = `configStatus.recap_key_env || 'AI_API_KEY'`（兜底）
-- 编辑密钥、能力卡 ASR 跳转、setupItems 等均使用上述 computed 的 key
+**跨分组跳转：** `scrollToSection(section)` 查 `groupOf` 映射，若目标分组收起则先展开并等 `setTimeout(320ms)`（`el-collapse` 高度过渡 ~300ms，nextTick 只等 DOM patch 不等 transitionend，不等会定位偏）再 `scrollIntoView`。`?section=runtime`（`/health` 重定向）归并入 grp-overview 展开逻辑。
 
-**ASR 能力项 action 动态化：** `capItems` 中 `asr_submit` 项根据密钥状态选择动作类型（`CapActionType` 加 `'hint'`）：
-- 密钥未配置 → `actionType: 'secret'`，按钮文案"配置密钥"，跳转到对应密钥编辑
-- 密钥已配置但能力仍红 → `actionType: 'hint'`，按钮文案"配置 ASR 后端"，弹指引对话框说明需配置 `asr_temp` / `asr_s3` 后端和 `yt-dlp`
+**ASR 能力项动态动作（CapActionType `'section' | 'hint'`）：** `overviewItems` 中 ASR 项根据密钥状态分流——密钥未配 → `actionType: 'section'`、文案"配置"、跳 dashscope 卡；密钥已配但能力仍红 → `actionType: 'hint'`、文案"配置 ASR 后端"、`showASRBackendHint()` 弹指引（说明需配 `asr_temp`/`asr_s3` 后端 + yt-dlp）。
 
-**写入后强制刷新：** `saveSecret` / `clearKey` / `savePublishConfig` / 保存回顾配置 / 导入配置 / 手动刷新 等所有写操作均调用 `runtimeStore.fetchRuntime(true)` 绕过 30s 节流，立即反映最新能力。
+**密钥管理：** 原"API 密钥"空壳卡已删除（`af9df47`），密钥改由 DashScopeSettingsCard / ASRS3SettingsCard / RecapSettingsCard 各自内联管理；密钥 env 名后端动态化（`config_status.dashscope_key_env` / `recap_key_env`）。
+
+**写入后强制刷新：** 所有写操作（`onConfigSaved` / `onConfigImported` / 手动刷新）均调用 `runtimeStore.fetchRuntime(true)` 绕过 30s 节流，立即反映最新能力。
 
 ### views/RecapsView.vue -- 回顾与场次
 
 回顾页管理场次列表、生命周期动作、手动导入、链接下载和回顾预览：
 - **录播/回放子 tab（2026-07-02）**：场次列表按 `session.source_type` 拆「录播」(live_record) 与「回放」(download+import) 两个子 tab，`filteredSessions` 按 source_type 过滤；`?sid` 按 source_type 自动切 tab，`?import=1` 落回放 tab
-- **回放类动作隐藏（2026-07-02）**：RecapToolbar 录播 tab 隐藏「发现/导入/链接下载」入口（仅产生回放类）；`sessionActions` 对回放类隐藏 `uploaded→publish` 主动作与 `published` 专栏 edit/remove（归档 upload 对两类保留）
+- **回放类动作隐藏（2026-07-02）**：RecapToolbar 录播 tab 隐藏「发现/导入/链接下载」入口（仅产生回放类）；`sessionActions` 对回放类隐藏 `uploaded→publish` 主动作（归档 upload 对两类保留）
 - 支持局部回顾，调用 `POST /api/sessions/:sid/recap-partial`
 - 「链接下载」抽屉（DownloadByURLDrawer）按 BV 号等链接 + 主播触发 download→normalize→asr→recap
 - 「发现回放」抽屉（DiscoverResultDrawer）两步式：第一步 `previewDiscoverSessions` 预览（按主播分组、标注已处理项、默认勾选新回放）→ 第二步 `executeDiscoverSessions` 按勾选项下载；抽屉自管理 preview/execute，view 通过 `useDiscoverReplay` 控制可见性 + 执行后刷新
@@ -390,9 +388,9 @@ make web-build  # 生产构建（输出到 web/dist/）
 
 ## 测试状态
 
-已配置 Vitest 测试框架。现有 4 个测试文件，共 96 个测试用例（静态 `it`/`test` 计数；`it.each` 表驱动运行时展开更多）：
+已配置 Vitest 测试框架。现有 4 个测试文件，`vitest run` 运行时共 **97 个用例**（静态 `it` 声明 93 个；`sessionActions.test.ts` 内 `describe.each(['download','import'])` 将回放类用例 ×2 展开）：
 
-- `features/recaps/sessionActions.test.ts`（47 个 it 测试，阶段 3 新增 + 2026-07-02 回放类隐藏用例）：覆盖 `getRowActions`/`getDrawerActions`（各状态下可见动作；回放类隐藏 publish/edit/remove）、`canFetchLocal`（local_available 守卫）、`decideRetry`/`isRetryable`/`retryHint`（重试决策）、`primaryActionType`（主按钮类型）、`UI_ACTION_REASON`（禁用原因）、`isReplaySource`（download/import 判定）。从 RecapsView 视图中抽出的纯函数，便于单元覆盖。
+- `features/recaps/sessionActions.test.ts`（`vitest run` 48 个用例 / 静态 44 个 it）：覆盖 `getRowActions`/`getDrawerActions`（各状态下可见动作；published 无状态推进型动作，专栏删除能力已移除；回放类隐藏 publish）、`canFetchLocal`（local_available 守卫）、`decideRetry`/`isRetryable`/`retryHint`（重试决策）、`primaryActionType`（主按钮类型）、`UI_ACTION_REASON`（禁用原因，6 个 UIActionName）、`isReplaySource`（download/import 判定）。从 RecapsView 视图中抽出的纯函数，便于单元覆盖。其中回放类行/抽屉动作用例包在 `describe.each(['download','import'])` 中，按两种 source_type 各跑一遍。
 
 - `utils/format.test.ts`（17 个 it 测试）：
   - formatDateTime: 空字符串返回"-"、ISO 日期格式化、无效日期回退
@@ -414,7 +412,9 @@ make web-build  # 生产构建（输出到 web/dist/）
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
-| 2026-07-02 | 功能 | **(1) 两步式发现回放**（`83ef024`）：DiscoverResultDrawer 改两步式——第一步 `previewDiscoverSessions`（`POST /api/sessions/discover/preview`）预览、按主播分组、标注已处理项（`exists`）、默认勾选新回放，第二步 `executeDiscoverSessions`（`POST /api/sessions/discover/execute`）按勾选项下载；抽屉自管理 preview/execute。新增 `composables/useDiscoverReplay.ts`（抽屉可见性 + 执行后刷新 sessions/tasks，RecapsView/HomeView 共用，composables 6→7）。`api/sessions.ts` 新增 `previewDiscoverSessions`/`executeDiscoverSessions`，旧 `discoverSessions`（一步式）保留为抽屉「全部下载」回退。`types.ts` 新增 `DiscoverPickItem`，`DiscoverResult` 字段改可选 + 增 `exists`/`source_url`。RecapToolbar 发现按钮补 yt-dlp 能力守卫。**(2) 录播/回放子 tab + 回放类动作隐藏**（`e9cb624`）：RecapsView 新增「录播/回放」子 tab，`filteredSessions` 按 `session.source_type` 过滤；`?sid` 按 source_type 自动切 tab，`?import=1` 落回放 tab。RecapToolbar 录播 tab 隐藏发现/导入/链接下载入口（仅产生回放类）。`sessionActions.ts` 新增 `isReplaySource`，回放类隐藏 `uploaded→publish` 主动作与 `published` 专栏 edit/remove（归档 upload 对两类保留）。`sessionActions.test.ts` 41→47（+回放类隐藏用例）。Vitest 90→96。配合后端 `main.go` recap→publish 回调按 source_type 拦截回放类自动发布 |
+| 2026-07-03 | 重构 | **移除专栏删除/编辑 + 新增重新生成回顾**：① 砍掉 `removeOpus`/`editOpus`（删B站专栏）——B站内容只能手动去 B站管理，本系统不删不改。`sessionActions.ts` 的 `UIActionName` 8→6（删 `edit_opus`/`remove_opus`）、删 `publishOpusAction`、`RowActions` 删 edit/remove 字段、`getRowActions` 删 published 分支（published 行现在无状态推进型动作，local 不可用时仅显示取回）。`SessionTable.vue` 删 published 编辑/删除按钮块 + emit。`api/sessions.ts` 删 `editOpus`/`removeOpus`。② 新增「重新生成回顾」：纯本地覆盖 md，不碰 B站。`RecapDrawer.vue` `.drawer-actions` 加硬编码「重新生成」按钮（`v-if recap_done/published`，非状态推进型不进 `getDrawerActions`），emit `regenerate` → `RecapsView.handleRegenerate` → `regenerateRecap(sid)`（`POST /api/sessions/:sid/recap/regenerate`）。配合后端 worker 任务实例级 `BypassFailState`（失败不降级 published/recap_done 主状态）。`sessionActions.test.ts` 删 edit/remove 用例（运行时 100→97）、published 用例改为断言无 primary。 |
+| 2026-07-03 | 重构 | **设置页折叠分组**（`af9df47` + `be509b6`）：`views/SettingsView.vue` 由 13 张平铺卡片重组为 4 个 `el-collapse` 折叠分组——① 总览（grp-overview，合并原「配置进度」+「系统状态」+「专家配置状态」三处重叠为单个总览卡，`overviewItems` computed 渲染 4 项能力）；② 流水线配置（grp-pipeline，6 张配置卡）；③ 账号与备份（grp-accounts）；④ 高级（grp-advanced，术语表/模板/专家工具表）。删除与子卡重复的"API 密钥"空壳卡（密钥改由 DashScope/ASRS3/Recap 各卡内联管理）。`scrollToSection` 适配跨分组跳转（先展开并等 ~320ms 过渡再滚动）。`BiliAccountsCard` 背景/圆角统一（`#fafafa`/8px），页面宽度 800→960。`be509b6` 修 `.column-row > .column-note { grid-column: 2 }`（专栏投稿 column-note 被 2 列 grid auto-placement 挤进 label 列导致竖排）。无新增/删除测试，Vitest 运行时用例 100 不变（`sessionActions.test.ts` 运行时 51，因 `describe.each` 展开；本轮仅核对计数口径，测试代码无改动）。目录树补登遗漏的 `DashScopeSettingsCard.vue`/`ASRS3SettingsCard.vue`（实为 9 `.vue`，此前文档仅列 7） |
+| 2026-07-02 | 功能 | **(1) 两步式发现回放**（`83ef024`）：DiscoverResultDrawer 改两步式——第一步 `previewDiscoverSessions`（`POST /api/sessions/discover/preview`）预览、按主播分组、标注已处理项（`exists`）、默认勾选新回放，第二步 `executeDiscoverSessions`（`POST /api/sessions/discover/execute`）按勾选项下载；抽屉自管理 preview/execute。新增 `composables/useDiscoverReplay.ts`（抽屉可见性 + 执行后刷新 sessions/tasks，RecapsView/HomeView 共用，composables 6→7）。`api/sessions.ts` 新增 `previewDiscoverSessions`/`executeDiscoverSessions`，旧 `discoverSessions`（一步式）保留为抽屉「全部下载」回退。`types.ts` 新增 `DiscoverPickItem`，`DiscoverResult` 字段改可选 + 增 `exists`/`source_url`。RecapToolbar 发现按钮补 yt-dlp 能力守卫。**(2) 录播/回放子 tab + 回放类动作隐藏**（`e9cb624`）：RecapsView 新增「录播/回放」子 tab，`filteredSessions` 按 `session.source_type` 过滤；`?sid` 按 source_type 自动切 tab，`?import=1` 落回放 tab。RecapToolbar 录播 tab 隐藏发现/导入/链接下载入口（仅产生回放类）。`sessionActions.ts` 新增 `isReplaySource`，回放类隐藏 `uploaded→publish` 主动作与 `published` 专栏 edit/remove（归档 upload 对两类保留）。`sessionActions.test.ts` 静态 41→47（+回放类隐藏用例，其中 6 个在 `describe.each(['download','import'])` 内运行时展开为 12）。Vitest 运行时 94→100。配合后端 `main.go` recap→publish 回调按 source_type 拦截回放类自动发布 |
 | 2026-06-24 | 文档补注 | `api/stats.ts` 章节补「数据契约」说明：`/api/stats/dashboard` 自后端 `a651fec` 起复用 `session.GetDashboardStats`，HomeView 专家表格绑定的 `sessions_by_month[].session_count`/`asr_hours` 等字段现为**唯一契约**（旧 handler 内联字段已删），改动需同步 `types.ts` 的 `DashboardData` 与 HomeView 表格 prop。仅文档，无代码改动，Vitest 90 不变 |
 | 2026-06-23 | 功能 | (1) 新增 `features/settings/components/ArchiveSettingsCard.vue`：发布后归档配置卡（`auto_after_publish` 开关 + `cleanup_policy` 下拉 none/temp/generated/all，含策略提示文案），保存后 emit `saved` 并 `fetchRuntime(true)` 刷新能力；接入 `api/settings.ts` 的 `getArchiveConfig` / `updateArchiveConfig`（GET/PUT `/api/config/archive`）与 `types.ts` 的 `ArchiveConfig` 类型。(2) 回顾配置卡（RecapSettingsCard）新增 DashScope / ASR S3 卡内密钥管理（密钥 env 改名 + 直接录入 secret，调用 `/api/config/dashscope`、`/api/config/asr-s3` 端点；后端实现 key env 改名的 secrets 迁移）。(3) 主播抽屉接入回顾模板编辑器入口（per-channel 回顾模板）。(4) `Session` 类型新增 `archived_at` 字段。无新增测试文件，Vitest 用例数 90 不变 |
 | 2026-06-21 | 重构/增量 | **多阶段重构（阶段 3~6）+ 文档同步**：(1) **阶段 3 RecapsView 拆分**：新增 `features/recaps/` 分域，抽 `sessionActions.ts` 纯函数（getRowActions/getDrawerActions/canFetchLocal/decideRetry/isRetryable/retryHint/primaryActionType）+ `sessionActions.test.ts`（+41 测试，前端测试 49→90）；RecapsView 拆为 `features/recaps/components/` 下 RecapDrawer/RecapToolbar/SessionFilters/SessionTable。(2) **阶段 4a/4b SettingsView 拆分**：拆为 `features/settings/components/` 下 6 个卡片组件（PublishSettingsCard/RecapSettingsCard/WebDAVSettingsCard/AdminTokenCard/BiliAccountsCard/ConfigBackupCard）+ settings-cards.css；配置导入策略选择 bug 修正 + 覆盖按钮经 catch 映射。(3) **阶段 5 自管理组件收敛**：`features/channel/` 新增 useBiliQRCodeLogin/useGlossaryEntries/useRecapTemplateEditor，`features/onboarding/` 新增 useOnboardingWizard；GlossaryEditor/RecapTemplateEditor/BiliQRCodeLoginDialog/OnboardingWizard 瘦身为视图；props 全 getter 化。(4) **阶段 6 刷新协调器**：新增 `composables/useAppRefreshCoordinator.ts`（WS 连接 + task_progress 订阅 + WS 断线降级轮询 + WS 重连停轮询并全量拉回，方案 §7.2，单一 owner）；在 AppLayout 挂载，生命周期等同 app；新增 `composables/useAdminToken.ts`（管理员令牌 localStorage 持久化 + axios 拦截器注入 X-Admin-Token）。(5) 配套：`api/sessions.ts` 新增 editOpus/removeOpus；`api/client.ts` 注入 admin token。**新增 docs/FRONTEND_ARCHITECTURE.md** 作为重构后架构快照 |

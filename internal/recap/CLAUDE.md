@@ -18,6 +18,7 @@
 | `NewHandler(cfg, sessions, states, provider, glossaryStore, templateStore)` | 创建 Handler（注入 templateStore） |
 | `CreateTask(ctx, pool, sessionID)` | 校验前置条件并创建任务 |
 | `CreateTaskWithRange(ctx, pool, sessionID, startSec, endSec)` | 创建指定时间段回顾任务 |
+| `CreateRegenTask(ctx, pool, sessionID)` | 重新生成整场回顾（覆盖本地 md，不碰 B站）；守卫 recap_done/published；入队带 `BypassFailState=true`，失败不降级主状态 |
 | `Register(pool)` | 注册 recap 任务处理器 |
 | `SetNotifyManager(m)` | 注入通知管理器，回顾完成发送 `recap_done` |
 | `SetGlossaryDiscoverer(d)` | 注入术语发现器，回顾完成后自动术语发现 |

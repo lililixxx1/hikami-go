@@ -92,8 +92,8 @@ web/src/
 | **列表行(表A)** | 阅读(打开抽屉) | edit + remove | retry(仅 retryable) | submit_asr/generate_recap/upload/publish | 独立 fetch 按钮(并存) |
 | **抽屉(表B)** | upload | 无 | 无 | 同表A | 无 |
 
-- `UIActionName`(8 个):`submit_asr/generate_recap/upload/publish/fetch/retry/edit_opus/remove_opus`。
-  **不复用** `lifecycle.SessionActionName`(后者 6 个且含 `stop_record`,属首页)。**不是其超集**。
+- `UIActionName`(6 个):`submit_asr/generate_recap/upload/publish/fetch/retry`。
+  **不复用** `lifecycle.SessionActionName`(后者 6 个且含 `stop_record`,属首页)。**不是其超集**。`edit_opus`/`remove_opus` 已移除(B站专栏只能手动去 B站管理);「重新生成回顾」属非推进型动作,在 RecapDrawer 硬编码,不进 `UIActionName`。
 - `getRowActions(session, capabilities, currentTask?)` — 列表行
 - `getDrawerActions(session, capabilities)` — 抽屉
 - `decideRetry(session, currentTask)` — retry 四边界(retryable / no_task_id / task_missing / task_not_failed)

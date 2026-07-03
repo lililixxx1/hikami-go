@@ -106,6 +106,7 @@
 | 30 | `channels` 追加 `max_continuations`（默认 -1） |
 | 31 | `sessions` 追加 `archived_at`（发布成功后自动归档到 WebDAV 用，不推进主状态） |
 | 32 | `channels` 追加 `auto_recap`（默认 1，per-channel 自动回顾开关，ASR 成功后是否自动生成回顾） |
+| 34 | `tasks.bypass_fail_state` 列（任务实例级 bypass fail state，配合重新生成回顾） |
 | 33 | `runtime_settings` 表（全局运行时配置覆盖，per-section JSON；`CHECK(section)` 白名单 6 段 + `CHECK(json_valid(data))`） |
 
 ## 测试与质量
@@ -135,7 +136,7 @@ A: `recap_templates` 表中的 `system_prompt` 和 `user_format` 字段使用 `_
 ## 相关文件清单
 
 - `db.go` -- 数据库打开
-- `migrate.go` -- 迁移定义与执行（32 个版本）
+- `migrate.go` -- 迁移定义与执行（34 个版本）
 - `migrate_test.go` -- 迁移测试（9 个用例）
 
 ## 变更记录 (Changelog)

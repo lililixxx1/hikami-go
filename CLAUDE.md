@@ -133,26 +133,26 @@ graph TD
 | `internal/runtime` | 外部工具探测、FFmpeg 自动解析/下载/嵌入、健康检查、磁盘/Cookie 检查 | 26 | [CLAUDE.md](./internal/runtime/CLAUDE.md) |
 | `internal/biliutil` | B 站 Cookie、登录、WBI、UA、加密工具、视频链接解析、view/playurl/弹幕 XML/seg.so API 客户端 | 69 | [CLAUDE.md](./internal/biliutil/CLAUDE.md) |
 | `internal/channel` | 主播 CRUD、识别、自动化配置（auto_record/auto_asr/auto_publish/auto_recap 三态）、per-channel 发布配置 | 59 | [CLAUDE.md](./internal/channel/CLAUDE.md) |
-| `internal/session` | 场次 CRUD、去重、统计（GetStats/GetDashboardStats）、失败重试、local_available/archived_at 标记；CreateLive 同槽冲突返回 ErrAlreadyLive（不再复用/重置） | 40 | [CLAUDE.md](./internal/session/CLAUDE.md) |
-| `internal/state` | 场次聚合状态机与失败恢复、ApplyWithPublishTarget、ApplyRevertPublish | 12 | [CLAUDE.md](./internal/state/CLAUDE.md) |
-| `internal/worker` | 任务池、任务存储、Hub 广播、重试取消、Register+WithBypassFailState（状态旁路任务元数据）、live_record 进程接管回调 | 38 | [CLAUDE.md](./internal/worker/CLAUDE.md) |
-| `internal/handler` | Gin REST API、WebSocket、引导、诊断、配置导出/导入、回顾模型列表、DashScope/ASR S3/archive 配置端点、stats/dashboard（单连接查询，已修复自死锁）、opus 编辑/删除、运行时状态代际校验、admin token 认证中间件 | 57 | [CLAUDE.md](./internal/handler/CLAUDE.md) |
+| `internal/session` | 场次 CRUD、去重、统计（GetStats/GetDashboardStats）、失败重试、local_available/archived_at 标记；CreateLive 同槽冲突返回 ErrAlreadyLive（不再复用/重置） | 39 | [CLAUDE.md](./internal/session/CLAUDE.md) |
+| `internal/state` | 场次聚合状态机与失败恢复、ApplyWithPublishTarget（published 为终态，无 publish_reverted 出口） | 11 | [CLAUDE.md](./internal/state/CLAUDE.md) |
+| `internal/worker` | 任务池、任务存储、Hub 广播、重试取消、Register+WithBypassFailState（状态旁路任务元数据）、任务实例级 BypassFailState（重新生成等非推进型任务失败不降级主状态）、live_record 进程接管回调 | 38 | [CLAUDE.md](./internal/worker/CLAUDE.md) |
+| `internal/handler` | Gin REST API、WebSocket、引导、诊断、配置导出/导入、回顾模型列表、DashScope/ASR S3/archive 配置端点、stats/dashboard（单连接查询，已修复自死锁）、recap/regenerate 重新生成端点、运行时状态代际校验、admin token 认证中间件 | 55 | [CLAUDE.md](./internal/handler/CLAUDE.md) |
 | `internal/discover` | B 站回放发现（两步式预览勾选下载：PreviewAll 预览→Execute 执行；保留一步式 DiscoverAll 作回退） | 10 | [CLAUDE.md](./internal/discover/CLAUDE.md) |
 | `internal/download` | 回放音频下载（native 单 P/多 P + yt-dlp 双后端，concat list 路径转义）、单链接触发、CookieAccountStore cookie 解析 | 48 | [CLAUDE.md](./internal/download/CLAUDE.md) |
 | `internal/live_record` | 直播音频与弹幕录制、ffmpeg 进程接管（Adopt） | 36 | [CLAUDE.md](./internal/live_record/CLAUDE.md) |
 | `internal/importer` | 手动 multipart 导入 | 15 | [CLAUDE.md](./internal/importer/CLAUDE.md) |
 | `internal/normalize` | 媒体标准化、弹幕解析（JSONL/XML/多 P 合并）、元数据生成 | 68 | [CLAUDE.md](./internal/normalize/CLAUDE.md) |
 | `internal/asr` | DashScope ASR、S3 存储后端、本地临时音频、公网 IP 检测、弹幕校正 | 63 | [CLAUDE.md](./internal/asr/CLAUDE.md) |
-| `internal/recap` | AI 回顾、模板、分段、续写、术语发现、符号化纯文本文章输出（emoji 前缀分行）、署名识别（hasGeneratedNotice 兼容改名过渡期变体）、local_available 守卫、CapabilityChecker 能力 gate、disabledProvider 禁用即禁用 | 94 | [CLAUDE.md](./internal/recap/CLAUDE.md) |
+| `internal/recap` | AI 回顾、模板、分段、续写、术语发现、符号化纯文本文章输出（emoji 前缀分行）、署名识别（hasGeneratedNotice 兼容改名过渡期变体）、local_available 守卫、CapabilityChecker 能力 gate、disabledProvider 禁用即禁用、CreateRegenTask（重新生成，覆盖本地 md 不碰 B站，带 BypassFailState） | 94 | [CLAUDE.md](./internal/recap/CLAUDE.md) |
 | `internal/upload` | WebDAV 归档上传（rclone + 原生 WebDAV）、前置产物校验、清理策略+local_available 闭环 | 38 | [CLAUDE.md](./internal/upload/CLAUDE.md) |
-| `internal/publisher` | B 站专栏草稿/发布/编辑/删除与 Markdown 转 Opus，含 -352 风控自动处理（buvid 注入+gaia 验证+WBI 刷新重试）、EditOpus（删旧重发）、封面来源解析（recap cover > 配置 cover_url 本地路径自动上传/网络 URL 原样）、local_available 守卫 | 71 | [CLAUDE.md](./internal/publisher/CLAUDE.md) |
+| `internal/publisher` | B 站专栏草稿/发布与 Markdown 转 Opus，含 -352 风控自动处理（buvid 注入+gaia 验证+WBI 刷新重试）、封面来源解析（recap cover > 配置 cover_url 本地路径自动上传/网络 URL 原样）、local_available 守卫（专栏只能手动去 B站管理，本系统不删不改） | 66 | [CLAUDE.md](./internal/publisher/CLAUDE.md) |
 | `internal/archive` | 发布后 WebDAV 归档（状态旁路任务：从 published 出发，不推进主状态仅写 archived_at），复用 upload.Copier/Deleter，与 upload 互斥 | 14 | [CLAUDE.md](./internal/archive/CLAUDE.md) |
 | `internal/scheduler` | 定时发现、直播检查、告警任务 | 13 | [CLAUDE.md](./internal/scheduler/CLAUDE.md) |
 | `internal/secrets` | API Key 管理 | 8 | [CLAUDE.md](./internal/secrets/CLAUDE.md) |
 | `internal/runtimeconfig` | 全局运行时配置覆盖持久化（runtime_settings 表 per-section JSON，含 SaveTx/WithTx 与 secrets 原子写入；启动由 ApplyOverrides 覆盖 config.yaml 基线） | 8 | [CLAUDE.md](./internal/runtimeconfig/CLAUDE.md) |
 | `internal/glossary` | 术语表与 AI 术语发现候选 | 63 | [CLAUDE.md](./internal/glossary/CLAUDE.md) |
 | `internal/notify` | 通知事件与发送器 | 12 | [CLAUDE.md](./internal/notify/CLAUDE.md) |
-| `web` | Vue 3 前端管理界面（features 分域 + composables 收敛 + Vitest 测试；录播/回放子 tab + 两步式发现回放抽屉） | 96 | [CLAUDE.md](./web/CLAUDE.md) |
+| `web` | Vue 3 前端管理界面（features 分域 + composables 收敛 + Vitest 测试；设置页 4 折叠分组 + 录播/回放子 tab + 两步式发现回放抽屉 + 抽屉内重新生成回顾） | 97 | [CLAUDE.md](./web/CLAUDE.md) |
 
 完整路径、入口文件、测试数量见下方「精简模块索引」表。
 
@@ -223,6 +223,23 @@ make tidy
 
 ## 变更记录 (Changelog)
 
+### 2026-07-03 · 移除专栏删除/编辑 + 新增重新生成回顾
+
+- **背景**：回顾页「删除」「编辑」按钮会调 B站 API 删除/替换已发布专栏（`removeOpus`/`editOpus`），但用户期望 B站内容只能手动去 B站管理。
+- **砍掉专栏删除/编辑**：移除 `publisher.RemoveOpus`/`EditOpus`、`biliOpusClient.RemoveOpus`、`OpusClient.RemoveOpus` 接口签名、handler `editOpus`/`removeOpus` + 路由（`POST /opus/edit`、`DELETE /opus`）。连带清理 4 处死代码：`state.ApplyRevertPublish`、`EventPublishReverted`、`transitions[StatusPublished]` 出口表（published 改为终态）、`session.SetPublishTarget`。前端 `UIActionName` 8→6、删 `publishOpusAction`、SessionTable 删按钮、`api/sessions.ts` 删封装。
+- **新增「重新生成回顾」**：`POST /api/sessions/:sid/recap/regenerate` → `recap.CreateRegenTask`（守卫 recap_done/published，覆盖本地 md 不碰 B站）。**任务实例级 bypass**：`worker.Task`/`CreateInput` 加 `BypassFailState bool`（DB v34 加列），`syncSessionState` 改 OR 逻辑（实例级 || 类型级），失败时仅写 `last_error` 不降级 published/recap_done 主状态。`main.go` onSuccess 回调对 published 早退（避免自动发布→降级链）。
+- **前端**：`RecapDrawer.vue` 加硬编码「重新生成」按钮（`v-if recap_done/published`），emit `regenerate` → `handleRegenerate` → `regenerateRecap`。
+- **测试**：后端 26 包全过（+`TestCreateBypassFailStateRoundTrip`、`TestCreateRegenTask*` 3 个）；前端 vitest 97（删 edit/remove 用例 100→97）。文档：api-routes(-2+1)、state/session/handler/publisher/archive/worker/db/recap 的 CLAUDE.md、web/CLAUDE.md、FRONTEND_ARCHITECTURE.md、根 AGENTS/CLAUDE 同步。
+
+### 2026-07-03 · `/init-project` 增量更新
+
+- **校验类型**:增量更新(`d45695f` 上次文档 → `be509b6` HEAD,区间仅前端 3 文件改动,后端零改动)。
+- **未同步的 UI 重构**:设置页折叠分组(`af9df47` + `be509b6`)。`views/SettingsView.vue` 由 13 张平铺卡片重组为 4 个 `el-collapse` 折叠分组——总览(`grp-overview`,合并原配置进度/系统状态/专家配置状态三卡为单总览卡)/流水线配置(`grp-pipeline`,6 卡)/账号与备份(`grp-accounts`)/高级(`grp-advanced`)。删除"API 密钥"空壳卡(密钥改由 DashScope/ASRS3/Recap 各子卡内联管理)。`scrollToSection` 跨分组先展开并等 ~320ms 过渡再滚动。`be509b6` 修 `.column-row > .column-note { grid-column: 2 }`(专栏投稿 column-note 被 2 列 grid auto-placement 挤进 label 列竖排)。
+- **更新模块**:`web/CLAUDE.md`——目录树补登遗漏的 `DashScopeSettingsCard.vue`/`ASRS3SettingsCard.vue`(实为 9 `.vue`,此前仅列 7);`SettingsView.vue` 章节由"5 分区平铺"重写为"4 折叠分组"。
+- **测试计数口径修正**:`vitest run` 运行时实为 **100**(此前文档写 96)。`sessionActions.test.ts` 运行时 51(静态 `it` 47,因 `describe.each(['download','import'])` 将 6 个回放类用例 ×2 展开为 12)。根模块索引 `web` 行 96→100;`web/CLAUDE.md` 测试状态小节同时标注运行时/静态两数。
+- **根 AGENTS.md**:前端结构小节 `features/settings/components/` 行补 9 卡 + 4 折叠分组要点;新增本轮 changelog。
+- **覆盖面**:26 个 internal 模块 + `cmd/hikami` + `web` 的 28 份 CLAUDE.md 面包屑齐全;本轮无新增模块、无后端改动。Mermaid 模块依赖图无变化。
+
 ### 2026-07-02 · `/init-project` 增量更新
 
 - **校验类型**:增量更新(跟随 2 个功能提交 `83ef024` 发现回放两步式 + `e9cb624` 回放类不自动发布,仅文档)。
@@ -230,9 +247,9 @@ make tidy
   - `internal/discover/CLAUDE.md`:新增 `PreviewAll`/`Execute`/`ExecuteItem`/`Result.Exists`/`annotateExists`,2 个 API 端点(`/discover/preview`、`/discover/execute`),测试计数 5→10。
   - `internal/handler/CLAUDE.md`:路由表 +2(两步式发现 preview/execute),关键设计 +1 条。
   - `cmd/hikami/CLAUDE.md`:recap→publish 自动触发链回调按 `session.SourceType`(download/import)拦截回放类自动发布。
-  - `web/CLAUDE.md`:新增 `composables/useDiscoverReplay.ts`(composables 6→7),RecapsView 录播/回放子 tab + 回放类动作隐藏,`sessionActions.test.ts` 41→47,Vitest 90→96。
+  - `web/CLAUDE.md`:新增 `composables/useDiscoverReplay.ts`(composables 6→7),RecapsView 录播/回放子 tab + 回放类动作隐藏,`sessionActions.test.ts` 41→47,Vitest 90→96（静态 `it` 计数口径;`describe.each` 运行时展开后实为 94→100,见 2026-07-03 条口径修正）。
   - `CLAUDE-detail/api-routes.md`:+2 discover 路由。
-- **根模块索引**:`discover` 行描述+测试数(5→10)、`web` 行测试数(90→96)同步更新。
+- **根模块索引**:`discover` 行描述+测试数(5→10)、`web` 行测试数(90→96,静态口径)同步更新。
 - **建议下一步**:无新增模块或孤儿目录,文档与代码树一致;后续重跑 `/init-project` 按本索引增量。
 
 ### 2026-07-01 · `/init-project` 增量更新

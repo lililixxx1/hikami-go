@@ -15,13 +15,13 @@
 - `internal/worker/worker_test.go`：单元+集成测试（33 个测试用例），覆盖任务 Store CRUD、生命周期、重试、取消、进度更新、恢复策略、Pool 注册与执行、Hub 广播与取消订阅、旁路任务（WithBypassFailState）。
 - `internal/worker/task_test.go`：单元+集成测试（5 个测试用例），覆盖 Task Store 生命周期、重试、取消、ActiveBySessionAndType、RecoverRunning。
 - `internal/glossary/glossary_test.go`：单元+集成测试（31 个测试用例），覆盖 CRUD、合并逻辑、Prompt 导出、Markdown/JSON 导入导出、批量删除/切换、频道作用域隔离。
-- `internal/glossary/candidate_store_test.go`：单元+集成测试（12 个测试用例），覆盖候选 CRUD、审批、评分、批量操作。
+- `internal/glossary/candidate_store_test.go`：单元+集成测试（11 个测试用例），覆盖候选 CRUD、审批、评分、批量操作。
 - `internal/glossary/discovery_test.go`：单元+集成测试（14 个测试用例），覆盖 AI 术语发现、分块、prompt、候选合并、解析结果校验、时间戳处理。
 - `internal/recap/recap_test.go`：单元+集成测试（62 个测试用例），覆盖 CreateTask 前置条件、LocalProvider、HandleTask 全流程（含校正产物验证）、弹幕分析、Prompt 构建（含模板渲染）、SessionMetadata 读取、FormatDanmakuStats/appendDanmakuStats、术语校正转写（buildCorrectionRules/correctTextWithRules/correctedTranscriptForPrompt）、ensureFinalAddressSection、续写逻辑。
 - `internal/recap/template_test.go`：单元+集成测试（25 个测试用例），覆盖 TemplateStore CRUD（GetGlobal/GetByChannel/Upsert/Delete/ListGlobal）、Resolve 合并逻辑（全局覆盖内置、主播覆盖全局、部分覆盖、禁用回退、ExtraVars 合并、`__builtin__` 标记回退）、RenderTemplate 变量插值（标准变量、自定义变量、空值/nil 处理、数值变量）。
 - `internal/recap/test_recap_main_test.go`：集成测试（1 个测试用例），使用真实 AI API 端到端回顾生成（需手动运行 `go test -run TestGenerateRecapFromRealData -v -timeout 10m`）。
 - `internal/recap/test_recap_0329_test.go`：集成测试（1 个测试用例），使用真实 AI API 端到端回顾生成。
-- `internal/state/state_test.go`：单元+集成测试（12 个测试用例），覆盖所有合法转换、非法转换拒绝、task_failed 全状态可达、Apply 事务持久化、失败错误写入、时间戳设置、ApplyWithPublishTarget 同事务写 publish_target、ApplyRevertPublish 发布回退。
+- `internal/state/state_test.go`：单元+集成测试（11 个测试用例），覆盖所有合法转换、非法转换拒绝、task_failed 全状态可达、Apply 事务持久化、失败错误写入、时间戳设置、ApplyWithPublishTarget 同事务写 publish_target。
 - `internal/asr/asr_test.go`：单元测试（37 个测试用例），覆盖 CreateTask 前置条件、LocalTranscriber、DashScope 模型/请求体/请求模式、转写结果提取、SRT 生成、退避重试、任务恢复。
 - `internal/asr/danmaku_correction_test.go`：单元测试（1 个测试用例），覆盖弹幕时间校正。
 - `internal/asr/temp_server_test.go`：单元测试（10 个测试用例），覆盖 localPath 路径安全、Publish 成功/取消/不存在、Delete 成功/已删除/空父目录清理、MountHandler HTTP 文件服务。
@@ -52,7 +52,7 @@
 - `internal/biliutil/wbi_test.go`：单元测试（13 个测试用例），覆盖 WBI 签名（置换表、密钥提取、参数排序、MD5 计算、缓存机制、错误处理）。
 - `internal/secrets/secrets_test.go`：单元测试（8 个测试用例），覆盖存取、覆盖、删除、列表、环境变量加载、掩码、校验。
 - `internal/db/migrate_test.go`：单元测试（8 个测试用例），覆盖迁移幂等性和核心表创建。
-- `internal/config/config_test.go`：单元测试（12 个测试用例），覆盖配置加载、校验、默认值（含端口 :6334）、ASRS3Config。
+- `internal/config/config_test.go`：单元测试（11 个测试用例），覆盖配置加载、校验、默认值（含端口 :6334）、ASRS3Config。
 - `internal/runtime/probe_test.go`：单元测试（1 个测试用例），覆盖 ASR 模型和请求模式探测。
 - `internal/runtime/health_test.go`：单元测试（8 个测试用例），覆盖健康检查、磁盘使用、Cookie 过期检查。
 - `internal/runtime/ffmpeg_resolver_test.go`：单元测试（15 个测试用例），覆盖 safeJoin 路径穿越防护、executableFile 校验、extractArchive 解压、extractZip/extractTgz 穿越拦截、cachedResolution 缓存、并发安全。

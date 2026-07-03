@@ -84,8 +84,8 @@ failed      --normalize_succeeded/asr_submitted/asr_succeeded/recap_succeeded/up
 
 ## 测试与质量
 
-- `state_test.go`: 12 个测试用例，覆盖：
-  - `TestNextValidTransitions`: 所有合法转换（含 published→uploaded 回退出口）
+- `state_test.go`: 11 个测试用例，覆盖：
+  - `TestNextValidTransitions`: 所有合法转换（published 为终态，无 publish_reverted 出口）
   - `TestNextInvalidTransition`: 非法转换拒绝
   - `TestTaskFailedFromAnyState`: task_failed 从所有状态可达
   - `TestNullable`: nullable 辅助函数
@@ -96,17 +96,17 @@ failed      --normalize_succeeded/asr_submitted/asr_succeeded/recap_succeeded/up
   - `TestApplyUploadSucceededSetsTimestamp`: upload_succeeded 设置 uploaded_at
   - `TestApplyPublishSucceededSetsTimestamp`: publish_succeeded 设置 published_at
   - `TestApplyWithPublishTarget`: 同事务写 publish_target（JSON 结构）
-  - `TestApplyRevertPublish`: 发布回退（published→uploaded，清空 publish_target，保留 published_at）
 
 ## 相关文件清单
 
 - `state.go` -- 唯一源文件
-- `state_test.go` -- 单元+集成测试（12 个用例）
+- `state_test.go` -- 单元+集成测试（11 个用例）
 
 ## 变更记录 (Changelog)
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-07-03 | 重构 | 移除 `EventPublishReverted`/`ApplyRevertPublish` + `transitions[StatusPublished]` 出口（published 改为终态：B站专栏只能手动去 B站管理）；测试 12→11。配合 worker 任务实例级 BypassFailState + recap CreateRegenTask |
 | 2026-06-21 | 增量同步 | 测试计数校正：10→12（补 `TestApplyWithPublishTarget` 同事务写 publish_target、`TestApplyRevertPublish` 发布回退）。新增 `EventPublishReverted`/`ApplyRevertPublish` + `transitions[StatusPublished]` 出口（published→uploaded，清空 publish_target，保留 published_at），支撑专栏删除/编辑流程 |
 | 2026-05-04 | 重大更新 | failed 状态恢复支持（接受所有管道事件）、新增 state_test.go（10 个用例） |
 | 2026-04-29 | 初始化 | 首次生成模块文档 |
