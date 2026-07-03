@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Download, Edit, Delete, Warning } from '@element-plus/icons-vue'
+import { Download, Warning } from '@element-plus/icons-vue'
 import TaskProgressBar from '@/components/task/TaskProgressBar.vue'
 import { getFriendlySessionStatus, statusGroupMap } from '@/utils/friendlyStatus'
 import { formatDateTime } from '@/utils/format'
@@ -26,8 +26,6 @@ const emit = defineEmits<{
   'open-recap': [session: Session]
   'run-action': [session: Session, action: PrimaryAction]
   fetch: [session: Session]
-  'edit-opus': [session: Session]
-  'remove-opus': [session: Session]
   retry: [session: Session]
 }>()
 
@@ -104,33 +102,8 @@ function rowActions(s: Session) {
         <el-button v-if="rowActions(s).read" type="primary" size="small" @click.stop="emit('open-recap', s)">
           阅读回顾
         </el-button>
-        <!-- published → 编辑/删除专栏(受 publish_opus 能力守卫,服务返回 disabled) -->
-        <template v-if="rowActions(s).edit">
-          <el-tooltip :content="rowActions(s).edit?.disabledReason" :disabled="!rowActions(s).edit?.disabled">
-            <el-button
-              type="primary"
-              size="small"
-              plain
-              :icon="Edit"
-              :disabled="rowActions(s).edit?.disabled"
-              :loading="actionLoadingId === `${s.id}:edit_opus`"
-              @click.stop="emit('edit-opus', s)"
-            >
-              编辑
-            </el-button>
-          </el-tooltip>
-          <el-button
-            type="danger"
-            size="small"
-            plain
-            :icon="Delete"
-            :disabled="rowActions(s).remove?.disabled"
-            :loading="actionLoadingId === `${s.id}:remove_opus`"
-            @click.stop="emit('remove-opus', s)"
-          >
-            删除
-          </el-button>
-        </template>
+        <!-- published 行无「状态推进型」动作(B站专栏只能手动去 B站管理);
+             「重新生成回顾」入口在阅读抽屉内(RecapDrawer)。local 不可用时显示取回。 -->
         <!-- failed → 重试(仅 retryable 才渲染;不可重试按原因给细化文案) -->
         <template v-if="s.status === 'failed'">
           <el-button

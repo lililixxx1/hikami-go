@@ -57,6 +57,12 @@ export function generateRecap(sid: string): Promise<Task> {
   return post(`/api/sessions/${encodeURIComponent(sid)}/recap/generate`)
 }
 
+// regenerateRecap 重新生成整场回顾（覆盖本地 md，不碰 B站）。
+// 仅 recap_done/published 状态允许；任务带 BypassFailState，失败不降级主状态。
+export function regenerateRecap(sid: string): Promise<Task> {
+  return post(`/api/sessions/${encodeURIComponent(sid)}/recap/regenerate`)
+}
+
 export function generateRecapWithRange(sid: string, startTime: number, endTime: number): Promise<Task> {
   return post(`/api/sessions/${encodeURIComponent(sid)}/recap-partial`, {
     start_time: startTime,
@@ -79,16 +85,6 @@ export function publishSession(sid: string): Promise<void> {
 // archiveSession 手动归档已发布场次到 WebDAV（自动归档失败时的手动重试入口）。
 export function archiveSession(sid: string): Promise<Task> {
   return post(`/api/sessions/${encodeURIComponent(sid)}/archive`)
-}
-
-// editOpus 编辑已发布专栏（删旧 + 用最新 recap 重发），返回新的 publish_target。
-export function editOpus(sid: string): Promise<{ publish_target: string }> {
-  return post(`/api/sessions/${encodeURIComponent(sid)}/opus/edit`)
-}
-
-// removeOpus 删除已发布专栏（删除后状态回退 uploaded，可重新发布）。
-export function removeOpus(sid: string): Promise<void> {
-  return del(`/api/sessions/${encodeURIComponent(sid)}/opus`)
 }
 
 export function getRecapContent(sid: string): Promise<RecapContent> {

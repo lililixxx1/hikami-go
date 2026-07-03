@@ -30,6 +30,7 @@ const emit = defineEmits<{
   'update:visible': [value: boolean]
   copy: []
   'run-action': [session: Session, action: PrimaryAction]
+  regenerate: []
   'partial-range': [startSeconds: number, endSeconds: number]
   'add-term': [term: string]
 }>()
@@ -146,6 +147,18 @@ function formatPublishTarget(raw: string): string {
       <template v-if="content?.available">
         <div class="drawer-actions">
           <el-button size="small" @click="emit('copy')">复制 Markdown</el-button>
+          <!-- 重新生成回顾:覆盖本地 md,不碰 B站。仅 recap_done/published 有意义(其它状态走主动作生成)。
+               非状态推进型动作,故不进 getDrawerActions,在此硬编码。 -->
+          <el-button
+            v-if="session.status === 'recap_done' || session.status === 'published'"
+            size="small"
+            type="warning"
+            plain
+            :loading="actionLoadingId === `${session.id}:regenerate`"
+            @click="emit('regenerate')"
+          >
+            重新生成
+          </el-button>
           <!-- 抽屉主动作(表B): recap_done→upload; uploaded→publish; published/failed 无 -->
           <el-button
             v-if="drawerActions(session).primary"

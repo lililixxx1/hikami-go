@@ -76,8 +76,6 @@ describe('getRowActions 表A — recap_done', () => {
     const a = getRowActions(makeSession({ status: 'recap_done' }), allCaps)
     expect(a.read).toBe(true)
     expect(a.primary).toBeUndefined()
-    expect(a.edit).toBeUndefined()
-    expect(a.remove).toBeUndefined()
     expect(a.retry).toBeUndefined()
   })
 
@@ -89,43 +87,19 @@ describe('getRowActions 表A — recap_done', () => {
   })
 })
 
-// ---------- 列表行(表A): published 显示 edit/remove ----------
+// ---------- 列表行(表A): published 无状态推进型动作(B站专栏只能手动管理) ----------
 
 describe('getRowActions 表A — published', () => {
-  it('published && publish_target → edit + remove(能力可用)', () => {
+  it('published → 无状态推进主动作(专栏删除能力已移除,重新生成在抽屉硬编码按钮)', () => {
     const a = getRowActions(makeSession({ status: 'published', publish_target: '{"dyn_id":"d1"}' }), allCaps)
-    expect(a.edit).toBeDefined()
-    expect(a.edit?.name).toBe('edit_opus')
-    expect(a.remove).toBeDefined()
-    expect(a.remove?.name).toBe('remove_opus')
-    expect(a.edit?.disabled).toBe(false)
+    expect(a.primary).toBeUndefined()
   })
 
-  it('published 但无 publish_target → 不显示 edit/remove(无可编辑对象)', () => {
-    const a = getRowActions(makeSession({ status: 'published', publish_target: '' }), allCaps)
-    expect(a.edit).toBeUndefined()
-    expect(a.remove).toBeUndefined()
-  })
-
-  it('published 能力不可用 → edit/remove 禁用 + reason', () => {
-    const caps = { ...allCaps, publish_opus: false }
-    const a = getRowActions(makeSession({ status: 'published', publish_target: 'd1' }), caps)
-    expect(a.edit?.disabled).toBe(true)
-    expect(a.edit?.disabledReason).toContain('发布能力')
-  })
-
-  it('published capabilities=null → edit/remove 禁用(运行时能力未加载)', () => {
-    const a = getRowActions(makeSession({ status: 'published', publish_target: 'd1' }), null)
-    expect(a.edit?.disabled).toBe(true)
-    expect(a.edit?.disabledReason).toContain('运行时能力')
-  })
-
-  it('published 且本地已清理 → edit/remove + fetch 并存', () => {
+  it('published 且本地已清理 → 仅 fetch(无 edit/remove)', () => {
     const a = getRowActions(
       makeSession({ status: 'published', publish_target: 'd1', local_available: false }),
       allCaps,
     )
-    expect(a.edit).toBeDefined()
     expect(a.fetch).toBeDefined()
   })
 })
@@ -220,7 +194,7 @@ describe('getDrawerActions 表B', () => {
     expect(a.primary?.name).toBe('publish')
   })
 
-  it('published → 无动作(差异点②,列表行有 edit/remove)', () => {
+  it('published → 无主动作(专栏只能手动去 B站管理;重新生成在抽屉硬编码按钮)', () => {
     const a = getDrawerActions(makeSession({ status: 'published', publish_target: 'd1' }), allCaps)
     expect(a.primary).toBeUndefined()
   })
@@ -283,7 +257,7 @@ describe('canFetchLocal / primaryActionType / UI_ACTION_REASON', () => {
     expect(primaryActionType('generate_recap')).toBe('primary')
   })
 
-  it('UI_ACTION_REASON 覆盖全部 8 个 UIActionName', () => {
+  it('UI_ACTION_REASON 覆盖全部 6 个 UIActionName', () => {
     const all: UIActionName[] = [
       'submit_asr',
       'generate_recap',
@@ -291,8 +265,6 @@ describe('canFetchLocal / primaryActionType / UI_ACTION_REASON', () => {
       'publish',
       'fetch',
       'retry',
-      'edit_opus',
-      'remove_opus',
     ]
     for (const name of all) {
       expect(typeof UI_ACTION_REASON[name]).toBe('string')
@@ -307,8 +279,6 @@ describe('getRowActions 表A — 处理中状态无按钮', () => {
     const a = getRowActions(makeSession({ status: 'recording' }), allCaps)
     expect(a.read).toBeUndefined()
     expect(a.primary).toBeUndefined()
-    expect(a.edit).toBeUndefined()
-    expect(a.remove).toBeUndefined()
     expect(a.retry).toBeUndefined()
   })
 
@@ -329,13 +299,11 @@ describe('getRowActions 表A — 叠加规则(local_available 与各动作并存
     expect(a.fetch).toBeDefined()
   })
 
-  it('published 无 publish_target + 本地已清理 → 仅 fetch(edit/remove 不渲染)', () => {
+  it('published + 本地已清理 → 仅 fetch(published 无状态推进型动作)', () => {
     const a = getRowActions(
       makeSession({ status: 'published', publish_target: '', local_available: false }),
       allCaps,
     )
-    expect(a.edit).toBeUndefined()
-    expect(a.remove).toBeUndefined()
     expect(a.fetch).toBeDefined()
   })
 
@@ -372,7 +340,7 @@ describe('getDrawerActions 表B — 能力缺失', () => {
 })
 
 describe('buildPrimaryAction 仅返回主动作', () => {
-  it('uploaded → publish,name 属 4 个主动作之一(非 fetch/retry/edit_opus)', () => {
+  it('uploaded → publish,name 属 4 个主动作之一(非 fetch/retry)', () => {
     const a = getRowActions(makeSession({ status: 'uploaded', source_type: 'live_record' }), allCaps)
     expect(a.primary?.name).toBe('publish')
     expect(['submit_asr', 'generate_recap', 'upload', 'publish']).toContain(a.primary?.name)
@@ -396,8 +364,7 @@ describe('回放类来源隐藏B站发布相关动作', () => {
         makeSession({ status: 'published', source_type: st, publish_target: 'opus-123' }),
         allCaps,
       )
-      expect(a.edit).toBeUndefined()
-      expect(a.remove).toBeUndefined()
+      expect(a.primary).toBeUndefined()
     })
 
     it('recap_done → 仍有 upload 归档(归档不受影响)', () => {
@@ -419,13 +386,12 @@ describe('回放类来源隐藏B站发布相关动作', () => {
       expect(a.primary?.name).toBe('publish')
     })
 
-    it('published + publish_target → edit/remove 保留', () => {
+    it('published + publish_target → 无 edit/remove(专栏能力已移除,两类一致)', () => {
       const a = getRowActions(
         makeSession({ status: 'published', source_type: 'live_record', publish_target: 'opus-456' }),
         allCaps,
       )
-      expect(a.edit).toBeDefined()
-      expect(a.remove).toBeDefined()
+      expect(a.primary).toBeUndefined()
     })
   })
 })

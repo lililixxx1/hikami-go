@@ -22,12 +22,11 @@ import DiscoverResultDrawer from '@/components/session/DiscoverResultDrawer.vue'
 import ImportSessionDrawer from '@/components/session/ImportSessionDrawer.vue'
 import DownloadByURLDrawer from '@/components/session/DownloadByURLDrawer.vue'
 import {
-  editOpus,
   fetchSession,
   generateRecap,
   generateRecapWithRange,
   publishSession,
-  removeOpus,
+  regenerateRecap,
   submitASR,
   uploadSession,
   getRecapContent,
@@ -292,41 +291,24 @@ async function handleFetch(session: Session) {
   }
 }
 
-// 编辑已发布专栏：删旧专栏 + 用最新回顾重新发布（替换）。
-async function handleEditOpus(session: Session) {
-  if (actionLoadingId.value) return
+// 重新生成回顾：覆盖本地 md，不碰 B站专栏。仅 recap_done/published 状态可用。
+// 任务带 BypassFailState，失败时不降级主状态（published/recap_done 保持，仅写 last_error）。
+// 抽屉只针对当前选中场次(selectedSession)，故 emit 不带参。
+async function handleRegenerate() {
+  const session = selectedSession.value
+  if (!session || actionLoadingId.value) return
   try {
     await ElMessageBox.confirm(
-      '将用最新回顾重新发布并替换当前专栏（旧专栏会被删除）。是否继续？',
-      '编辑专栏',
-      { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' },
+      '将重新生成本场回顾（覆盖当前回顾内容，不改动B站专栏）。生成是异步任务，完成后请重新打开查看。是否继续？',
+      '重新生成回顾',
+      { confirmButtonText: '确认生成', cancelButtonText: '取消', type: 'info' },
     )
   } catch { return }
-  actionLoadingId.value = `${session.id}:edit_opus`
+  actionLoadingId.value = `${session.id}:regenerate`
   try {
-    await editOpus(session.id)
-    ElMessage.success('专栏已更新')
-    await sessionsStore.fetchSessions()
-  } finally {
-    actionLoadingId.value = ''
-  }
-}
-
-// 删除已发布专栏：删除后状态回退 uploaded，可重新发布。
-async function handleRemoveOpus(session: Session) {
-  if (actionLoadingId.value) return
-  try {
-    await ElMessageBox.confirm(
-      '确定删除已发布的专栏？删除后本场回退为已上传，可重新发布。此操作不可撤销。',
-      '删除专栏',
-      { confirmButtonText: '确认删除', cancelButtonText: '取消', type: 'warning' },
-    )
-  } catch { return }
-  actionLoadingId.value = `${session.id}:remove_opus`
-  try {
-    await removeOpus(session.id)
-    ElMessage.success('专栏已删除')
-    await sessionsStore.fetchSessions()
+    await regenerateRecap(session.id)
+    ElMessage.success('重新生成任务已提交，完成后请重新打开查看')
+    await Promise.all([sessionsStore.fetchSessions(), tasksStore.fetchTasks()])
   } finally {
     actionLoadingId.value = ''
   }
@@ -430,8 +412,6 @@ onMounted(async () => {
       @open-recap="openRecap"
       @run-action="handleRowAction"
       @fetch="handleFetch"
-      @edit-opus="handleEditOpus"
-      @remove-opus="handleRemoveOpus"
       @retry="handleRetry"
     />
 
@@ -449,6 +429,7 @@ onMounted(async () => {
       :added-terms="addedSuggestedTerms"
       @copy="handleCopyRecap"
       @run-action="handleDrawerAction"
+      @regenerate="handleRegenerate"
       @partial-range="handlePartialRecap"
       @add-term="handleAddSuggestedTerm"
     />

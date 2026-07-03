@@ -2,17 +2,19 @@
  * 回顾页 UI 动作服务(重构方案 §4 状态机收敛)
  *
  * 这里把 RecapsView 两套 UI 入口的动作逻辑显式化:
- *  - 列表行(表A): recap_done→阅读(published→edit/remove; failed→retry; 其余→主动作; local 不可用→独立取回)
+ *  - 列表行(表A): recap_done→阅读(published→无动作或取回; failed→retry; 其余→主动作; local 不可用→独立取回)
  *  - 抽屉(表B): 仅主动作(recap_done→upload; uploaded→publish; published/failed 无动作)
+ *    重新生成回顾是抽屉内的硬编码按钮(非主动作,不走状态机推进),见 RecapDrawer.vue。
  *
  * 关键:不把 utils/lifecycle.ts 当唯一真相——它给 published 返回 fetch,
- * 但列表行 UI 用 edit/remove 遮蔽它,抽屉干脆不显示。本服务复刻的是「UI 入口语义」,
+ * 列表行让 fetch 透出为取回按钮(若 local 不可用),抽屉不显示。本服务复刻的是「UI 入口语义」,
  * lifecycle 只作为主动作能力判断的底层调用之一。
  *
  * 注意:这里的 UIActionName 不复用 lifecycle 的 SessionActionName——后者只含
- * stop_record/submit_asr/generate_recap/upload/fetch/publish 6 个,而 UI 层还有
- * edit_opus/remove_opus/retry。本类型只覆盖回顾页(列表行+抽屉)的动作,不含 stop_record
+ * stop_record/submit_asr/generate_recap/upload/fetch/publish 6 个,而 UI 层还有 retry。
+ * 本类型只覆盖回顾页(列表行+抽屉)的「状态推进型」动作,不含 stop_record
  * (它属首页直播卡,不进回顾页两入口),故也不是 lifecycle 的超集。
+ * 「重新生成回顾」属非推进型动作,不进 UIActionName,在 RecapDrawer 内硬编码。
  */
 import type { Session, Task, Capabilities } from '@/api/types'
 import { getNextAction } from '@/utils/lifecycle'
@@ -30,8 +32,6 @@ export type UIActionName =
   | 'publish' // 主动作(经 lifecycle)
   | 'fetch' // 取回(local_available)
   | 'retry' // 重试(failed,基于 current_task_id)
-  | 'edit_opus'
-  | 'remove_opus' // published 专栏管理
 
 /** UI 动作禁用文案(独立于 lifecycle.ACTION_DISABLED_REASON,后者只覆盖 6 个 lifecycle 动作) */
 export const UI_ACTION_REASON: Record<UIActionName, string> = {
@@ -41,8 +41,6 @@ export const UI_ACTION_REASON: Record<UIActionName, string> = {
   publish: '发布能力不可用，请检查发布配置与 Cookie',
   fetch: '', // 取回无能力门槛
   retry: '无可重试任务',
-  edit_opus: '发布能力不可用，请检查发布配置与 Cookie', // 复用 publish
-  remove_opus: '发布能力不可用，请检查发布配置与 Cookie',
 }
 
 export interface SessionAction {
@@ -68,10 +66,6 @@ export interface RowActions {
   read?: boolean
   /** 主动作(media_ready→submit_asr / asr_done→generate_recap / uploaded→publish) */
   primary?: PrimaryAction
-  /** published 且有 publish_target 时,编辑专栏 */
-  edit?: SessionAction
-  /** published 且有 publish_target 时,删除专栏 */
-  remove?: SessionAction
   /** failed 且有可重试任务时,重试 */
   retry?: SessionAction
   /** local_available=false 时,独立取回(与其它动作并存,非互斥) */
@@ -113,29 +107,6 @@ function buildPrimaryAction(
     disabled: next.disabled,
     disabledReason: next.disabledReason,
     confirmText: next.confirmText,
-  }
-}
-
-// ---------- 能力守卫(published 的 edit/remove 复用) ----------
-
-/** published 的 edit/remove 受 publish_opus 能力守卫(与 RecapsView.isPublishDisabled 一致) */
-function publishOpusAction(name: 'edit_opus' | 'remove_opus', capabilities: Capabilities | null): SessionAction {
-  const caps = capabilities
-  let disabledReason = ''
-  if (!caps) {
-    disabledReason = '运行时能力未加载'
-  } else if (!caps.publish_opus) {
-    disabledReason = caps.reason || UI_ACTION_REASON[name]
-  }
-  return {
-    name,
-    label: name === 'edit_opus' ? '编辑' : '删除',
-    disabled: disabledReason !== '',
-    disabledReason,
-    confirmText:
-      name === 'edit_opus'
-        ? '将用最新回顾重新发布并替换当前专栏（旧专栏会被删除）。是否继续？'
-        : '确定删除已发布的专栏？删除后本场回退为已上传，可重新发布。此操作不可撤销。',
   }
 }
 
@@ -229,14 +200,6 @@ export function getRowActions(
     return withFetch(actions, session)
   }
 
-  // published 且有发布目标:显示编辑/删除(列表行专属,抽屉不显示——差异点②)
-  // 回放类不发布B站:历史已发布的回放场次也隐藏 edit/remove(仅留取回)
-  if (session.status === 'published' && session.publish_target && !isReplaySource(session)) {
-    actions.edit = publishOpusAction('edit_opus', capabilities)
-    actions.remove = publishOpusAction('remove_opus', capabilities)
-    return withFetch(actions, session)
-  }
-
   // failed:仅当有可重试任务才显示重试(§7.1)
   if (session.status === 'failed') {
     if (isRetryable(session, currentTask)) {
@@ -247,6 +210,8 @@ export function getRowActions(
 
   // 主动作(media_ready→submit_asr / asr_done→generate_recap / uploaded→publish)
   // 注意:recap_done→upload 是主动作,但前面 recap_done 分支已拦截成 read,故这里不会到。
+  // published 走到这里时 lifecycle 返回 fetch(被 isPrimaryActionName 过滤),列表行仅显示取回(若 local 不可用)；
+  // 「重新生成回顾」入口在抽屉内(RecapDrawer),不进列表行——published 专栏只能手动去 B站管理。
   const primary = buildPrimaryAction(session, capabilities)
   if (primary) actions.primary = primary
 
