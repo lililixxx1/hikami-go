@@ -155,6 +155,13 @@ func TestHandleTaskRecordsReconnectToPartAndConcatsSegments(t *testing.T) {
 	manager.cfg.LiveRecord.AutoReconnect = true
 	manager.cfg.LiveRecord.MaxReconnect = 1
 	manager.cfg.LiveRecord.ReconnectDelay = 1
+	// 首段录制失败后仍开播（触发重连），重连段录制成功（clean EOF）后主播下播（正常收尾）。
+	// 三次 CheckLive：preflight=true、首段失败后判定=true、重连段 EOF 后判定=false。
+	// 旧版用永远-live 的 fakeClient 能"成功"，是因为旧代码把重连段的 clean EOF 错误地
+	// 当成正常结束放行（即本次修复的 bug）；stateful client 暴露了真实路径必须显式收尾。
+	c := &statefulLiveClient{tb: t, lives: []bool{true, true, false}}
+	manager.client = c
+	defer c.assertFullyConsumed()
 	recorder := &interruptingAudioRecorder{}
 	manager.audio = recorder
 
@@ -292,7 +299,146 @@ func TestHandleTaskReconnectSurvivesProbeError(t *testing.T) {
 	}
 }
 
-// mustCreateRunningTask 封装「创建 + MarkRunning」的样板，返回可直接交给 HandleTask 的 task。
+// TestHandleTaskReconnectsOnCleanEOFWhileLive 是本次修复的核心回归：首次录制 ffmpeg 干净
+// 退出（返回 nil，模拟上游 EOF）+ 主播仍开播 → 必须触发重连；重连段录制后主播下播 → 正常收尾。
+// 21:52 漏录正是首段 clean EOF 被旧代码（for ... err != nil ... 守卫）直接放行导致。
+// 三次 CheckLive：preflight=true、首段 EOF 后判定=true、重连段 EOF 后判定=false。
+func TestHandleTaskReconnectsOnCleanEOFWhileLive(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = true
+	manager.cfg.LiveRecord.MaxReconnect = 1
+	manager.cfg.LiveRecord.ReconnectDelay = 1
+	c := &statefulLiveClient{tb: t, lives: []bool{true, true, false}}
+	manager.client = c
+	defer c.assertFullyConsumed()
+	recorder := &cleanEOFRecorder{}
+	manager.audio = recorder
+	stubFFmpegConcat(t)
+
+	running := mustCreateRunningTask(t, pool)
+	if err := manager.HandleTask(context.Background(), running, noopReporter{}); err != nil {
+		t.Fatalf("handle task: %v", err)
+	}
+
+	rawDir := filepath.Join(manager.cfg.OutputRoot, "huize", "live_20260427_120000", "raw")
+	audioPath := filepath.Join(rawDir, "audio.m4a")
+	content, err := os.ReadFile(audioPath)
+	if err != nil {
+		t.Fatalf("read audio: %v", err)
+	}
+	if string(content) != "segment-1\nsegment-2\n" {
+		t.Fatalf("audio content = %q, want two concatenated segments", string(content))
+	}
+	if len(recorder.outputs) != 2 || recorder.outputs[0] != audioPath || recorder.outputs[1] != reconnectAudioSegmentPath(audioPath, 1) {
+		t.Fatalf("recorder outputs = %+v, want [audioPath, part.1]", recorder.outputs)
+	}
+}
+
+// TestHandleTaskCleanEOFThenOfflineNoReconnect 对照组：首段 clean EOF + 主播已下播 → 不重连，
+// recorder 只被调用一次，正常收尾。两次 CheckLive：preflight=true、首段 EOF 后判定=false。
+func TestHandleTaskCleanEOFThenOfflineNoReconnect(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = true
+	manager.cfg.LiveRecord.MaxReconnect = 1
+	manager.cfg.LiveRecord.ReconnectDelay = 1
+	c := &statefulLiveClient{tb: t, lives: []bool{true, false}}
+	manager.client = c
+	defer c.assertFullyConsumed()
+	recorder := &cleanEOFRecorder{}
+	manager.audio = recorder
+
+	running := mustCreateRunningTask(t, pool)
+	if err := manager.HandleTask(context.Background(), running, noopReporter{}); err != nil {
+		t.Fatalf("handle task: %v", err)
+	}
+
+	rawDir := filepath.Join(manager.cfg.OutputRoot, "huize", "live_20260427_120000", "raw")
+	if _, err := os.Stat(reconnectAudioSegmentPath(filepath.Join(rawDir, "audio.m4a"), 1)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("part.1 should not exist when offline after clean EOF, stat err = %v", err)
+	}
+	if len(recorder.outputs) != 1 {
+		t.Fatalf("recorder outputs = %+v, want exactly 1 (no reconnect)", recorder.outputs)
+	}
+}
+
+// TestHandleTaskCleanEOFLiveProbeErrorFinalizes 验证 r4 Medium 2：首段 clean EOF + 探测本身出错
+// （B 站风控 -352）→ 保守收尾（不重连），保留已录音频，而不是冒"重连耗尽丢弃内容"的风险。
+// 两次 CheckLive：preflight 成功（live=true，err=nil）、首段 EOF 后探测出错（err=-352）。
+func TestHandleTaskCleanEOFLiveProbeErrorFinalizes(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = true
+	manager.cfg.LiveRecord.MaxReconnect = 1
+	manager.cfg.LiveRecord.ReconnectDelay = 1
+	c := &statefulLiveClient{
+		tb:    t,
+		lives: []bool{true, false}, // 第二位的 live 值在 err 非 nil 时不生效
+		errs:  []error{nil, errors.New("bilibili room info error: code=-352")},
+	}
+	manager.client = c
+	defer c.assertFullyConsumed()
+	recorder := &cleanEOFRecorder{}
+	manager.audio = recorder
+
+	running := mustCreateRunningTask(t, pool)
+	if err := manager.HandleTask(context.Background(), running, noopReporter{}); err != nil {
+		t.Fatalf("handle task: %v, want finalize success on inconclusive probe", err)
+	}
+	if len(recorder.outputs) != 1 {
+		t.Fatalf("recorder outputs = %+v, want exactly 1 (no reconnect on inconclusive probe)", recorder.outputs)
+	}
+}
+
+// TestHandleTaskReconnectExhaustedReturnsError 保护现有"重连耗尽返回错误"语义：每次录制失败
+// + 仍开播 → 重连次数耗尽后必须返回错误，不能误走 finalize 成功路径。
+// 三次 CheckLive：preflight=true、首段失败后判定=true、重连段失败后判定=true。
+func TestHandleTaskReconnectExhaustedReturnsError(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = true
+	manager.cfg.LiveRecord.MaxReconnect = 1
+	manager.cfg.LiveRecord.ReconnectDelay = 1
+	c := &statefulLiveClient{tb: t, lives: []bool{true, true, true}}
+	manager.client = c
+	defer c.assertFullyConsumed()
+	recorder := &alwaysFailingRecorder{}
+	manager.audio = recorder
+
+	running := mustCreateRunningTask(t, pool)
+	err := manager.HandleTask(context.Background(), running, noopReporter{})
+	if err == nil {
+		t.Fatalf("handle task err = nil, want non-nil after reconnect exhausted")
+	}
+}
+
+// TestHandleTaskCleanEOFLiveReconnectExhaustedReturnsSentinel 验证 r5 Medium 3：
+// 首段 clean EOF + 仍开播，但重连段也 clean EOF + 仍开播 → 重连额度耗尽时返回哨兵错误
+// （而不是误判成功）。三次 CheckLive：preflight=true、首段 EOF 后=true、重连段 EOF 后=true。
+func TestHandleTaskCleanEOFLiveReconnectExhaustedReturnsSentinel(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = true
+	manager.cfg.LiveRecord.MaxReconnect = 1
+	manager.cfg.LiveRecord.ReconnectDelay = 1
+	c := &statefulLiveClient{tb: t, lives: []bool{true, true, true}}
+	manager.client = c
+	defer c.assertFullyConsumed()
+	recorder := &cleanEOFRecorder{}
+	manager.audio = recorder
+	stubFFmpegConcat(t)
+
+	running := mustCreateRunningTask(t, pool)
+	err := manager.HandleTask(context.Background(), running, noopReporter{})
+	if err == nil {
+		t.Fatalf("handle task err = nil, want sentinel after clean-EOF-while-live exhausted")
+	}
+	if !errors.Is(err, errStreamEndedWhileLive) {
+		t.Fatalf("handle task err = %v, want errors.Is(errStreamEndedWhileLive)", err)
+	}
+}
+
 func mustCreateRunningTask(t *testing.T, pool *worker.Pool) worker.Task {
 	t.Helper()
 	task, err := pool.Store().Create(context.Background(), worker.CreateInput{
@@ -611,6 +757,68 @@ func (probeErrorClient) CheckLive(ctx context.Context, roomID int64, cookieHeade
 
 func (probeErrorClient) GetStream(ctx context.Context, roomID int64, audioOnly bool, cookieHeader string) (StreamInfo, error) {
 	return StreamInfo{URL: "https://example.com/live.flv", AudioOnly: audioOnly}, nil
+}
+
+// statefulLiveClient 按调用次数返回预设的开播探测结果，精确驱动各阶段（r5/r6 指出
+// fakeClient 永远-live / offlineClient 被 preflight 拦截，无法覆盖重连分段的判定）。
+// 超出预设次数时 t.Fatalf，避免静默默认值掩盖探测次数错误（r6 Medium）。
+type statefulLiveClient struct {
+	tb    testing.TB
+	lives []bool  // 每次 CheckLive 期望返回的 live 值（errs 对应位为 nil 时生效）
+	errs  []error // 可选：对应次数的探测错误（非 nil 时优先于 lives）
+	calls int
+}
+
+func (c *statefulLiveClient) CheckLive(ctx context.Context, roomID int64, cookieHeader string) (LiveInfo, error) {
+	n := c.calls
+	c.calls++
+	if n >= len(c.lives) {
+		c.tb.Fatalf("statefulLiveClient.CheckLive called more times than expected: got call #%d, have %d presets", n+1, len(c.lives))
+	}
+	if n < len(c.errs) && c.errs[n] != nil {
+		return LiveInfo{}, c.errs[n]
+	}
+	live := c.lives[n]
+	return LiveInfo{
+		RoomID:    roomID,
+		Live:      live,
+		Title:     "stateful",
+		StartedAt: time.Date(2026, 4, 27, 13, 0, 0, 0, time.Local),
+	}, nil
+}
+
+func (c *statefulLiveClient) GetStream(ctx context.Context, roomID int64, audioOnly bool, cookieHeader string) (StreamInfo, error) {
+	return StreamInfo{URL: "https://example.com/live.flv", AudioOnly: true}, nil
+}
+
+// assertFullyConsumed 断言预设的探测次数被刚好用完——既防"多探测"（CheckLive 内 t.Fatalf），
+// 也防"少探测"被静默放过（r7 Low 1）。
+func (c *statefulLiveClient) assertFullyConsumed() {
+	c.tb.Helper()
+	if c.calls != len(c.lives) {
+		c.tb.Fatalf("statefulLiveClient CheckLive called %d times, expected exactly %d", c.calls, len(c.lives))
+	}
+}
+
+// cleanEOFRecorder 模拟 ffmpeg 收到上游 EOF 干净退出：每次 Record 都返回 nil 并写有效字节。
+type cleanEOFRecorder struct {
+	outputs []string
+}
+
+func (r *cleanEOFRecorder) Record(ctx context.Context, stream StreamInfo, outputPath string) error {
+	r.outputs = append(r.outputs, outputPath)
+	return os.WriteFile(outputPath, []byte("segment-"+strconv.Itoa(len(r.outputs))+"\n"), 0o644)
+}
+
+// alwaysFailingRecorder 模拟持续拉流/录制失败（r5 Medium 3：现有 interruptingAudioRecorder
+// 首次失败第二次成功，无法覆盖「重连耗尽返回错误」）。
+type alwaysFailingRecorder struct {
+	outputs []string
+}
+
+func (r *alwaysFailingRecorder) Record(ctx context.Context, stream StreamInfo, outputPath string) error {
+	r.outputs = append(r.outputs, outputPath)
+	return errors.New("stream interrupted")
 }
 
 // countingRecorder 记录 Record 调用次数与目标路径，用于断言录制是否被触发。

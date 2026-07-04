@@ -37,6 +37,26 @@ var (
 	ErrNotLive              = errors.New("channel is not live")
 )
 
+// errStreamEndedWhileLive 表示 ffmpeg 收到上游 EOF 干净退出（recordAudio 返回 nil），
+// 但直播间探测显示仍在播——典型场景是 CDN 切换 / 网络抖动导致流中途断开。
+// 用于把"成功 EOF"从"正常结束"重新归类为"需要重连的中断"，让重连循环接管。
+// 它只在 AutoReconnect 启用时由 decideAfterRecord 产出，作为重连触发器。
+var errStreamEndedWhileLive = errors.New("stream ended cleanly while still live")
+
+// afterRecordDecision 是「一次 recordAudio 结束后该如何继续」的三态决策。
+// 用显式枚举替代 (bool, error)，避免调用方误把录制错误清成 nil。
+type afterRecordDecision int
+
+const (
+	// afterRecordFinishSuccess：本次录制应正常收尾。调用方应把 err 置 nil，走
+	// finalize + normalize 成功路径（主播下播，或干净 EOF + 探测错保守收尾）。
+	afterRecordFinishSuccess afterRecordDecision = iota
+	// afterRecordFinishError：保留错误退出。carryErr 必非 nil（取消、耗尽、原录制失败）。
+	afterRecordFinishError
+	// afterRecordReconnect：进入或继续重连。carryErr 是触发重连的错误（原 wantErr 或哨兵）。
+	afterRecordReconnect
+)
+
 type Manager struct {
 	cfg                *config.Config
 	channels           *channel.Store
@@ -582,53 +602,80 @@ func (m *Manager) HandleTask(ctx context.Context, task worker.Task, reporter wor
 
 	err = m.recordAudio(runCtx, stream, audioPath, reportRecording)
 	addAudioSegment(audioPath)
-	for attempt := 0; err != nil && !errors.Is(runCtx.Err(), context.Canceled) && attempt < maxReconnect; attempt++ {
-		// Re-check liveness before reconnecting.
-		// - 明确判定已下播（无 err 且 !Live）：主播确实停了，放弃重连；
-		// - 仍在播（无 err 且 Live）：正常重连；
-		// - 探测本身出错（如 B 站风控 -352 / 网络抖动）：仍尝试重连。这是关键——
-		//   此刻主播多半仍在播、流几秒后就绪，不应因探测被误杀而放弃整条录制。
-		liveInfo, liveErr := m.client.CheckLive(runCtx, payload.RoomID, m.cookieHeaderForChannel(ctx, task.ChannelID))
-		if liveErr == nil && !liveInfo.Live {
-			slog.Info("stream ended, skipping reconnect", "channel_id", task.ChannelID, "room_id", payload.RoomID)
-			break
+
+	// 重连循环：每次 recordAudio 后（含首段与每个重连分段）都通过 decideAfterRecord 判定
+	// 「该如何继续」。这覆盖了「ffmpeg 收到上游 EOF 干净退出」这一最常见中断场景——
+	// 原代码的 `for ... err != nil ...` 守卫会把干净 EOF（err==nil）直接放行，即便主播
+	// 仍在播也误判为正常结束（见根因报告 docs/archive/investigations/录播时长不足-流断未重连.md）。
+	//
+	// 控制流说明（Go 语义）：select / switch 内的裸 break 只跳出自己，不跳出 for。
+	// 因此取消等待的 Done 分支用 labeled break（break reconnect）退出整个循环；
+	// decision 分支通过 fallthrough 到循环末尾的 break 退出。
+	attemptsUsed := 0
+reconnect:
+	for {
+		// 取消优先：Stop / worker 取消发生时立即退出，不因 helper 内的 CheckLive 而延迟。
+		if errors.Is(runCtx.Err(), context.Canceled) {
+			if err == nil {
+				err = runCtx.Err()
+			}
+			break reconnect
 		}
 
-		// 探测被取消（Stop / worker 取消恰好发生在探测期间）：退出重连，让外层走取消收尾，
-		// 避免继续 sleep 与用未取消的 ctx 重新拉流，导致停止录制被延迟。
-		if liveErr != nil && errors.Is(runCtx.Err(), context.Canceled) {
-			break
+		// 唯一探测点：判定上一次 recordAudio（首段或重连分段）的结果该如何继续。
+		decision, carryErr := m.decideAfterRecord(runCtx, task, payload, err)
+
+		// decideAfterRecord 内若探测期间被取消，可能返回 FinishError + ctx 错误；
+		// 再次检查取消，确保取消立即响应。
+		if errors.Is(runCtx.Err(), context.Canceled) {
+			err = carryErr
+			if err == nil {
+				err = runCtx.Err()
+			}
+			break reconnect
 		}
 
-		if liveErr != nil {
-			slog.Warn("reconnect liveness probe failed, attempt anyway",
-				"channel_id", task.ChannelID, "attempt", attempt+1, "max", maxReconnect,
-				"room_id", payload.RoomID, "probe_error", liveErr, "stream_error", err)
-		} else {
-			slog.Warn("stream interrupted, attempting reconnect",
-				"channel_id", task.ChannelID, "attempt", attempt+1, "max", maxReconnect, "error", err)
+		switch decision {
+		case afterRecordFinishSuccess:
+			err = nil
+			break reconnect
+		case afterRecordFinishError:
+			err = carryErr
+			break reconnect
+		case afterRecordReconnect:
+			// 想重连但额度耗尽：退出并保留错误。
+			// clean-EOF + 仍 live 耗尽时 carryErr 是 errStreamEndedWhileLive（已失败路径是原 wantErr）。
+			if attemptsUsed >= maxReconnect {
+				err = carryErr
+				break reconnect
+			}
+			err = carryErr
+			_ = reporter.Progress(ctx, 15+attemptsUsed*5, fmt.Sprintf("reconnecting (attempt %d/%d)", attemptsUsed+1, maxReconnect))
 		}
-		_ = reporter.Progress(ctx, 15+attempt*5, fmt.Sprintf("reconnecting (attempt %d/%d)", attempt+1, maxReconnect))
 
-		// 可取消的等待：Stop / 取消发生在重连延迟期间时立即响应，而不是卡满整个 sleep。
+		// 可取消的等待：Stop / 取消发生在重连延迟期间时立即退出整个循环（labeled break），
+		// 不依赖下一轮 helper，避免被 CheckLive 阻塞。
 		select {
 		case <-time.After(reconnectDelay):
 		case <-runCtx.Done():
-			// 取消已发生：交由 for 条件（!errors.Is(runCtx.Err(), context.Canceled)）终止循环，
-			// 走外层取消收尾分支，跳过本次的 selectStream / recordAudio。
+			err = runCtx.Err()
+			break reconnect
+		}
+
+		// Re-select stream（用 runCtx 让取消能传播到拉流请求）。
+		stream, sErr := m.selectStream(runCtx, payload.RoomID, m.cookieHeaderForChannel(ctx, task.ChannelID))
+		if sErr != nil {
+			slog.Warn("reconnect stream selection failed", "error", sErr)
+			err = sErr
+			attemptsUsed++ // 选流失败也算一次重连尝试（沿用原 continue 后 attempt++ 的语义）
 			continue
 		}
 
-		// Re-select stream（用 runCtx 让取消能传播到拉流请求）
-		stream, err = m.selectStream(runCtx, payload.RoomID, m.cookieHeaderForChannel(ctx, task.ChannelID))
-		if err != nil {
-			slog.Warn("reconnect stream selection failed", "error", err)
-			continue
-		}
-
-		segmentPath := reconnectAudioSegmentPath(audioPath, attempt+1)
-		err = m.recordAudio(runCtx, stream, segmentPath, reportRecording)
+		segmentPath := reconnectAudioSegmentPath(audioPath, attemptsUsed+1)
+		segErr := m.recordAudio(runCtx, stream, segmentPath, reportRecording)
 		addAudioSegment(segmentPath)
+		err = segErr
+		attemptsUsed++
 	}
 
 	if err != nil {
@@ -681,6 +728,85 @@ func (m *Manager) HandleTask(ctx context.Context, task worker.Task, reporter wor
 		return err
 	}
 	return reporter.Progress(ctx, 95, "live recording finished")
+}
+
+// decideAfterRecord 判定一次 recordAudio 结束后该如何继续。wantErr 是本次 recordAudio
+// 的返回值（nil = ffmpeg 干净退出；非 nil = 拉流 / 进程 / 拷贝失败）。
+//
+// 返回 (decision, carryErr)：
+//   - FinishSuccess：调用方 err = nil 正常收尾。
+//   - FinishError  ：调用方 err = carryErr 退出（carryErr 必非 nil）。
+//   - Reconnect    ：调用方继续重连，err = carryErr（原 wantErr 或 errStreamEndedWhileLive）。
+//
+// 判定以 B 站直播间状态为准（设计原则：判定权从 ffmpeg 退出码转移到直播状态）。
+// 探测出错（B 站风控 -352 / 网络抖动）的兜底方向因路径而异：
+//   - wantErr != nil（已失败路径）：反正要重连，探测错仍保守重连（沿用现状）。
+//   - wantErr == nil（干净退出路径）：本可收尾，探测错保守收尾，避免丢弃已录音频。
+//
+// 关键语义：wantErr != nil + 明确下播 时返回 FinishError(wantErr)，与现状（原循环 break
+// 后由 manager.go 的 `if err != nil` 收尾分支返回错误）一致；只有 wantErr == nil + 下播
+// 才是真正的正常收尾。这避免了"把失败录制推下游 normalize"的回归。
+func (m *Manager) decideAfterRecord(ctx context.Context, task worker.Task, payload taskPayload, wantErr error) (afterRecordDecision, error) {
+	// 关闭重连：保留原 err 语义，绝不吞错误。
+	if !m.cfg.LiveRecord.AutoReconnect {
+		if wantErr == nil {
+			return afterRecordFinishSuccess, nil
+		}
+		return afterRecordFinishError, wantErr
+	}
+
+	liveInfo, liveErr := m.client.CheckLive(ctx, payload.RoomID, m.cookieHeaderForChannel(ctx, task.ChannelID))
+
+	// 探测期间被取消（Stop / worker 取消恰好发生在探测期间）：直接返回 ctx 错误，
+	// 让调用方走取消收尾。helper 契约要求 FinishError 的 carryErr 必非 nil。
+	if ctx.Err() != nil {
+		carry := ctx.Err()
+		if carry == nil {
+			carry = wantErr
+		}
+		return afterRecordFinishError, carry
+	}
+
+	// 明确已下播（探测成功且 !Live）：
+	//   wantErr == nil → 真正的正常收尾；
+	//   wantErr != nil → 保留原录制错误退出（不把失败当成功）。
+	if liveErr == nil && !liveInfo.Live {
+		if wantErr == nil {
+			slog.Info("stream ended, skipping reconnect", "channel_id", task.ChannelID, "room_id", payload.RoomID)
+			return afterRecordFinishSuccess, nil
+		}
+		slog.Info("stream ended after record failure, finishing with error",
+			"channel_id", task.ChannelID, "room_id", payload.RoomID, "error", wantErr)
+		return afterRecordFinishError, wantErr
+	}
+
+	switch {
+	case liveErr == nil && liveInfo.Live:
+		// 明确仍开播：重连。wantErr == nil（干净 EOF）时用哨兵触发。
+		carry := wantErr
+		if carry == nil {
+			slog.Warn("stream ended cleanly while still live, attempting reconnect",
+				"channel_id", task.ChannelID, "room_id", payload.RoomID)
+			carry = errStreamEndedWhileLive
+		} else {
+			slog.Warn("stream interrupted, attempting reconnect",
+				"channel_id", task.ChannelID, "room_id", payload.RoomID, "error", wantErr)
+		}
+		return afterRecordReconnect, carry
+	default:
+		// liveErr != nil（探测出错）：
+		//   wantErr == nil → 保守收尾（不丢弃已录音频）；
+		//   wantErr != nil → 保守重连（现状语义）。
+		if wantErr == nil {
+			slog.Info("clean exit with inconclusive live probe, treating as ended",
+				"channel_id", task.ChannelID, "room_id", payload.RoomID, "probe_error", liveErr)
+			return afterRecordFinishSuccess, nil
+		}
+		slog.Warn("reconnect liveness probe failed, attempt anyway",
+			"channel_id", task.ChannelID, "room_id", payload.RoomID,
+			"probe_error", liveErr, "stream_error", wantErr)
+		return afterRecordReconnect, wantErr
+	}
 }
 
 func (m *Manager) recordAudio(ctx context.Context, stream StreamInfo, audioPath string, onStart func(pid int) error) error {
