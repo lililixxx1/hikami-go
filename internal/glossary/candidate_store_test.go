@@ -2,6 +2,7 @@ package glossary
 
 import (
 	"context"
+	"database/sql"
 	"math"
 	"testing"
 
@@ -434,4 +435,121 @@ func TestUpsertCandidate_NormalizedKey(t *testing.T) {
 		t.Fatalf("normalized keys should match: %q vs %q", key1, key2)
 	}
 	t.Logf("normalized_key = %q", key1)
+}
+
+// 回归:见 2026-07-04 DB 时间字段统一本地时区修复。
+// candidate_store.go 6 个写入点的 created_at/updated_at/reviewed_at 必须是本地时区 RFC3339。
+func TestCandidateStoreWritesLocalTimezoneTimestamps(t *testing.T) {
+	s := openCandidateTestDB(t)
+	ctx := context.Background()
+
+	// #3 UpsertCandidate insert。
+	item := DiscoveryItem{Term: "T1", Canonical: "C1", Category: "cat", Confidence: 0.9, OccurrenceCount: 3}
+	if err := s.UpsertCandidate(ctx, "ch1", item, "sess1"); err != nil {
+		t.Fatalf("upsert insert: %v", err)
+	}
+	var id int64
+	var createdAt, updatedAt sql.NullString
+	readRow := func() {
+		var c, u, r sql.NullString
+		var i int64
+		if err := s.db.QueryRowContext(ctx,
+			"SELECT id, created_at, updated_at, reviewed_at FROM glossary_candidates WHERE channel_id=? AND term=?",
+			"ch1", "T1",
+		).Scan(&i, &c, &u, &r); err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		id, createdAt, updatedAt = i, c, u
+	}
+	readRow()
+	mustBeLocalRFC3339(t, createdAt.String)
+	mustBeLocalRFC3339(t, updatedAt.String)
+	_ = id
+
+	// #4 UpsertCandidate update (再次 upsert 同 term 触发 UPDATE 路径)。
+	item.OccurrenceCount = 5
+	if err := s.UpsertCandidate(ctx, "ch1", item, "sess2"); err != nil {
+		t.Fatalf("upsert update: %v", err)
+	}
+	readRow()
+	mustBeLocalRFC3339(t, updatedAt.String)
+
+	// #1 RejectCandidate (单条) — 用一个新 candidate 测,因为上面已 reject 就不能再 reject。
+	item2 := DiscoveryItem{Term: "T2", Canonical: "C2", Category: "cat", Confidence: 0.8, OccurrenceCount: 1}
+	if err := s.UpsertCandidate(ctx, "ch1", item2, "sess1"); err != nil {
+		t.Fatalf("upsert insert 2: %v", err)
+	}
+	var id2 int64
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT id FROM glossary_candidates WHERE channel_id=? AND term=?", "ch1", "T2",
+	).Scan(&id2); err != nil {
+		t.Fatalf("query id2: %v", err)
+	}
+	if err := s.RejectCandidate(ctx, id2); err != nil {
+		t.Fatalf("reject: %v", err)
+	}
+	var r2, u2 sql.NullString
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT reviewed_at, updated_at FROM glossary_candidates WHERE id=?", id2,
+	).Scan(&r2, &u2); err != nil {
+		t.Fatalf("query after reject: %v", err)
+	}
+	mustBeLocalRFC3339(t, r2.String)
+	mustBeLocalRFC3339(t, u2.String)
+
+	// #2 BatchRejectCandidates。
+	item3 := DiscoveryItem{Term: "T3", Canonical: "C3", Category: "cat", Confidence: 0.7, OccurrenceCount: 1}
+	if err := s.UpsertCandidate(ctx, "ch1", item3, "sess1"); err != nil {
+		t.Fatalf("upsert insert 3: %v", err)
+	}
+	var id3 int64
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT id FROM glossary_candidates WHERE channel_id=? AND term=?", "ch1", "T3",
+	).Scan(&id3); err != nil {
+		t.Fatalf("query id3: %v", err)
+	}
+	if _, err := s.BatchRejectCandidates(ctx, "ch1", []int64{id3}); err != nil {
+		t.Fatalf("batch reject: %v", err)
+	}
+	var r3, u3 sql.NullString
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT reviewed_at, updated_at FROM glossary_candidates WHERE id=?", id3,
+	).Scan(&r3, &u3); err != nil {
+		t.Fatalf("query after batch reject: %v", err)
+	}
+	mustBeLocalRFC3339(t, r3.String)
+	mustBeLocalRFC3339(t, u3.String)
+
+	// #5/#6 ApproveCandidate (insert glossary_entries + update candidate)。
+	item4 := DiscoveryItem{Term: "T4", Canonical: "C4", Category: "cat", Confidence: 0.95, OccurrenceCount: 2}
+	if err := s.UpsertCandidate(ctx, "ch1", item4, "sess1"); err != nil {
+		t.Fatalf("upsert insert 4: %v", err)
+	}
+	var id4 int64
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT id FROM glossary_candidates WHERE channel_id=? AND term=?", "ch1", "T4",
+	).Scan(&id4); err != nil {
+		t.Fatalf("query id4: %v", err)
+	}
+	if err := s.ApproveCandidate(ctx, id4, "T4final", "C4final", "cat"); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	var r4, u4 sql.NullString
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT reviewed_at, updated_at FROM glossary_candidates WHERE id=?", id4,
+	).Scan(&r4, &u4); err != nil {
+		t.Fatalf("query after approve: %v", err)
+	}
+	mustBeLocalRFC3339(t, r4.String)
+	mustBeLocalRFC3339(t, u4.String)
+
+	// 同事务内 approve 写入 glossary_entries 的 created_at/updated_at。
+	var eC, eU string
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT created_at, updated_at FROM glossary_entries WHERE channel_id=? AND term=?", "ch1", "T4final",
+	).Scan(&eC, &eU); err != nil {
+		t.Fatalf("query entries: %v", err)
+	}
+	mustBeLocalRFC3339(t, eC)
+	mustBeLocalRFC3339(t, eU)
 }

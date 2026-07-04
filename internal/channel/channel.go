@@ -6,9 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"hikami-go/internal/config"
 )
+
+// nowRFC3339 返回本地时区的 RFC3339 时间字符串，与 sessions/tasks 表的时间字段
+// （time.Now().Format(time.RFC3339)）保持一致。避免 SQLite datetime('now') 返回 UTC，
+// 导致前端展示与其它表时间字段相差一个时区。
+func nowRFC3339() string {
+	return time.Now().Format(time.RFC3339)
+}
 
 var (
 	ErrNotFound  = errors.New("channel not found")
@@ -347,6 +355,7 @@ func (s *Store) Update(ctx context.Context, id string, input UpsertInput) (Chann
 		input.PublishTopics,
 		input.RecapModel,
 		input.MaxContinuations,
+		nowRFC3339(),
 		id,
 	)
 	if err != nil {
@@ -366,13 +375,13 @@ func (s *Store) UpdateCookieFile(ctx context.Context, id string, usage CookieUsa
 	var query string
 	switch usage {
 	case CookieUsageDownload:
-		query = "UPDATE channels SET download_cookie_file = ?, updated_at = datetime('now') WHERE id = ?"
+		query = "UPDATE channels SET download_cookie_file = ?, updated_at = ? WHERE id = ?"
 	case CookieUsagePublish:
-		query = "UPDATE channels SET cookie_file = ?, updated_at = datetime('now') WHERE id = ?"
+		query = "UPDATE channels SET cookie_file = ?, updated_at = ? WHERE id = ?"
 	default:
 		return Channel{}, fmt.Errorf("%w: invalid cookie usage", ErrInvalid)
 	}
-	result, err := s.db.ExecContext(ctx, query, cookiePath, id)
+	result, err := s.db.ExecContext(ctx, query, cookiePath, nowRFC3339(), id)
 	if err != nil {
 		return Channel{}, err
 	}
@@ -653,6 +662,6 @@ SET
 		publish_topics = ?,
 		recap_model = ?,
 		max_continuations = ?,
-		updated_at = datetime('now')
+		updated_at = ?
 WHERE id = ?
 `

@@ -5,10 +5,28 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"hikami-go/internal/db"
 )
+
+// mustBeLocalRFC3339 断言 got 是本地时区 RFC3339 字符串(非 UTC "Z" 后缀)。
+// 回归:见 2026-07-04 DB 时间字段统一本地时区修复。
+func mustBeLocalRFC3339(t *testing.T, got string) {
+	t.Helper()
+	if _, err := time.Parse(time.RFC3339, got); err != nil {
+		t.Fatalf("%q not RFC3339: %v", got, err)
+	}
+	if strings.HasSuffix(got, "Z") {
+		t.Fatalf("%q ends with Z (UTC), expected local timezone offset", got)
+	}
+	localOffset := time.Now().In(time.Local).Format("-07:00")
+	if !strings.HasSuffix(got, localOffset) {
+		t.Fatalf("%q must end with local offset %q", got, localOffset)
+	}
+}
 
 // --- helpers ---
 
@@ -753,4 +771,31 @@ func contains(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// 回归:见 2026-07-04 DB 时间字段统一本地时区修复。
+// TemplateStore.Upsert 写入的 created_at/updated_at 必须是本地时区 RFC3339。
+func TestTemplateUpsertWritesLocalTimezoneTimestamps(t *testing.T) {
+	db := openTemplateTestDB(t)
+	store := NewTemplateStore(db)
+	ctx := context.Background()
+
+	if err := store.Upsert(ctx, &Template{
+		ChannelID:    "",
+		Name:         "default",
+		SystemPrompt: "prompt",
+		UserFormat:   "format",
+		Enabled:      true,
+		IsDefault:    true,
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	var createdAt, updatedAt string
+	if err := db.QueryRowContext(ctx,
+		"SELECT created_at, updated_at FROM recap_templates WHERE channel_id='' AND name='default'",
+	).Scan(&createdAt, &updatedAt); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	mustBeLocalRFC3339(t, createdAt)
+	mustBeLocalRFC3339(t, updatedAt)
 }

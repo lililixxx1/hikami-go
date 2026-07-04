@@ -369,9 +369,9 @@ func main() {
 		if bypassState && event == string(state.EventTaskFailed) {
 			_, err := database.ExecContext(ctx, `
 					UPDATE sessions
-					SET last_error = COALESCE(NULLIF(last_error, ''), ?), updated_at = datetime('now')
+					SET last_error = COALESCE(NULLIF(last_error, ''), ?), updated_at = ?
 					WHERE id = ?
-				`, errorMessage, task.SessionID)
+				`, errorMessage, time.Now().Format(time.RFC3339), task.SessionID)
 			return err
 		}
 		var existingError sql.NullString

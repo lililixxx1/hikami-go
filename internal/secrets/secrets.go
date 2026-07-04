@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 type Store struct {
@@ -14,6 +15,13 @@ type Store struct {
 
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
+}
+
+// nowRFC3339 返回本地时区的 RFC3339 时间字符串，与 sessions/tasks 表的时间字段
+// （time.Now().Format(time.RFC3339)）保持一致。避免 SQLite datetime('now') 返回 UTC，
+// 导致前端展示与其它表时间字段相差一个时区。
+func nowRFC3339() string {
+	return time.Now().Format(time.RFC3339)
 }
 
 type Secret struct {
@@ -34,8 +42,8 @@ func (s *Store) Get(ctx context.Context, key string) (string, error) {
 
 func (s *Store) Set(ctx context.Context, key, value string) error {
 	_, err := s.db.ExecContext(ctx,
-		"INSERT OR REPLACE INTO secrets (key, value, updated_at) VALUES (?, ?, datetime('now'))",
-		key, value)
+		"INSERT OR REPLACE INTO secrets (key, value, updated_at) VALUES (?, ?, ?)",
+		key, value, nowRFC3339())
 	return err
 }
 
@@ -43,8 +51,8 @@ func (s *Store) Set(ctx context.Context, key, value string) error {
 // 保证「密钥写入 + 全局配置段写入」原子提交（r11 [High]）。
 func (s *Store) SetTx(ctx context.Context, tx *sql.Tx, key, value string) error {
 	_, err := tx.ExecContext(ctx,
-		"INSERT OR REPLACE INTO secrets (key, value, updated_at) VALUES (?, ?, datetime('now'))",
-		key, value)
+		"INSERT OR REPLACE INTO secrets (key, value, updated_at) VALUES (?, ?, ?)",
+		key, value, nowRFC3339())
 	return err
 }
 

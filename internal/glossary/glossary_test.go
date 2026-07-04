@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"hikami-go/internal/db"
 )
@@ -22,6 +23,22 @@ func openTestDB(t *testing.T) *sql.DB {
 		t.Fatal(err)
 	}
 	return database
+}
+
+// mustBeLocalRFC3339 断言 got 是本地时区 RFC3339 字符串(非 UTC "Z" 后缀)。
+// 回归:见 2026-07-04 DB 时间字段统一本地时区修复。
+func mustBeLocalRFC3339(t *testing.T, got string) {
+	t.Helper()
+	if _, err := time.Parse(time.RFC3339, got); err != nil {
+		t.Fatalf("%q not RFC3339: %v", got, err)
+	}
+	if strings.HasSuffix(got, "Z") {
+		t.Fatalf("%q ends with Z (UTC), expected local timezone offset", got)
+	}
+	localOffset := time.Now().In(time.Local).Format("-07:00")
+	if !strings.HasSuffix(got, localOffset) {
+		t.Fatalf("%q must end with local offset %q", got, localOffset)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -973,4 +990,55 @@ func TestExportForASRVocabularyChannelBlock(t *testing.T) {
 	if len(vocab) != 0 {
 		t.Fatalf("expected 0 hotwords (global blocked, channel disabled), got %d (%v)", len(vocab), vocab)
 	}
+}
+
+// 回归:见 2026-07-04 DB 时间字段统一本地时区修复。
+// Upsert / Toggle / SetNote / ToggleByIDs 写入的 created_at/updated_at 必须是
+// 本地时区 RFC3339,而不是 SQLite datetime('now') 的 UTC。
+func TestStoreWritesLocalTimezoneTimestamps(t *testing.T) {
+	db := openTestDB(t)
+	store := NewStore(db)
+	ctx := context.Background()
+
+	if err := store.Upsert(ctx, "ch1", "term1", "canonical1", "cat"); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	var id int64
+	var createdAt, updatedAt string
+	if err := db.QueryRowContext(ctx,
+		"SELECT id, created_at, updated_at FROM glossary_entries WHERE channel_id=? AND term=?",
+		"ch1", "term1",
+	).Scan(&id, &createdAt, &updatedAt); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	mustBeLocalRFC3339(t, createdAt)
+	mustBeLocalRFC3339(t, updatedAt)
+
+	// Toggle 触发 updated_at 重写。
+	if err := store.Toggle(ctx, id, false); err != nil {
+		t.Fatalf("toggle: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT updated_at FROM glossary_entries WHERE id=?", id).Scan(&updatedAt); err != nil {
+		t.Fatalf("query after toggle: %v", err)
+	}
+	mustBeLocalRFC3339(t, updatedAt)
+
+	// SetNote 写 glossary_meta.updated_at。
+	if err := store.SetNote(ctx, "ch1", "a note"); err != nil {
+		t.Fatalf("setnote: %v", err)
+	}
+	var metaUpdatedAt string
+	if err := db.QueryRowContext(ctx, "SELECT updated_at FROM glossary_meta WHERE channel_id=?", "ch1").Scan(&metaUpdatedAt); err != nil {
+		t.Fatalf("query meta: %v", err)
+	}
+	mustBeLocalRFC3339(t, metaUpdatedAt)
+
+	// ToggleByIDs (batch update) 触发 updated_at 重写。
+	if _, err := store.ToggleByIDs(ctx, "ch1", []int64{id}, true); err != nil {
+		t.Fatalf("togglebyids: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT updated_at FROM glossary_entries WHERE id=?", id).Scan(&updatedAt); err != nil {
+		t.Fatalf("query after batch: %v", err)
+	}
+	mustBeLocalRFC3339(t, updatedAt)
 }

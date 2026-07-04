@@ -91,7 +91,7 @@ func (s *CookieAccountStore) Create(ctx context.Context, a *CookieAccount) (int6
 	if err := ValidateCookiePath(a.CookieFile, s.allowedDirs); err != nil {
 		return 0, err
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().Format(time.RFC3339)
 	result, err := s.db.ExecContext(ctx,
 		"INSERT INTO bili_cookie_accounts (uid, nickname, cookie_file, is_default_download, is_default_publish, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
 		a.UID, a.Nickname, a.CookieFile, boolToInt(a.IsDefaultDownload), boolToInt(a.IsDefaultPublish), now, now,
@@ -107,7 +107,7 @@ func (s *CookieAccountStore) Update(ctx context.Context, a *CookieAccount) error
 	if err := ValidateCookiePath(a.CookieFile, s.allowedDirs); err != nil {
 		return err
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().Format(time.RFC3339)
 	_, err := s.db.ExecContext(ctx,
 		"UPDATE bili_cookie_accounts SET nickname = ?, cookie_file = ?, is_default_download = ?, is_default_publish = ?, updated_at = ? WHERE id = ?",
 		a.Nickname, a.CookieFile, boolToInt(a.IsDefaultDownload), boolToInt(a.IsDefaultPublish), now, a.ID,
@@ -174,7 +174,7 @@ func (s *CookieAccountStore) ClearAll(ctx context.Context) error {
 
 // CreateImported inserts an account without cookie path validation (for config import).
 func (s *CookieAccountStore) CreateImported(ctx context.Context, a *CookieAccount) (int64, error) {
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().Format(time.RFC3339)
 	result, err := s.db.ExecContext(ctx,
 		"INSERT INTO bili_cookie_accounts (uid, nickname, cookie_file, is_default_download, is_default_publish, created_at, updated_at) VALUES (?, ?, '', ?, ?, ?, ?)",
 		a.UID, a.Nickname, boolToInt(a.IsDefaultDownload), boolToInt(a.IsDefaultPublish), now, now,
@@ -213,7 +213,7 @@ func (s *CookieAccountStore) SetDefaultDownload(ctx context.Context, id int64) e
 	if _, err := tx.ExecContext(ctx, "UPDATE bili_cookie_accounts SET is_default_download = 0 WHERE is_default_download = 1"); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE bili_cookie_accounts SET is_default_download = 1, updated_at = ? WHERE id = ?", time.Now().UTC().Format(time.RFC3339), id); err != nil {
+	if _, err := tx.ExecContext(ctx, "UPDATE bili_cookie_accounts SET is_default_download = 1, updated_at = ? WHERE id = ?", time.Now().Format(time.RFC3339), id); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -229,7 +229,7 @@ func (s *CookieAccountStore) SetDefaultPublish(ctx context.Context, id int64) er
 	if _, err := tx.ExecContext(ctx, "UPDATE bili_cookie_accounts SET is_default_publish = 0 WHERE is_default_publish = 1"); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE bili_cookie_accounts SET is_default_publish = 1, updated_at = ? WHERE id = ?", time.Now().UTC().Format(time.RFC3339), id); err != nil {
+	if _, err := tx.ExecContext(ctx, "UPDATE bili_cookie_accounts SET is_default_publish = 1, updated_at = ? WHERE id = ?", time.Now().Format(time.RFC3339), id); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"hikami-go/internal/db"
 )
@@ -141,4 +142,41 @@ func TestWithTxAtomicTwoSections(t *testing.T) {
 	if _, ok := got["publish"]; ok {
 		t.Fatal("atomic tx should have rolled back publish too")
 	}
+}
+
+// mustBeLocalRFC3339 断言 got 是本地时区 RFC3339 字符串(非 UTC "Z" 后缀)。
+// 回归:见 2026-07-04 DB 时间字段统一本地时区修复。
+// 单纯比对瞬时时间无法区分 UTC 与本地(UTC 解析后 In(time.Local) 仍接近 now),
+// 必须显式校验字符串以本地 offset 结尾。
+func mustBeLocalRFC3339(t *testing.T, got string) {
+	t.Helper()
+	if _, err := time.Parse(time.RFC3339, got); err != nil {
+		t.Fatalf("%q not RFC3339: %v", got, err)
+	}
+	if strings.HasSuffix(got, "Z") {
+		t.Fatalf("%q ends with Z (UTC), expected local timezone offset", got)
+	}
+	localOffset := time.Now().In(time.Local).Format("-07:00")
+	if !strings.HasSuffix(got, localOffset) {
+		t.Fatalf("%q must end with local offset %q", got, localOffset)
+	}
+}
+
+// updated_at 必须用本地时区 RFC3339 写入，而不是 SQLite datetime('now') 的 UTC。
+// 防止时间戳与 sessions/tasks 表（统一本地时区）相差一个时区，前端展示混乱。
+// 回归：见 2026-07-04 runtimeconfig 时区修复。
+func TestSaveWritesLocalTimezoneUpdatedAt(t *testing.T) {
+	store := NewStore(openTestDB(t))
+	ctx := context.Background()
+
+	if err := store.Save(ctx, "archive", []byte(`{"cleanup_policy":"all"}`)); err != nil {
+		t.Fatal(err)
+	}
+	var updatedAt string
+	if err := store.db.QueryRowContext(ctx,
+		"SELECT updated_at FROM runtime_settings WHERE section = ?", "archive",
+	).Scan(&updatedAt); err != nil {
+		t.Fatal(err)
+	}
+	mustBeLocalRFC3339(t, updatedAt)
 }

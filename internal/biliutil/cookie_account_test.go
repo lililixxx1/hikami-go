@@ -6,11 +6,28 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"hikami-go/internal/db"
 )
+
+// mustBeLocalRFC3339 断言 got 是本地时区 RFC3339 字符串(非 UTC "Z" 后缀)。
+// 回归:见 2026-07-04 DB 时间字段统一本地时区修复。
+func mustBeLocalRFC3339(t *testing.T, got string) {
+	t.Helper()
+	if _, err := time.Parse(time.RFC3339, got); err != nil {
+		t.Fatalf("%q not RFC3339: %v", got, err)
+	}
+	if strings.HasSuffix(got, "Z") {
+		t.Fatalf("%q ends with Z (UTC), expected local timezone offset", got)
+	}
+	localOffset := time.Now().In(time.Local).Format("-07:00")
+	if !strings.HasSuffix(got, localOffset) {
+		t.Fatalf("%q must end with local offset %q", got, localOffset)
+	}
+}
 
 func newAccountTestDB(t *testing.T) *sql.DB {
 	t.Helper()
@@ -303,4 +320,64 @@ func TestResolveCookie_UnknownUsage(t *testing.T) {
 	if err == nil || err.Error() == "" {
 		t.Fatal("expected error for unknown usage type")
 	}
+}
+
+// 回归:见 2026-07-04 DB 时间字段统一本地时区修复。
+// cookie_account.go 5 处 .UTC() 写入的 created_at/updated_at 必须是本地时区 RFC3339。
+// 覆盖 Create / Update / CreateImported / SetDefaultDownload / SetDefaultPublish。
+func TestCookieAccountStoreWritesLocalTimezoneTimestamps(t *testing.T) {
+	store, dir := newTestStoreWithDir(t)
+	ctx := context.Background()
+	cookiePath := writeValidCookie(t, dir, "tz1.txt")
+	cookiePath2 := writeValidCookie(t, dir, "tz2.txt")
+	cookiePath3 := writeValidCookie(t, dir, "tz3.txt")
+
+	readTimes := func(id int64) (created, updated string) {
+		t.Helper()
+		if err := store.db.QueryRowContext(ctx,
+			"SELECT created_at, updated_at FROM bili_cookie_accounts WHERE id=?", id,
+		).Scan(&created, &updated); err != nil {
+			t.Fatalf("query id=%d: %v", id, err)
+		}
+		return
+	}
+
+	// Create。
+	id, err := store.Create(ctx, &CookieAccount{UID: 2001, Nickname: "tz1", CookieFile: cookiePath})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	c, u := readTimes(id)
+	mustBeLocalRFC3339(t, c)
+	mustBeLocalRFC3339(t, u)
+
+	// Update。
+	if err := store.Update(ctx, &CookieAccount{ID: id, Nickname: "tz1-updated", CookieFile: cookiePath2}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	_, u = readTimes(id)
+	mustBeLocalRFC3339(t, u)
+
+	// CreateImported。
+	id2, err := store.CreateImported(ctx, &CookieAccount{UID: 2002, Nickname: "tz2", CookieFile: cookiePath3})
+	if err != nil {
+		t.Fatalf("create imported: %v", err)
+	}
+	c, u = readTimes(id2)
+	mustBeLocalRFC3339(t, c)
+	mustBeLocalRFC3339(t, u)
+
+	// SetDefaultDownload。
+	if err := store.SetDefaultDownload(ctx, id); err != nil {
+		t.Fatalf("set default download: %v", err)
+	}
+	_, u = readTimes(id)
+	mustBeLocalRFC3339(t, u)
+
+	// SetDefaultPublish。
+	if err := store.SetDefaultPublish(ctx, id2); err != nil {
+		t.Fatalf("set default publish: %v", err)
+	}
+	_, u = readTimes(id2)
+	mustBeLocalRFC3339(t, u)
 }

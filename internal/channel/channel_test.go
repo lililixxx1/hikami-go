@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"hikami-go/internal/config"
 	"hikami-go/internal/db"
@@ -25,6 +27,22 @@ func setupDB(t *testing.T) *sql.DB {
 		t.Fatalf("migrate: %v", err)
 	}
 	return database
+}
+
+// mustBeLocalRFC3339 断言 got 是本地时区 RFC3339 字符串(非 UTC "Z" 后缀)。
+// 回归:见 2026-07-04 DB 时间字段统一本地时区修复。
+func mustBeLocalRFC3339(t *testing.T, got string) {
+	t.Helper()
+	if _, err := time.Parse(time.RFC3339, got); err != nil {
+		t.Fatalf("%q not RFC3339: %v", got, err)
+	}
+	if strings.HasSuffix(got, "Z") {
+		t.Fatalf("%q ends with Z (UTC), expected local timezone offset", got)
+	}
+	localOffset := time.Now().In(time.Local).Format("-07:00")
+	if !strings.HasSuffix(got, localOffset) {
+		t.Fatalf("%q must end with local offset %q", got, localOffset)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1226,4 +1244,39 @@ func TestBootstrapAutoRecapDefault(t *testing.T) {
 	if offCh.AutoRecap {
 		t.Fatalf("ch_off AutoRecap = true, want false (explicit)")
 	}
+}
+
+// 回归:见 2026-07-04 DB 时间字段统一本地时区修复。
+// UpdateCookieFile 与 Update 的 updated_at 必须用本地时区 RFC3339 写入，
+// 而不是 SQLite datetime('now') 的 UTC。
+func TestUpdateWritesLocalTimezoneUpdatedAt(t *testing.T) {
+	store := NewStore(setupDB(t))
+	ctx := context.Background()
+	if _, err := store.Create(ctx, UpsertInput{
+		ID:      "tz1",
+		Name:    "TZ",
+		UID:     1,
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// 触发 UpdateCookieFile 的 download 分支。
+	got, err := store.UpdateCookieFile(ctx, "tz1", CookieUsageDownload, "/tmp/d.txt")
+	if err != nil {
+		t.Fatalf("update cookie: %v", err)
+	}
+	mustBeLocalRFC3339(t, got.UpdatedAt)
+
+	// 触发 Update (计划里的 UpdateChannel)。
+	updated, err := store.Update(ctx, "tz1", UpsertInput{
+		ID:      "tz1",
+		Name:    "TZ2",
+		UID:     1,
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	mustBeLocalRFC3339(t, updated.UpdatedAt)
 }

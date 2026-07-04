@@ -108,11 +108,12 @@ func (s *Store) ApproveCandidate(ctx context.Context, id int64, term string, can
 }
 
 func (s *Store) RejectCandidate(ctx context.Context, id int64) error {
+	now := nowRFC3339()
 	res, err := s.db.ExecContext(ctx, `UPDATE glossary_candidates
 SET status = 'rejected',
-	reviewed_at = datetime('now'),
-	updated_at = datetime('now')
-WHERE id = ? AND status = 'pending'`, id)
+	reviewed_at = ?,
+	updated_at = ?
+WHERE id = ? AND status = 'pending'`, now, now, id)
 	if err != nil {
 		return err
 	}
@@ -175,15 +176,16 @@ func (s *Store) BatchRejectCandidates(ctx context.Context, channelID string, ids
 	}
 	defer tx.Rollback()
 
+	now := nowRFC3339()
 	query := `UPDATE glossary_candidates
 SET status = 'rejected',
-	reviewed_at = datetime('now'),
-	updated_at = datetime('now')
+	reviewed_at = ?,
+	updated_at = ?
 WHERE channel_id = ?
   AND status = 'pending'
   AND id IN (` + placeholders(len(ids)) + `)`
-	args := make([]any, 0, len(ids)+1)
-	args = append(args, channelID)
+	args := make([]any, 0, len(ids)+3)
+	args = append(args, now, now, channelID)
 	for _, id := range ids {
 		args = append(args, id)
 	}
@@ -228,10 +230,11 @@ WHERE channel_id = ? AND normalized_key = ?`, channelID, key)
 	err = row.Scan(&existing.ID, &existing.ChannelID, &existing.Term, &existing.Canonical, &existing.Category, &existing.Status, &existing.Confidence, &existing.Score, &existing.OccurrenceCount, &existing.SessionCount, &existing.FirstSessionID, &existing.LastSessionID, &existing.Reason, &existing.NormalizedKey, &existing.CreatedAt, &existing.UpdatedAt, &existing.ReviewedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		score := calculateCandidateScore(item.Confidence, item.OccurrenceCount, 1)
+		now := nowRFC3339()
 		_, err = tx.ExecContext(ctx, `INSERT INTO glossary_candidates
 (channel_id, term, canonical, category, status, confidence, score, occurrence_count, session_count, first_session_id, last_session_id, reason, normalized_key, created_at, updated_at)
-VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, 1, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
-			channelID, item.Term, item.Canonical, item.Category, item.Confidence, score, item.OccurrenceCount, sessionID, sessionID, item.Reason, key)
+VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
+			channelID, item.Term, item.Canonical, item.Category, item.Confidence, score, item.OccurrenceCount, sessionID, sessionID, item.Reason, key, now, now)
 		if err != nil {
 			return err
 		}
@@ -274,9 +277,9 @@ SET term = ?,
 	session_count = ?,
 	last_session_id = ?,
 	reason = ?,
-	updated_at = datetime('now')
+	updated_at = ?
 WHERE id = ?`,
-		term, canonical, category, confidence, score, occurrences, sessionCount, sessionID, reason, existing.ID)
+		term, canonical, category, confidence, score, occurrences, sessionCount, sessionID, reason, nowRFC3339(), existing.ID)
 	if err != nil {
 		return err
 	}
@@ -316,9 +319,10 @@ WHERE id = ?`
 	if strings.TrimSpace(term) == "" || strings.TrimSpace(canonical) == "" {
 		return fmt.Errorf("%w: term and canonical are required", ErrInvalidCandidate)
 	}
+	now := nowRFC3339()
 	if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO glossary_entries
 	(channel_id, term, canonical, category, enabled, created_at, updated_at)
-VALUES (?, ?, ?, ?, 1, datetime('now'), datetime('now'))`, candidate.ChannelID, term, canonical, category); err != nil {
+VALUES (?, ?, ?, ?, 1, ?, ?)`, candidate.ChannelID, term, canonical, category, now, now); err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE glossary_candidates
@@ -326,9 +330,9 @@ SET term = ?,
 	canonical = ?,
 	category = ?,
 	status = 'approved',
-	reviewed_at = datetime('now'),
-	updated_at = datetime('now')
-WHERE id = ?`, term, canonical, category, id)
+	reviewed_at = ?,
+	updated_at = ?
+WHERE id = ?`, term, canonical, category, now, now, id)
 	return err
 }
 

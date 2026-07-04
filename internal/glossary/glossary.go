@@ -18,15 +18,22 @@ var (
 	ErrDuplicate = errors.New("glossary entry already exists")
 )
 
+// nowRFC3339 返回本地时区的 RFC3339 时间字符串，与 sessions/tasks 表的时间字段
+// （time.Now().Format(time.RFC3339)）保持一致。避免 SQLite datetime('now') 返回 UTC，
+// 导致前端展示与其它表时间字段相差一个时区。供同包 candidate_store.go 复用。
+func nowRFC3339() string {
+	return time.Now().Format(time.RFC3339)
+}
+
 // SQL queries.
 const (
 	sqlListGlobal    = `SELECT id, channel_id, term, canonical, category, enabled, created_at, updated_at FROM glossary_entries WHERE channel_id = '' ORDER BY term ASC`
 	sqlListByChannel = `SELECT id, channel_id, term, canonical, category, enabled, created_at, updated_at FROM glossary_entries WHERE channel_id = ? ORDER BY term ASC`
-	sqlUpsert        = `INSERT OR REPLACE INTO glossary_entries (channel_id, term, canonical, category, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, 1, datetime('now'), datetime('now'))`
+	sqlUpsert        = `INSERT OR REPLACE INTO glossary_entries (channel_id, term, canonical, category, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)`
 	sqlDelete        = `DELETE FROM glossary_entries WHERE id = ?`
-	sqlToggle        = `UPDATE glossary_entries SET enabled = ?, updated_at = datetime('now') WHERE id = ?`
+	sqlToggle        = `UPDATE glossary_entries SET enabled = ?, updated_at = ? WHERE id = ?`
 	sqlGetNote       = `SELECT note FROM glossary_meta WHERE channel_id = ?`
-	sqlSetNote       = `INSERT OR REPLACE INTO glossary_meta (channel_id, note, updated_at) VALUES (?, ?, datetime('now'))`
+	sqlSetNote       = `INSERT OR REPLACE INTO glossary_meta (channel_id, note, updated_at) VALUES (?, ?, ?)`
 	sqlCountGlobal   = `SELECT COUNT(*) FROM glossary_entries WHERE channel_id = ''`
 )
 
@@ -171,7 +178,8 @@ func (s *Store) ListByChannel(ctx context.Context, channelID string) ([]MergedEn
 
 // Upsert inserts or replaces a glossary entry based on the (channel_id, term) unique index.
 func (s *Store) Upsert(ctx context.Context, channelID, term, canonical, category string) error {
-	_, err := s.db.ExecContext(ctx, sqlUpsert, channelID, term, canonical, category)
+	now := nowRFC3339()
+	_, err := s.db.ExecContext(ctx, sqlUpsert, channelID, term, canonical, category, now, now)
 	return err
 }
 
@@ -193,7 +201,7 @@ func (s *Store) Delete(ctx context.Context, id int64) error {
 
 // Toggle switches the enabled flag of a glossary entry. Returns ErrNotFound if no row was updated.
 func (s *Store) Toggle(ctx context.Context, id int64, enabled bool) error {
-	res, err := s.db.ExecContext(ctx, sqlToggle, enabled, id)
+	res, err := s.db.ExecContext(ctx, sqlToggle, enabled, nowRFC3339(), id)
 	if err != nil {
 		return err
 	}
@@ -220,7 +228,7 @@ func (s *Store) GetNote(ctx context.Context, channelID string) (string, error) {
 
 // SetNote stores or replaces the free-text note for a channel.
 func (s *Store) SetNote(ctx context.Context, channelID, note string) error {
-	_, err := s.db.ExecContext(ctx, sqlSetNote, channelID, note)
+	_, err := s.db.ExecContext(ctx, sqlSetNote, channelID, note, nowRFC3339())
 	return err
 }
 
@@ -386,7 +394,7 @@ func (s *Store) ImportMarkdown(ctx context.Context, channelID, content string) (
 				if v == canonical {
 					continue
 				}
-				if _, err := tx.ExecContext(ctx, sqlUpsert, channelID, v, canonical, category); err != nil {
+				if _, err := tx.ExecContext(ctx, sqlUpsert, channelID, v, canonical, category, nowRFC3339(), nowRFC3339()); err != nil {
 					return 0, fmt.Errorf("upsert %q: %w", v, err)
 				}
 				count++
@@ -477,14 +485,14 @@ func (s *Store) ImportJSON(ctx context.Context, channelID string, data []byte) (
 		if term == "" || canonical == "" {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, sqlUpsert, channelID, term, canonical, item.Category); err != nil {
+		if _, err := tx.ExecContext(ctx, sqlUpsert, channelID, term, canonical, item.Category, nowRFC3339(), nowRFC3339()); err != nil {
 			return 0, fmt.Errorf("upsert %q: %w", term, err)
 		}
 		count++
 	}
 
 	if strings.TrimSpace(export.Note) != "" {
-		if _, err := tx.ExecContext(ctx, sqlSetNote, channelID, strings.TrimSpace(export.Note)); err != nil {
+		if _, err := tx.ExecContext(ctx, sqlSetNote, channelID, strings.TrimSpace(export.Note), nowRFC3339()); err != nil {
 			return 0, fmt.Errorf("set note: %w", err)
 		}
 	}
@@ -552,9 +560,10 @@ func (s *Store) ToggleByIDs(ctx context.Context, channelID string, ids []int64, 
 		batch := ids[i:end]
 		placeholders := strings.Repeat("?,", len(batch))
 		placeholders = placeholders[:len(placeholders)-1]
-		query := fmt.Sprintf("UPDATE glossary_entries SET enabled = ?, updated_at = datetime('now') WHERE channel_id = ? AND id IN (%s)", placeholders)
-		args := make([]any, 0, 2+len(batch))
+		query := fmt.Sprintf("UPDATE glossary_entries SET enabled = ?, updated_at = ? WHERE channel_id = ? AND id IN (%s)", placeholders)
+		args := make([]any, 0, 3+len(batch))
 		args = append(args, enabled)
+		args = append(args, nowRFC3339())
 		args = append(args, channelID)
 		for _, id := range batch {
 			args = append(args, id)

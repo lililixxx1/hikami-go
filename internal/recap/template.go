@@ -17,12 +17,19 @@ var (
 	ErrTemplateBuiltIn  = errors.New("cannot delete built-in template")
 )
 
+// nowRFC3339 返回本地时区的 RFC3339 时间字符串，与 sessions/tasks 表的时间字段
+// （time.Now().Format(time.RFC3339)）保持一致。避免 SQLite datetime('now') 返回 UTC，
+// 导致前端展示与其它表时间字段相差一个时区。
+func nowRFC3339() string {
+	return time.Now().Format(time.RFC3339)
+}
+
 // SQL queries.
 const (
 	sqlTemplateGet        = `SELECT id, channel_id, name, system_prompt, user_format, fan_name, extra_vars, enabled, is_default, created_at, updated_at FROM recap_templates WHERE channel_id = ? AND name = ?`
 	sqlTemplateGetByID    = `SELECT id, channel_id, name, system_prompt, user_format, fan_name, extra_vars, enabled, is_default, created_at, updated_at FROM recap_templates WHERE id = ?`
 	sqlTemplateListGlobal = `SELECT id, channel_id, name, system_prompt, user_format, fan_name, extra_vars, enabled, is_default, created_at, updated_at FROM recap_templates WHERE channel_id = '' ORDER BY name ASC`
-	sqlTemplateUpsert     = `INSERT OR REPLACE INTO recap_templates (channel_id, name, system_prompt, user_format, fan_name, extra_vars, enabled, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`
+	sqlTemplateUpsert     = `INSERT OR REPLACE INTO recap_templates (channel_id, name, system_prompt, user_format, fan_name, extra_vars, enabled, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	sqlTemplateDelete     = `DELETE FROM recap_templates WHERE id = ?`
 )
 
@@ -239,9 +246,10 @@ func (s *TemplateStore) Upsert(ctx context.Context, t *Template) error {
 	if t.IsDefault {
 		isDefault = 1
 	}
+	now := nowRFC3339()
 	_, err := s.db.ExecContext(ctx, sqlTemplateUpsert,
 		t.ChannelID, t.Name, t.SystemPrompt, t.UserFormat, t.FanName,
-		t.ExtraVars, enabled, isDefault)
+		t.ExtraVars, enabled, isDefault, now, now)
 	return err
 }
 

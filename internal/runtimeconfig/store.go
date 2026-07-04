@@ -17,7 +17,15 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 )
+
+// nowRFC3339 返回本地时区的 RFC3339 时间字符串，与 sessions/tasks 表的时间字段
+// （time.Now().Format(time.RFC3339)）保持一致。避免 SQLite datetime('now') 返回
+// UTC，导致前端展示与其它表时间字段相差一个时区。
+func nowRFC3339() string {
+	return time.Now().Format(time.RFC3339)
+}
 
 // Store 读写 runtime_settings 表。
 type Store struct {
@@ -55,19 +63,19 @@ func (s *Store) Load(ctx context.Context) (map[string]json.RawMessage, error) {
 
 // Save 写入（或覆盖）单个 section 的 data。普通路径；事务路径见 SaveTx / WithTx。
 func (s *Store) Save(ctx context.Context, section string, data []byte) error {
-	_, err := s.db.ExecContext(ctx, saveSQL, section, data)
+	_, err := s.db.ExecContext(ctx, saveSQL, section, data, nowRFC3339())
 	return err
 }
 
 // SaveTx 是 Save 的事务版，与 secrets 的 GetTx/SetTx/DeleteTx 共用同一 *sql.Tx，
 // 保证「密钥写入 + 配置段写入」原子提交。
 func (s *Store) SaveTx(ctx context.Context, tx *sql.Tx, section string, data []byte) error {
-	_, err := tx.ExecContext(ctx, saveSQL, section, data)
+	_, err := tx.ExecContext(ctx, saveSQL, section, data, nowRFC3339())
 	return err
 }
 
 const saveSQL = `INSERT INTO runtime_settings (section, data, updated_at)
-VALUES (?, ?, datetime('now'))
+VALUES (?, ?, ?)
 ON CONFLICT(section) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at`
 
 // WithTx 在一个事务内执行 fn，fn 接收 *sql.Tx 以便调用各 Store 的 *Tx 方法。
