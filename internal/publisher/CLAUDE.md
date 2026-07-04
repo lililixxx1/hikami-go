@@ -168,7 +168,7 @@ type OpusCoverUploader interface {
 3. `ConvertMarkdownToOpus` 转换为 Opus 段落
 4. 提取标题和摘要
 5. `resolvePublishConfig` 合并主播级和全局发布配置
-6. 解析封面来源（`resolveCoverUpload`，`f5594a6`）：优先级 **recap 目录 `cover.*` > 配置 `cover_url`**。recap cover 存在时仅上传它（不对配置本地路径做无用上传）；否则 fallback 到配置 `cover_url`——已是 `http(s)://`（或协议相对 `//host`）URL 原样/规范化后用，否则视为本地文件路径走 `UploadCover` 上传换真实 URL，失败/不支持上传时记 warn 并置空（避免本地路径残留进请求）
+6. 解析封面来源（`resolveCoverUpload`）：优先级 **配置 `cover_url` > recap 目录 `cover.*` > raw 目录 `cover.*`（仅 `auto_cover` 开启）**。配置 `cover_url`（频道 `publish_cover_url` 优先，回退全局 `cover_url`）最高优先——已是 `http(s)://`（或协议相对 `//host`）URL 原样/规范化后用，否则视为本地文件路径走 `UploadCover` 上传换真实 URL；配置为空或本地路径上传失败时，依次回退到 recap `cover.*`、raw `cover.*`。注意：raw 官方源封面已不再压过用户配置（`f5594a6`→本次修正：用户显式配置优先于自动抓取）。
 7. 构建 `DraftRequest`（含 Aigc/TimerPubTime/CoverURL）
 8. 调用 `SaveDraft` 创建草稿
 9. 若 `mode=publish`：构建 `PublishRequest`（含 Aigc/TimerPubTime/CoverURL/Topic），调用 `PublishOpus` 发布

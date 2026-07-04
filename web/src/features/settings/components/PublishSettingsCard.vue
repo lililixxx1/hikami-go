@@ -157,9 +157,9 @@ defineExpose({ reload: fetchConfig })
       <div class="column-row">
         <div class="column-label">自定义封面</div>
         <div class="column-control">
-          <el-input v-model="config.cover_url" size="small" clearable placeholder="未设置时自动使用 recap/cover.png" style="width: 320px" />
+          <el-input v-model="config.cover_url" size="small" clearable placeholder="留空时使用 recap/cover.png 或自动抓取官方封面" style="width: 320px" />
         </div>
-        <div class="column-note">可填写封面图片 URL 或本地路径；留空时自动抓取回顾目录封面。</div>
+        <div class="column-note">最高优先级。可填写封面图片 URL 或本地路径；留空时依次回退到回顾目录封面、官方源封面。</div>
       </div>
 
       <div class="column-row">
@@ -167,7 +167,7 @@ defineExpose({ reload: fetchConfig })
         <div class="column-control">
           <el-switch v-model="config.auto_cover" />
         </div>
-        <div class="column-note">开启后自动下载视频/直播官方封面作为回顾封面；关闭则仅使用上方自定义封面。</div>
+        <div class="column-note">自定义封面与回顾目录封面均未命中时，自动下载视频/直播官方封面作为兜底。</div>
       </div>
 
       <div class="column-row">

@@ -285,22 +285,22 @@ func (h *Handler) publishRecap(
 		title = sessionInfo.Title
 	}
 
-	// 封面来源优先级：recap/cover.* > raw/cover.*(仅当 auto_cover 开启) > 配置 cover_url。
-	// - recap/cover.*：始终最高优先（保留原有人工/回顾封面语义，auto_cover 不影响它）。
-	// - raw/cover.*：download/live_record 自动取的源封面；仅当 AutoCover=true 且 recap 无封面时才用。
-	// - cover_url：兜底默认图（本地路径自动上传 / 网络 URL 原样用）。
+	// 封面来源优先级：配置 cover_url > recap/cover.* > raw/cover.*(仅当 auto_cover 开启)。
+	// - cover_url：用户显式配置（频道 publish_cover_url 优先，回退全局 cover_url），最高优先。
+	//   网络 URL 原样用；本地路径上传换 URL；上传失败/为空则回退到下一来源（避免本地路径被丢弃也无替代）。
+	// - recap/cover.*：人工/回顾封面，第二优先级。
+	// - raw/cover.*：download/live_record 自动取的官方源封面；仅当 AutoCover=true 且 recap 无封面时才用。
 	// 上传后 URL 同时用于草稿端(arg.image_urls)和发布端(opus_req.opus.article.cover)。
-	coverURL := ""
-	if coverPath := findCoverImage(recapDir); coverPath != "" {
-		coverURL = h.uploadCoverPath(ctx, cookie, coverPath)
+	coverURL := h.resolveCoverUpload(ctx, cookie, resolved.CoverURL)
+	if coverURL == "" {
+		if coverPath := findCoverImage(recapDir); coverPath != "" {
+			coverURL = h.uploadCoverPath(ctx, cookie, coverPath)
+		}
 	}
 	if coverURL == "" && h.cfg.Publish.AutoCover {
 		if coverPath := findCoverImage(h.rawDir(sessionInfo)); coverPath != "" {
 			coverURL = h.uploadCoverPath(ctx, cookie, coverPath)
 		}
-	}
-	if coverURL == "" {
-		coverURL = h.resolveCoverUpload(ctx, cookie, resolved.CoverURL)
 	}
 
 	draftReq := &DraftRequest{

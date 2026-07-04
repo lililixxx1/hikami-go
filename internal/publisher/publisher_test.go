@@ -910,10 +910,10 @@ func TestHandleTask_CoverURLLocalPath(t *testing.T) {
 	}
 }
 
-// TestHandleTask_RecapCoverOverridesConfig 验证 recap cover.* 存在时优先用它，
-// 不再对配置的 cover_url 本地路径做无用上传（codex 审核 #2）。
-// 修复前：先 resolveCoverUpload（上传配置本地封面），再被 recap cover 覆盖 → 浪费一次上传请求。
-func TestHandleTask_RecapCoverOverridesConfig(t *testing.T) {
+// TestHandleTask_ConfigCoverOverridesRecap 验证配置项 cover_url 优先级最高：
+// 同时存在配置 cover_url 与 recap/cover.* 时，应只采用配置来源，不再上传 recap 封面。
+// 修复前优先级为 recap > 配置，导致用户填的自定义封面被官方/回顾封面覆盖。
+func TestHandleTask_ConfigCoverOverridesRecap(t *testing.T) {
 	h := newTestHelper(t)
 	ctx := context.Background()
 
@@ -935,7 +935,6 @@ func TestHandleTask_RecapCoverOverridesConfig(t *testing.T) {
 	h.cfg.Publish.CoverURL = configCover
 
 	fake := &fakeOpusClientWithCover{}
-	// 用自定义 uploadFn 区分两次上传来源（验证配置路径没被调用）
 	handler := NewHandler(h.cfg, h.sessions, h.states, h.channels, fake)
 	handler.Register(h.workerPool)
 
@@ -944,9 +943,12 @@ func TestHandleTask_RecapCoverOverridesConfig(t *testing.T) {
 		t.Fatalf("HandleTask 失败: %v", err)
 	}
 
-	// 应只上传一次（recap 的 cover.png），配置的本地路径不应被上传
+	// 应只上传一次（配置的本地路径），recap 的 cover.png 不应被多余上传
 	if fake.coverCalls != 1 {
-		t.Errorf("应只上传 recap cover 1 次，got %d 次（配置路径被多余上传）", fake.coverCalls)
+		t.Errorf("应只上传配置 cover 1 次，got %d 次", fake.coverCalls)
+	}
+	if fake.lastPath != configCover {
+		t.Errorf("UploadCover 入参 path = %q, want %q（应上传配置路径而非 recap 封面）", fake.lastPath, configCover)
 	}
 	wantCover := "https://example.com/uploaded_cover.png"
 	if fake.lastDraftReq == nil || fake.lastDraftReq.CoverURL != wantCover {
@@ -955,6 +957,65 @@ func TestHandleTask_RecapCoverOverridesConfig(t *testing.T) {
 			got = fake.lastDraftReq.CoverURL
 		}
 		t.Errorf("draftReq.CoverURL = %q, want %q", got, wantCover)
+	}
+}
+
+// TestHandleTask_ConfigCoverLocalUploadFailsFallsBackToRecap 验证：配置 cover_url 为本地路径，
+// 但上传失败时（resolveCoverUpload 返回空），应回退到下一优先级 recap/cover.*，而非无封面发布。
+func TestHandleTask_ConfigCoverLocalUploadFailsFallsBackToRecap(t *testing.T) {
+	h := newTestHelper(t)
+	ctx := context.Background()
+
+	cookiePath := h.createCookieFile("")
+	ch, sess := h.setupSessionAndChannel(ctx, cookiePath, func(input *channel.UpsertInput) {
+		input.PublishMode = "publish"
+	})
+
+	recapDir := filepath.Join(h.cfg.OutputRoot, ch.ID, sess.Slug, "recap")
+	if err := os.MkdirAll(recapDir, 0755); err != nil {
+		t.Fatalf("创建 recap 目录失败: %v", err)
+	}
+	os.WriteFile(filepath.Join(recapDir, "recap.md"), []byte("# 回退测试\n内容"), 0644)
+	os.WriteFile(filepath.Join(recapDir, "cover.png"), []byte("recap png"), 0644)
+
+	// 配置一个本地路径 cover_url；让配置路径上传失败、recap cover 上传成功 → 验证回退到 recap。
+	configCover := filepath.Join(t.TempDir(), "config_cover.png")
+	os.WriteFile(configCover, []byte("config png"), 0644)
+	h.cfg.Publish.CoverURL = configCover
+	recapCover := filepath.Join(recapDir, "cover.png")
+
+	fake := &fakeOpusClientWithCover{}
+	var paths []string
+	fake.uploadFn = func(_ context.Context, _ *BiliCookie, imagePath string) (string, error) {
+		paths = append(paths, imagePath)
+		// 按路径（而非序号）控制失败，避免实现误改上传顺序后测试仍通过
+		if imagePath == configCover {
+			return "", errors.New("upload failed")
+		}
+		return "https://example.com/uploaded_cover.png", nil
+	}
+	handler := NewHandler(h.cfg, h.sessions, h.states, h.channels, fake)
+	handler.Register(h.workerPool)
+
+	task := h.enqueueTask(ctx, sess)
+	if err := handler.HandleTask(ctx, task, &noopReporter{}); err != nil {
+		t.Fatalf("HandleTask 失败: %v", err)
+	}
+
+	// 应上传两次，且顺序必须是：先配置路径（失败），再 recap cover（成功回退）
+	if fake.coverCalls != 2 {
+		t.Errorf("配置上传失败后应回退上传 recap cover，期望 2 次上传，got %d", fake.coverCalls)
+	}
+	if len(paths) != 2 || paths[0] != configCover || paths[1] != recapCover {
+		t.Errorf("上传顺序/路径不对，got %v, want [%q, %q]", paths, configCover, recapCover)
+	}
+	wantCover := "https://example.com/uploaded_cover.png"
+	if fake.lastDraftReq == nil || fake.lastDraftReq.CoverURL != wantCover {
+		got := ""
+		if fake.lastDraftReq != nil {
+			got = fake.lastDraftReq.CoverURL
+		}
+		t.Errorf("回退后 draftReq.CoverURL = %q, want %q", got, wantCover)
 	}
 }
 func TestResolveCoverUpload(t *testing.T) {
