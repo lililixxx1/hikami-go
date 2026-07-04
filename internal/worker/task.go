@@ -11,7 +11,16 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
+
+// nowRFC3339 返回当前本地时间（带时区偏移）的 RFC3339 字符串，
+// 与 sessions 表的时间格式一致（time.Now().Format(time.RFC3339)）。
+// tasks 表的时间统一用本函数生成，避免 SQLite datetime('now') 返回 UTC
+// 导致前端展示任务时间与 session 时间相差一个时区。
+func nowRFC3339() string {
+	return time.Now().Format(time.RFC3339)
+}
 
 var (
 	ErrTaskNotFound = errors.New("task not found")
@@ -79,6 +88,7 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (Task, error) {
 	if strings.TrimSpace(payload) == "" {
 		payload = "{}"
 	}
+	nowStr := nowRFC3339()
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO tasks (
 			id,
@@ -87,9 +97,11 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (Task, error) {
 			type,
 			status,
 			payload,
-			bypass_fail_state
-		) VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, taskID, input.ChannelID, nullable(input.SessionID), input.Type, StatusPending, payload, boolToInt(input.BypassFailState))
+			bypass_fail_state,
+			created_at,
+			updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, taskID, input.ChannelID, nullable(input.SessionID), input.Type, StatusPending, payload, boolToInt(input.BypassFailState), nowStr, nowStr)
 	if err != nil {
 		return Task{}, err
 	}
@@ -168,11 +180,12 @@ func (s *Store) ListRunning(ctx context.Context) ([]Task, error) {
 }
 
 func (s *Store) MarkRunning(ctx context.Context, id string) (Task, error) {
+	nowStr := nowRFC3339()
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE tasks
-		SET status = ?, started_at = COALESCE(started_at, datetime('now')), updated_at = datetime('now')
+		SET status = ?, started_at = COALESCE(started_at, ?), updated_at = ?
 		WHERE id = ? AND status = ?
-	`, StatusRunning, id, StatusPending)
+	`, StatusRunning, nowStr, nowStr, id, StatusPending)
 	if err != nil {
 		return Task{}, err
 	}
@@ -185,12 +198,13 @@ func (s *Store) MarkRunning(ctx context.Context, id string) (Task, error) {
 // ResetToPending 将任务重置为 pending 状态，同时重置 started_at、progress 和 attempt 计数。
 // 用于服务重启时恢复可重新执行的任务。
 func (s *Store) ResetToPending(ctx context.Context, id string) (Task, error) {
+	nowStr := nowRFC3339()
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE tasks
 		SET status = ?, progress = 0, message = '', error = NULL, attempt = attempt + 1,
-			started_at = NULL, finished_at = NULL, updated_at = datetime('now')
+			started_at = NULL, finished_at = NULL, updated_at = ?
 		WHERE id = ? AND status = ?
-	`, StatusPending, id, StatusRunning)
+	`, StatusPending, nowStr, id, StatusRunning)
 	if err != nil {
 		return Task{}, err
 	}
@@ -204,11 +218,12 @@ func (s *Store) UpdateProgress(ctx context.Context, id string, progress int, mes
 	if progress < 0 || progress > 100 {
 		return Task{}, fmt.Errorf("%w: progress must be between 0 and 100", ErrInvalidTask)
 	}
+	nowStr := nowRFC3339()
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE tasks
-		SET progress = ?, message = ?, updated_at = datetime('now')
+		SET progress = ?, message = ?, updated_at = ?
 		WHERE id = ? AND status = ?
-	`, progress, message, id, StatusRunning)
+	`, progress, message, nowStr, id, StatusRunning)
 	if err != nil {
 		return Task{}, err
 	}
@@ -219,11 +234,12 @@ func (s *Store) UpdateProgress(ctx context.Context, id string, progress int, mes
 }
 
 func (s *Store) MarkSucceeded(ctx context.Context, id string, message string) (Task, error) {
+	nowStr := nowRFC3339()
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE tasks
-		SET status = ?, progress = 100, message = ?, error = NULL, finished_at = datetime('now'), updated_at = datetime('now')
+		SET status = ?, progress = 100, message = ?, error = NULL, finished_at = ?, updated_at = ?
 		WHERE id = ? AND status = ?
-	`, StatusSucceeded, message, id, StatusRunning)
+	`, StatusSucceeded, message, nowStr, nowStr, id, StatusRunning)
 	if err != nil {
 		return Task{}, err
 	}
@@ -238,11 +254,12 @@ func (s *Store) MarkFailed(ctx context.Context, id string, message string, taskE
 	if taskError != nil {
 		errorMessage = taskError.Error()
 	}
+	nowStr := nowRFC3339()
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE tasks
-		SET status = ?, message = ?, error = ?, finished_at = datetime('now'), updated_at = datetime('now')
+		SET status = ?, message = ?, error = ?, finished_at = ?, updated_at = ?
 		WHERE id = ? AND status IN (?, ?)
-	`, StatusFailed, message, nullable(errorMessage), id, StatusPending, StatusRunning)
+	`, StatusFailed, message, nullable(errorMessage), nowStr, nowStr, id, StatusPending, StatusRunning)
 	if err != nil {
 		return Task{}, err
 	}
@@ -253,12 +270,13 @@ func (s *Store) MarkFailed(ctx context.Context, id string, message string, taskE
 }
 
 func (s *Store) Retry(ctx context.Context, id string) (Task, error) {
+	nowStr := nowRFC3339()
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE tasks
 		SET status = ?, progress = 0, message = '', error = NULL, attempt = attempt + 1,
-			started_at = NULL, finished_at = NULL, updated_at = datetime('now')
+			started_at = NULL, finished_at = NULL, updated_at = ?
 		WHERE id = ? AND status = ?
-	`, StatusPending, id, StatusFailed)
+	`, StatusPending, nowStr, id, StatusFailed)
 	if err != nil {
 		return Task{}, err
 	}
@@ -269,11 +287,12 @@ func (s *Store) Retry(ctx context.Context, id string) (Task, error) {
 }
 
 func (s *Store) Cancel(ctx context.Context, id string) (Task, error) {
+	nowStr := nowRFC3339()
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE tasks
-		SET status = ?, message = 'cancelled', finished_at = datetime('now'), updated_at = datetime('now')
+		SET status = ?, message = 'cancelled', finished_at = ?, updated_at = ?
 		WHERE id = ? AND status IN (?, ?)
-	`, StatusCancelled, id, StatusPending, StatusRunning)
+	`, StatusCancelled, nowStr, nowStr, id, StatusPending, StatusRunning)
 	if err != nil {
 		return Task{}, err
 	}
@@ -319,12 +338,13 @@ func (s *Store) DeleteByFailedSessions(ctx context.Context) error {
 // RecoverRunning 统一将所有 running 状态任务标记为 failed。
 // 保留此方法作为通用降级方案，Pool.RecoverRunning 提供更精细的分类型恢复。
 func (s *Store) RecoverRunning(ctx context.Context) error {
+	nowStr := nowRFC3339()
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE tasks
 		SET status = ?, message = 'interrupted by service restart', error = 'task was running during startup',
-			finished_at = datetime('now'), updated_at = datetime('now')
+			finished_at = ?, updated_at = ?
 		WHERE status = ?
-	`, StatusFailed, StatusRunning)
+	`, StatusFailed, nowStr, nowStr, StatusRunning)
 	return err
 }
 

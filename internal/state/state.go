@@ -5,7 +5,15 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 )
+
+// nowRFC3339 返回本地时区的 RFC3339 时间字符串，与 sessions 表其它时间字段
+// （started_at/ended_at 用 time.Now().Format(time.RFC3339)）保持一致。
+// 避免 SQLite datetime('now') 返回 UTC，导致同一 session 内不同时间字段时区混乱。
+func nowRFC3339() string {
+	return time.Now().Format(time.RFC3339)
+}
 
 var (
 	ErrSessionNotFound   = errors.New("session not found")
@@ -106,39 +114,40 @@ func applyInTx(ctx context.Context, tx *sql.Tx, sessionID string, event Event, t
 	if err != nil {
 		return "", err
 	}
+	nowStr := nowRFC3339()
 
 	if event == EventTaskFailed {
 		_, err = tx.ExecContext(ctx, `
 			UPDATE sessions
-			SET status = ?, current_task_id = ?, last_error = ?, updated_at = datetime('now')
+			SET status = ?, current_task_id = ?, last_error = ?, updated_at = ?
 			WHERE id = ?
-		`, next, nullable(taskID), nullable(errorMessage), sessionID)
+		`, next, nullable(taskID), nullable(errorMessage), nowStr, sessionID)
 	} else if event == EventUploadSucceeded {
 		_, err = tx.ExecContext(ctx, `
 			UPDATE sessions
-			SET status = ?, current_task_id = ?, last_error = NULL, uploaded_at = datetime('now'), updated_at = datetime('now')
+			SET status = ?, current_task_id = ?, last_error = NULL, uploaded_at = ?, updated_at = ?
 			WHERE id = ?
-		`, next, nullable(taskID), sessionID)
+		`, next, nullable(taskID), nowStr, nowStr, sessionID)
 	} else if event == EventPublishSucceeded {
 		if publishTarget != "" {
 			_, err = tx.ExecContext(ctx, `
 				UPDATE sessions
-				SET status = ?, current_task_id = ?, last_error = NULL, published_at = datetime('now'), publish_target = ?, updated_at = datetime('now')
+				SET status = ?, current_task_id = ?, last_error = NULL, published_at = ?, publish_target = ?, updated_at = ?
 				WHERE id = ?
-			`, next, nullable(taskID), publishTarget, sessionID)
+			`, next, nullable(taskID), nowStr, publishTarget, nowStr, sessionID)
 		} else {
 			_, err = tx.ExecContext(ctx, `
 				UPDATE sessions
-				SET status = ?, current_task_id = ?, last_error = NULL, published_at = datetime('now'), updated_at = datetime('now')
+				SET status = ?, current_task_id = ?, last_error = NULL, published_at = ?, updated_at = ?
 				WHERE id = ?
-			`, next, nullable(taskID), sessionID)
+			`, next, nullable(taskID), nowStr, nowStr, sessionID)
 		}
 	} else {
 		_, err = tx.ExecContext(ctx, `
 			UPDATE sessions
-			SET status = ?, current_task_id = ?, last_error = NULL, updated_at = datetime('now')
+			SET status = ?, current_task_id = ?, last_error = NULL, updated_at = ?
 			WHERE id = ?
-		`, next, nullable(taskID), sessionID)
+		`, next, nullable(taskID), nowStr, sessionID)
 	}
 	if err != nil {
 		return "", err

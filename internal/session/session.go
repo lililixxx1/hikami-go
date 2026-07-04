@@ -271,8 +271,8 @@ func (s *Store) UpdateEndedAt(ctx context.Context, sessionID string, endedAt tim
 	}
 
 	result, err := s.db.ExecContext(ctx, `
-		UPDATE sessions SET ended_at = ?, updated_at = datetime('now') WHERE id = ?
-	`, endedAt.Format(time.RFC3339), sessionID)
+		UPDATE sessions SET ended_at = ?, updated_at = ? WHERE id = ?
+	`, endedAt.Format(time.RFC3339), time.Now().Format(time.RFC3339), sessionID)
 	if err != nil {
 		return err
 	}
@@ -295,8 +295,8 @@ func (s *Store) SetLocalAvailable(ctx context.Context, sessionID string, availab
 	}
 
 	result, err := s.db.ExecContext(ctx, `
-		UPDATE sessions SET local_available = ?, updated_at = datetime('now') WHERE id = ?
-	`, available, sessionID)
+		UPDATE sessions SET local_available = ?, updated_at = ? WHERE id = ?
+	`, available, time.Now().Format(time.RFC3339), sessionID)
 	if err != nil {
 		return err
 	}
@@ -320,9 +320,9 @@ func (s *Store) SetArchivedAt(ctx context.Context, sessionID string, archivedAt 
 
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE sessions
-		SET archived_at = ?, last_error = NULL, updated_at = datetime('now')
+		SET archived_at = ?, last_error = NULL, updated_at = ?
 		WHERE id = ?
-	`, archivedAt.UTC().Format(time.RFC3339), sessionID)
+	`, archivedAt.Format(time.RFC3339), time.Now().Format(time.RFC3339), sessionID)
 	if err != nil {
 		return err
 	}
