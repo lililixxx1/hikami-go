@@ -86,3 +86,6 @@ config.yaml.bak*
 
 # Codex task workspace
 .cgpt/
+
+# Codex review reports (codex-review skill 产物,开发过程文件)
+/reviews/
