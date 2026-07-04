@@ -45,7 +45,7 @@ discovered --> downloading/recording/importing --> media_ready
 | WebSocket | gorilla/websocket |
 | 数据库 | SQLite (modernc.org/sqlite, 纯 Go 无 CGO) |
 | 配置 | Viper (YAML) |
-| 日志 | slog (结构化 JSON) |
+| 日志 | slog (结构化 JSON,输出 stdout；生产经 systemd 进 journald) |
 | 定时任务 | robfig/cron/v3 |
 | 外部工具 | ffmpeg, ffprobe, yt-dlp, rclone |
 | AI | DashScope ASR + OpenAI-compatible/Anthropic 回顾生成 |
@@ -219,9 +219,39 @@ make fmt
 make tidy
 ```
 
+## 部署与日志
+
+**生产部署用 systemd**(service 定义在 `/etc/systemd/system/hikami.service`,`Restart=on-failure` 崩溃自愈):
+
+```bash
+systemctl start hikami       # 启动(跑磁盘上的 ./hikami 二进制)
+systemctl restart hikami     # 重启
+systemctl status hikami      # 状态
+```
+
+> ⚠️ **`systemctl restart` 不会重新编译。** 改完 Go 代码后必须先 `make build-go` 重编 `./hikami`,再 `systemctl restart hikami`——否则 service 跑的还是旧二进制。
+
+**日志与状态存储分开,排查问题两者都要看:**
+
+| 位置 | 内容 | 查看 |
+|------|------|------|
+| **journald** | 运行时事件日志(slog JSON 流) | `journalctl -u hikami -f`(实时)/ `-n 200` / `--since "1 hour ago"` / `-p err` |
+| **`hikami.db`** | 结构化状态(session/task/channel 表、时间戳、last_error) | `sqlite3 hikami.db "..."` |
+| **`logs/*.log`** | 历史(2026-07-04 前,手动启动 stdout 重定向产生) | 已停写,仅供回溯 |
+
+**日志落盘机制**:程序代码里 slog 只输出到 `os.Stdout`(`cmd/hikami/main.go`),**自身不写文件**。生产环境经 systemd `StandardOutput=journal` 进 journald(唯一实时日志源);开发环境(`make run`/手动 `./hikami`)日志到终端 stdout,需自行 `2>&1 | tee file` 落盘。`config.logs.{level,format}` 控制级别与格式;`config.logs.dir` 建目录但程序不主动写文件。
+
+**DB 时间字段时区**(2026-07-04 统一):`sessions`/`tasks` 表用户可见时间字段(`started_at`/`ended_at`/`published_at`/`uploaded_at`/`archived_at`/`created_at`/`updated_at`)统一存本地时区 RFC3339(`2026-07-04T09:07:39+08:00`)。此前历史数据可能是 UTC 无时区格式,显示会偏移。前端 `formatDateTime` 用 `new Date()` 解析,带时区字符串能正确显示本地时间。
+
 优先运行与改动相关的最小测试；跨模块、迁移、API 或前端类型变更后运行 `make test`，前端变更运行 `cd web && npm run type-check` 或 `make web-build`。
 
 ## 变更记录 (Changelog)
+
+### 2026-07-04 · 回归 systemd 部署 + DB 时间统一本地时区 + 自动发布跳过补日志
+
+- **回归 systemd 部署**：此前服务实际由手动 `./hikami`(stdout 重定向到 `logs/hikami-*.log`)运行,而 `/etc/systemd/system/hikami.service`(配 `Restart=on-failure`、`StandardOutput=journal`)自 6/29 起一直 `inactive`。切换:停手动进程 → 重编 `./hikami`(含本次改动)→ `systemctl start hikami`。日志实时源从 `logs/*.log` 改为 **journald**(`journalctl -u hikami -f`);`logs/` 目录停写(历史文件保留,`.gitignore` 已忽略)。**关键:`systemctl restart` 不重新编译,改代码后必须先 `make build-go` 再 restart。** 新增"部署与日志"小节、技术栈表日志行补充 journald。
+- **DB 时间统一本地时区**：根因——`sessions` 表用 `time.Now().Format(RFC3339)` 存本地时区,但 `tasks` 表 + `state.go` 的 `published_at`/`uploaded_at` 用 SQLite `datetime('now')` 存 **UTC**(SQLite 的 `datetime('now')` 无视系统时区恒返回 UTC);前端 `formatDateTime` 用 `new Date()` 解析,无时区字符串被当本地时间,任务时间显示早 8h。修复:`worker/task.go`(新增 `nowRFC3339()`,Create 显式传 created/updated_at,8 处 UPDATE)+ `state/state.go`(Apply 事务内统一 nowStr,5 处)+ `session/session.go`(3 处,`SetArchivedAt` 去掉 `.UTC()`)共 16 处 `datetime('now')` 改 `nowRFC3339()`。新数据生效,历史 UTC 数据不迁移。codex-review(pppzzz)APPROVED,报告 `reviews/main--r34.md`。
+- **自动发布跳过补日志**：`cmd/hikami/main.go` recap→publish 回调原 `if err != nil || !ch.AutoPublish { return }` 静默返回(诊断 7/3 漏自动发布时无任何日志可查),拆分为:get channel 失败打 WARN(带 error)、`auto_publish` 关闭打 INFO(带 channel_id/session_id)。下次"自动发布为何没触发"可一眼定位。
 
 ### 2026-07-03 · 移除专栏删除/编辑 + 新增重新生成回顾
 

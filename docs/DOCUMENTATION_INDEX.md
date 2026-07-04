@@ -59,5 +59,6 @@
 | 文档 | 说明 |
 |------|------|
 | [前端兜底页-embedded_web构建标签缺失.md](archive/investigations/前端兜底页-embedded_web构建标签缺失.md) | `embedded_web` build tag 缺失导致前端不嵌入、降级 API-only 兜底页的诊断报告 |
+| [录播时长不足-流断未重连.md](archive/investigations/录播时长不足-流断未重连.md) | 2026-07-03 直播漏录 2.5h 的根因分析:`live_record.auto_reconnect` 无默认值导致流断后零重连 |
 | [recap-compare-26.04.22-优化方案.md](archive/investigations/recap-compare-26.04.22-优化方案.md) | 单次回顾质量对比决策（v4-pro 已采纳为默认） |
 | [recap-compare-26.04.22-实施计划.md](archive/investigations/recap-compare-26.04.22-实施计划.md) | 同上实施计划 |

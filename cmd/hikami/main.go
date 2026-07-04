@@ -279,7 +279,13 @@ func main() {
 			return
 		}
 		ch, err := channelStore.Get(ctx, task.ChannelID)
-		if err != nil || !ch.AutoPublish {
+		if err != nil {
+			slog.Warn("auto publish skipped: get channel failed", "channel_id", task.ChannelID, "session_id", task.SessionID, "error", err)
+			return
+		}
+		if !ch.AutoPublish {
+			slog.Info("auto publish skipped: channel auto_publish disabled",
+				"channel_id", task.ChannelID, "session_id", task.SessionID)
 			return
 		}
 		if runtimeStatus != nil && !runtimeStatus.Capabilities.PublishOpus {

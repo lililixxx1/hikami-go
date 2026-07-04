@@ -47,10 +47,29 @@ cd web && npx vitest run                     # 单测
 ## 启动与运行
 
 - **首次运行**:`cp config.example.yaml config.yaml`,按需编辑(最小配置仅需 `output_root`)。
-- **启动**:`make run` 或 `./hikami -config config.yaml`。
+- **启动(开发)**:`make run` 或 `./hikami -config config.yaml`(日志打到 stdout)。
+- **启动(生产/systemd)**:`systemctl start hikami`(service 定义在 `/etc/systemd/system/hikami.service`,`Restart=on-failure` 崩溃自愈)。**改完代码必须 `make build-go` 重编 `./hikami` 后 `systemctl restart hikami` 才生效**;`systemctl restart` 不会重新编译。
 - **默认监听**:`127.0.0.1:6334`(仅本机,定义在 `internal/config/config.go` 的 `web.listen` 默认值)。
 - **访问管理界面**:浏览器打开 http://127.0.0.1:6334 。
 - **二进制特点**:前端经 `embedded_web` build tag 内嵌进 `./hikami`(单文件部署,无需额外 web 资源)。
+
+## 日志与状态存储
+
+**事件日志和结构化状态分开存放,排查问题时两者都要看:**
+
+| 位置 | 内容 | 查看方式 |
+|------|------|---------|
+| **journald**(systemd 收集) | 运行时事件日志(slog JSON 流:任务进度、自动触发链、WARN/ERROR) | `journalctl -u hikami -f`(实时)/ `-n 200`(最近)/ `--since "1 hour ago"` |
+| **`hikami.db`**(SQLite) | 结构化状态:session/task/channel 表、时间戳、last_error | `sqlite3 hikami.db "..."` 查具体场次/任务状态 |
+| **`logs/hikami-*.log`**(历史) | systemd 部署前的旧运行日志(手动启动时 stdout 重定向产生) | 已停止写入,仅供回溯;`.gitignore` 已忽略 |
+
+> **日志位置说明**:
+> - 程序代码里 slog 只输出到 **`os.Stdout`**(`cmd/hikami/main.go`),**自身不写文件**。
+> - 生产环境(systemd)经 `StandardOutput=journal` 进 **journald**——这是唯一的实时日志源。
+> - 开发环境(手动 `./hikami`/`make run`)日志直接到终端 stdout,需自行 `2>&1 | tee file` 才落盘。
+> - `config.logs.{dir,level,format}` 配置项目前只控制日志**级别**和**格式**(`json`/`text`),`dir` 用于建目录但程序不主动写文件——文件落盘靠外层(systemd journal 或手动重定向)。
+
+> **DB 时间字段时区**(2026-07-04 统一):`sessions`/`tasks` 表的用户可见时间字段(`started_at`/`ended_at`/`published_at`/`uploaded_at`/`archived_at`/`created_at`/`updated_at`)统一存本地时区 RFC3339(`2026-07-04T09:07:39+08:00`)。该日期之前的历史数据可能是 UTC 无时区格式,显示会偏移。前端 `formatDateTime` 用 `new Date()` 解析,带时区字符串能正确显示本地时间。
 
 ## 外部运行时依赖
 
@@ -206,6 +225,7 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
 
 ## 变更记录
 
+- 2026-07-04(六):**运维 + 代码三处修复**。① **回归 systemd 部署**:停掉 7/3 起手动 `./hikami`(stdout 重定向 `logs/*.log`)的进程,`systemctl start hikami` 走 journald;service 配 `Restart=on-failure` 崩溃自愈。**重要:`systemctl restart` 不会重新编译,改代码后必须先 `make build-go` 再 restart**。日志查看从 `tail -f logs/*.log` 改为 `journalctl -u hikami -f`;`logs/` 目录停止写入(历史文件保留,`.gitignore` 已忽略)。② **DB 时间统一本地时区**:`sessions` 表用 `time.Now().Format(RFC3339)` 存本地时区,但 `tasks` 表 + `state.go` 的 `published_at`/`uploaded_at` 用 SQLite `datetime('now')` 存 **UTC**(无视系统时区),前端 `new Date()` 把无时区字符串当本地时间,显示早 8h。修复:`worker/task.go`+`state/state.go`+`session/session.go` 共 16 处 `datetime('now')` 改 `nowRFC3339()`(本地时区),`SetArchivedAt` 去掉 `.UTC()`;新数据生效,历史 UTC 数据不迁移。③ **自动发布跳过补日志**:`main.go` recap→publish 回调原 `if err != nil || !ch.AutoPublish { return }` 静默,拆为 get channel 失败打 WARN、`auto_publish` 关闭打 INFO,便于排查"自动发布为何没触发"(诊断 7/3 漏自动发布用此)。codex-review(pppzzz)APPROVED,报告 `reviews/main--r34.md`。
 - 2026-07-03(四):**移除专栏删除/编辑 + 新增重新生成回顾**。① 砍掉 `removeOpus`/`editOpus`(删B站专栏)——B站内容只能手动去 B站管理。连带清理 4 处死代码:`state.ApplyRevertPublish`、`EventPublishReverted`、`transitions[StatusPublished]` 出口(published 改为终态)、`session.SetPublishTarget`。② 新增「重新生成回顾」:`POST /api/sessions/:sid/recap/regenerate` → `recap.CreateRegenTask`(覆盖本地 md 不碰 B站)。**任务实例级 bypass**:`worker.Task`/`CreateInput` 加 `BypassFailState bool`(DB v34 加列 `bypass_fail_state`),`syncSessionState` 改 OR 逻辑(实例级 || 类型级),失败仅写 `last_error` 不降级 published/recap_done。`main.go` onSuccess 回调对 published 早退。前端 `UIActionName` 8→6、`RecapDrawer` 加硬编码「重新生成」按钮。后端 26 包全过、前端 vitest 97。文档:api-routes(-2+1)、state/session/handler/publisher/archive/worker/db/recap 的 CLAUDE.md、web/CLAUDE.md、根 CLAUDE.md 同步。
 - 2026-07-03(四):`/init-project` 增量更新。核对 `d45695f`(上次文档)→ `be509b6`(HEAD)区间,代码改动仅前端 3 文件(后端零改动),集中于一处未同步的 UI 重构:**设置页折叠分组**(`af9df47` + `be509b6`)。① `web/CLAUDE.md` 目录树补登遗漏的 `DashScopeSettingsCard.vue`/`ASRS3SettingsCard.vue`(实为 9 `.vue`,此前文档仅列 7);`views/SettingsView.vue` 章节由"5 分区平铺"重写为"4 折叠分组"(`el-collapse`:总览/流水线配置/账号与备份/高级),详述三处状态卡合并为单个总览卡、API 密钥空壳卡删除(密钥改由各子卡内联管理)、`scrollToSection` 跨分组先展开再滚动的 ~320ms 过渡等待、ASR 能力项 `CapActionType` section/hint 分流。② 根 `AGENTS.md` 前端结构小节 `features/settings/components/` 行补一句 9 卡 + 4 折叠分组要点。③ **修正测试计数口径**:`vitest run` 运行时实为 100(此前文档写 96),`sessionActions.test.ts` 运行时 51(静态 47,因 `describe.each(['download','import'])` 将 6 个回放类用例 ×2 展开);本轮在 `web/CLAUDE.md` 测试状态小节同时标注运行时/静态两数,消除歧义。26 个 internal 模块 + cmd + web 的 28 份 CLAUDE.md 面包屑齐全,本轮无新增模块、无后端改动。
 - 2026-07-02(四):`/init-project` 增量更新(跟随 `83ef024` 发现回放两步式 + `e9cb624` 回放类不自动发布)。① `composables/` 计数 6→7(新增 `useDiscoverReplay`,发现回放抽屉可见性 + 执行后刷新);`features/recaps/sessionActions.ts` 补 `isReplaySource` 说明(回放类隐藏 publish/edit/remove)。② 同步更新 5 处模块文档:`internal/discover/CLAUDE.md`(新增 `PreviewAll`/`Execute`/`ExecuteItem`/`Result.Exists`/`annotateExists` + 2 端点,测试 5→10)、`internal/handler/CLAUDE.md`(+2 路由)、`cmd/hikami/CLAUDE.md`(recap→publish 回调按 source_type 拦截回放类)、`web/CLAUDE.md`(录播/回放子 tab + 两步式抽屉,Vitest 90→96,静态口径;`describe.each` 运行时展开实为 94→100,见 2026-07-03 条)、`CLAUDE-detail/api-routes.md`(+2 路由)。③ 根 `CLAUDE.md` 精简模块索引同步 discover(测试 5→10)/web(测试 90→96,静态口径)两行 + 新增本轮 changelog。28 个模块级 CLAUDE.md 面包屑齐全,本轮无新增模块。
