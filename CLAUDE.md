@@ -131,12 +131,12 @@ graph TD
 | `internal/fsutil` | 原子文件写入辅助（WriteFileAtomic/WriteJSONAtomic） | 4 | [CLAUDE.md](./internal/fsutil/CLAUDE.md) |
 | `internal/aiprovider` | AI Provider 共享返回类型 | 5 | [CLAUDE.md](./internal/aiprovider/CLAUDE.md) |
 | `internal/runtime` | 外部工具探测、FFmpeg 自动解析/下载/嵌入、健康检查、磁盘/Cookie 检查 | 26 | [CLAUDE.md](./internal/runtime/CLAUDE.md) |
-| `internal/biliutil` | B 站 Cookie、登录、WBI、UA、加密工具、视频链接解析、view/playurl/弹幕 XML/seg.so API 客户端 | 69 | [CLAUDE.md](./internal/biliutil/CLAUDE.md) |
-| `internal/channel` | 主播 CRUD、识别、自动化配置（auto_record/auto_asr/auto_publish/auto_recap 三态）、per-channel 发布配置 | 59 | [CLAUDE.md](./internal/channel/CLAUDE.md) |
+| `internal/biliutil` | B 站 Cookie、登录、WBI、UA、加密工具、视频链接解析、view/playurl/弹幕 XML/seg.so API 客户端、buvid 设备指纹（-352 风控对抗共享层） | 80 | [CLAUDE.md](./internal/biliutil/CLAUDE.md) |
+| `internal/channel` | 主播 CRUD、识别（-352 风控对抗：buvid 注入 + WBI 签名）、自动化配置（auto_record/auto_asr/auto_publish/auto_recap 三态）、per-channel 发布配置 | 62 | [CLAUDE.md](./internal/channel/CLAUDE.md) |
 | `internal/session` | 场次 CRUD、去重、统计（GetStats/GetDashboardStats）、失败重试、local_available/archived_at 标记；CreateLive 同槽冲突返回 ErrAlreadyLive（不再复用/重置） | 39 | [CLAUDE.md](./internal/session/CLAUDE.md) |
 | `internal/state` | 场次聚合状态机与失败恢复、ApplyWithPublishTarget（published 为终态，无 publish_reverted 出口） | 11 | [CLAUDE.md](./internal/state/CLAUDE.md) |
 | `internal/worker` | 任务池、任务存储、Hub 广播、重试取消、Register+WithBypassFailState（状态旁路任务元数据）、任务实例级 BypassFailState（重新生成等非推进型任务失败不降级主状态）、live_record 进程接管回调 | 38 | [CLAUDE.md](./internal/worker/CLAUDE.md) |
-| `internal/handler` | Gin REST API、WebSocket、引导、诊断、配置导出/导入、回顾模型列表、DashScope/ASR S3/archive 配置端点、stats/dashboard（单连接查询，已修复自死锁）、recap/regenerate 重新生成端点、运行时状态代际校验、admin token 认证中间件 | 55 | [CLAUDE.md](./internal/handler/CLAUDE.md) |
+| `internal/handler` | Gin REST API、WebSocket、引导、诊断、配置导出/导入（6 段配置+secrets 事务化持久化到 runtime_settings）、回顾模型列表、DashScope/ASR S3/archive 配置端点、stats/dashboard（单连接查询，已修复自死锁）、recap/regenerate 重新生成端点、运行时状态代际校验、admin token 认证中间件 | 66 | [CLAUDE.md](./internal/handler/CLAUDE.md) |
 | `internal/discover` | B 站回放发现（两步式预览勾选下载：PreviewAll 预览→Execute 执行；保留一步式 DiscoverAll 作回退） | 10 | [CLAUDE.md](./internal/discover/CLAUDE.md) |
 | `internal/download` | 回放音频下载（native 单 P/多 P + yt-dlp 双后端，concat list 路径转义）、单链接触发、CookieAccountStore cookie 解析 | 48 | [CLAUDE.md](./internal/download/CLAUDE.md) |
 | `internal/live_record` | 直播音频与弹幕录制、ffmpeg 进程接管（Adopt） | 36 | [CLAUDE.md](./internal/live_record/CLAUDE.md) |
@@ -145,7 +145,7 @@ graph TD
 | `internal/asr` | DashScope ASR、S3 存储后端、本地临时音频、公网 IP 检测、弹幕校正 | 63 | [CLAUDE.md](./internal/asr/CLAUDE.md) |
 | `internal/recap` | AI 回顾、模板、分段、续写、术语发现、符号化纯文本文章输出（emoji 前缀分行）、署名识别（hasGeneratedNotice 兼容改名过渡期变体）、local_available 守卫、CapabilityChecker 能力 gate、disabledProvider 禁用即禁用、CreateRegenTask（重新生成，覆盖本地 md 不碰 B站，带 BypassFailState） | 94 | [CLAUDE.md](./internal/recap/CLAUDE.md) |
 | `internal/upload` | WebDAV 归档上传（rclone + 原生 WebDAV）、前置产物校验、清理策略+local_available 闭环 | 38 | [CLAUDE.md](./internal/upload/CLAUDE.md) |
-| `internal/publisher` | B 站专栏草稿/发布与 Markdown 转 Opus，含 -352 风控自动处理（buvid 注入+gaia 验证+WBI 刷新重试）、封面来源解析（recap cover > 配置 cover_url 本地路径自动上传/网络 URL 原样）、local_available 守卫（专栏只能手动去 B站管理，本系统不删不改） | 66 | [CLAUDE.md](./internal/publisher/CLAUDE.md) |
+| `internal/publisher` | B 站专栏草稿/发布与 Markdown 转 Opus，含 -352 风控自动处理（buvid 注入 via 共享 BuvidStore + gaia 验证 + WBI 刷新重试）、封面来源解析（recap cover > 配置 cover_url 本地路径自动上传/网络 URL 原样）、local_available 守卫（专栏只能手动去 B站管理，本系统不删不改） | 67 | [CLAUDE.md](./internal/publisher/CLAUDE.md) |
 | `internal/archive` | 发布后 WebDAV 归档（状态旁路任务：从 published 出发，不推进主状态仅写 archived_at），复用 upload.Copier/Deleter，与 upload 互斥 | 14 | [CLAUDE.md](./internal/archive/CLAUDE.md) |
 | `internal/scheduler` | 定时发现、直播检查、告警任务 | 13 | [CLAUDE.md](./internal/scheduler/CLAUDE.md) |
 | `internal/secrets` | API Key 管理 | 8 | [CLAUDE.md](./internal/secrets/CLAUDE.md) |
@@ -202,7 +202,7 @@ graph TD
 - **前端嵌入由 `//go:build embedded_web` 控制**：`make build-go`/`make build` 自动加该 tag 且 `strings` 自检前端是否嵌入，`make build-go-api` 不带 tag（纯 API，启动打 WARN 降级到 fallback 页）；**CI release 的 TAGS 必须始终含 `embedded_web`**（embed_ffmpeg 仅 Windows 叠加），漏 tag 会让 `embed.go` 被排除导致前端静默丢失（`1781937` 曾踩坑）。
 - ASR 临时音频发布支持三级后端：本地 HTTP 服务（优先）> S3 兼容对象存储 > rclone（回退），由 `ASRTempConfig.NativeConfigured()` 和 `ASRS3Config.Configured()` 自动选择。
 - B 站专栏发布 API 的 -352 风控由 `BiliOpusClient` 内置处理（`doRequestWithGaia`）：buvid 指纹注入 + gaia 两步验证 + WBI 密钥刷新重试，业务层无需感知；`DeleteDraft` 走 `doRequest` 仅 WBI 刷新。
-- 配置导出（`GET /api/config/export`）聚合所有配置为 JSON，配置导入（`POST /api/config/import?strategy=merge/overwrite`）支持 merge/overwrite 策略；overwrite 时需调用 secrets.Clear、glossary.ClearAll、recapTemplates.ClearCustom、cookieAccounts.ClearAll。
+- 配置导出（`GET /api/config/export`）聚合 6 个全局配置段（recap_ai/publish/webdav/asr_s3/dashscope/archive）+ Secrets/Channels/Glossary/Templates/BiliAccounts 为 JSON；WebDAV/ASR S3 用专用导出 DTO 剔除明文密钥字段。配置导入（`POST /api/config/import?strategy=merge/overwrite`）两阶段事务化：阶段一把 6 段配置 + secrets 绑进同一 `runtimeconfig.WithTx` 事务（overwrite 用 `secrets.ClearTx`），commit 成功后才提交内存 cfg 与进程 env；持久化前 `validateImportedSections` 复用各 update handler 的段内校验，非法值 400 不落盘。阶段二（仅 overwrite，核心事务成功后）清 glossary/templates/cookies。
 - 运行时状态的并发读写由 `internal/handler` 的代际校验机制保护：`configGen atomic.Uint64` 单调递增，所有配置更新点（导入/密钥/发布/回顾/WebDAV）在 `publishMu` 写锁内 `bumpConfigGen()` 后调用 `refreshRuntimeStatus(cfgSnapshot, gen)`；过期快照（`configGen.Load() > gen`）在 Probe 完成后被丢弃。各 capability handler（submitASR/generateRecap/uploadSession/fetchSession/publishSession）必须通过 `currentRuntimeStatus()` 读取，不得直接访问 `s.runtimeStatus` 字段。新增配置更新点时务必复用同一套 helpers。
 - 术语表、回顾模板、续写、per-channel 回顾配置的完整上下文见 [pipelines.md](./CLAUDE-detail/pipelines.md)。
 - API 路由和前端类型修改需同步检查 [api-routes.md](./CLAUDE-detail/api-routes.md) 与 [frontend-types.md](./CLAUDE-detail/frontend-types.md)。
@@ -246,6 +246,21 @@ systemctl status hikami      # 状态
 优先运行与改动相关的最小测试；跨模块、迁移、API 或前端类型变更后运行 `make test`，前端变更运行 `cd web && npm run type-check` 或 `make web-build`。
 
 ## 变更记录 (Changelog)
+
+### 2026-07-05 · 修复识别主播 -352 风控 + buvid 风控对抗下沉共享
+
+- **背景**：用户反馈"添加主播识别不了，显示网络错误"。systematic-debugging 定位根因：`internal/channel/identify.go` 的 `getJSON` 发往 `getInfoByRoom` 端点时 UA 用 `"Mozilla/5.0 Hikami-Go"`、无 Referer/Origin、无 buvid、无 WBI → 触发 B 站 -352 风控。日志铁证 `error="bilibili room info error: code=-352"`，curl 复现确认。前端"网络错误"是误导（后端把 -352 包成 500，axios 把所有非 2xx 都提示"网络错误"）。
+- **关键发现**：仓库内已有两份成熟的 buvid 拉取实现（`publisher/bilibili_opus.go` 的 `getBuvids` + `live_record/danmaku.go` 的 `getBuvidConf`），逻辑重复。且**探针实测**：buvid 注入是 -352 对抗的**必要但不充分**条件——`getInfoByRoom` 端点还需 WBI 签名才能完全通过（buvid only 仍 -352，buvid + WBI → 200 code=0，这正是 danmaku 的 `getDanmuInfo` 用 `WBISigner` 的原因）。
+- **修复（3 处）**：① 新增 `internal/biliutil/buvid.go`：`BuvidStore`（按 cookie 24h 缓存 buvid3/buvid4，nil-safe）+ `InjectBuvids`（**replace 语义**——剔除旧同名 cookie 段再追加新值，避免 B 站按首个同名 cookie 解析导致新指纹失效）+ 6 个测试。② **identify 修复**：`Identify` 注入 buvid；`identifyByRoom`/`liveRoomIDByUID` 用按 cookie 缓存的 `WBISigner` 做 WBI 签名；`getJSON` 改用 `BiliUserAgent` + `Referer`/`Origin: https://live.bilibili.com`。③ **下沉重构（行为等价）**：`publisher` 和 `live_record/danmaku` 的本地 buvid 实现删除，改用共享 `BuvidStore`，消除两份重复。
+- **验证**：后端 27 包全过（biliutil 69→80、channel 59→61、publisher 66→67、live_record 不变）；strace 确认测试无对外网络连接（passthroughSigner + buvid 桩隔离）；**手动验证** `curl -X POST localhost:16334/api/channels/identify -d '{"live_room_id":924973}'` → 200 返回 UID 1401928（火西肆）。
+- **codex 审核**：计划 v1 NEEDS_CHANGES（4 条：InjectBuvids 重复 buvid3、spiURL 私有致测试打真实网、publisher helper 捕获旧 client、danmaku nil panic）→ v2 全部落实后 APPROVED。执行后再次 codex 审核实际代码。
+- **文档**：同步 biliutil/channel/publisher/live_record 的 CLAUDE.md + 根 CLAUDE.md/AGENTS.md changelog。
+
+### 2026-07-05 · 配置备份导入持久化 + B站账号卡片区分登录态
+
+- **配置备份导入持久化到 runtime_settings**（`6a2bb18`）：此前导入的配置只改内存 cfg + 进程 env，重启即丢；现改为两阶段事务化持久化。① **导出 bundle 6 段指针化**：recap_ai/publish/webdav/asr_s3/dashscope/archive 全部 `*T` + `omitempty`，缺失段反序列化为 nil，导入侧用「段是否存在」统一 presence 判断（兼容旧备份）。② **导出 DTO 剔除明文密钥**：WebDAV/ASR S3 改用 `WebDAVExportSection`/`ASRS3ExportSection`（不嵌含密钥的 `config.WebDAVConfig`/`ASRS3Config`），Password/AccessKeySecret 不进导出文件，密钥统一走 Secrets 段。③ **导入两阶段**：阶段一把 6 段 + secrets 绑进同一 `runtimeconfig.WithTx`（overwrite 用新增 `secrets.ClearTx` 清旧密钥），commit 成功后才提交内存 cfg + 进程 env；阶段二（仅 overwrite，核心事务成功后）清 glossary/templates/cookies。④ **持久化前校验**：`validateImportedSections` 复用各 update handler 的段内约束（provider 白名单/URL/枚举/负数/env 名/timer 范围），非法值返回 400 不落盘，避免污染 `runtime_settings` 导致启动 `ApplyOverrides`→`Validate` 失败。⑤ **修正 managed tombstone**：WebDAV/ASR S3 先回填 env 字段再用 effective env 判 managed，覆盖 overwrite 下 env 改名且 bundle 缺新 secret 的场景。新增 `config_export_test.go`（11 个回归用例），handler 测试总数 55→66。
+- **B站账号卡片区分登录态**（`a449d7e`）：`BiliAccountsCard.vue` 对 `cookie_file` 为空的账号（如从备份导入的元数据）显示灰色「未登录」标签、卡片整体 `opacity: 0.6` 置灰，避免把导入的裸元数据误读为已扫码登录的账号。
+- **文档**：同步更新 handler/secrets 的 CLAUDE.md、api-routes、根 CLAUDE.md 模块索引 + 设计说明 + changelog、根 AGENTS.md changelog、web/CLAUDE.md。
 
 ### 2026-07-04 · 回归 systemd 部署 + DB 时间统一本地时区 + 自动发布跳过补日志
 
