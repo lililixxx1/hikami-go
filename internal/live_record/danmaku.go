@@ -39,31 +39,26 @@ type BilibiliDanmakuRecorder struct {
 	httpClient *http.Client
 	dialer     *websocket.Dialer
 	baseURL    string
-	buvidURL   string
 
 	// 按 cookie 缓存 WBISigner
 	signers   map[string]*biliutil.WBISigner
 	signersMu sync.Mutex
 
 	// 按 cookie 缓存 buvid3，避免每次弹幕重连都请求指纹接口。
-	buvids   map[string]cachedBuvid
-	buvidsMu sync.Mutex
-}
-
-type cachedBuvid struct {
-	value     string
-	expiresAt time.Time
+	// 复用 biliutil.BuvidStore（与 publisher/identify 共享同一套风控对抗逻辑）。
+	// nil-safe：测试 helper 字面量构造未注入时，GetBuvids 返回空串（等价于旧的 buvidURL=="" 短路）。
+	buvids *biliutil.BuvidStore
 }
 
 func NewBilibiliDanmakuRecorder() *BilibiliDanmakuRecorder {
-	return &BilibiliDanmakuRecorder{
+	r := &BilibiliDanmakuRecorder{
 		httpClient: &http.Client{Timeout: 15 * time.Second},
 		dialer:     websocket.DefaultDialer,
 		baseURL:    "https://api.live.bilibili.com",
-		buvidURL:   "https://api.bilibili.com/x/frontend/finger/spi",
 		signers:    make(map[string]*biliutil.WBISigner),
-		buvids:     make(map[string]cachedBuvid),
 	}
+	r.buvids = biliutil.NewBuvidStoreWithHTTPClient(r.httpClient)
+	return r
 }
 
 // signerForCookie 返回指定 cookie 对应的 WBISigner，按 cookie 字符串懒初始化和缓存。
@@ -450,69 +445,14 @@ func (r *BilibiliDanmakuRecorder) fillDanmuBuvid(ctx context.Context, info *danm
 	info.Buvid = buvid
 }
 
+// getBuvidConf 返回指定 cookie 对应的 buvid3（弹幕场景只需 buvid3）。
+// 委托给共享的 biliutil.BuvidStore，nil 接收者或拉取失败时返回 ""（由调用方降级容错）。
 func (r *BilibiliDanmakuRecorder) getBuvidConf(ctx context.Context, cookieHeader string) (string, error) {
-	if r.buvidURL == "" {
-		return "", nil
-	}
-
-	now := time.Now()
-	r.buvidsMu.Lock()
-	if r.buvids != nil {
-		if cached, ok := r.buvids[cookieHeader]; ok && now.Before(cached.expiresAt) {
-			r.buvidsMu.Unlock()
-			return cached.value, nil
-		}
-	}
-	r.buvidsMu.Unlock()
-
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, r.buvidURL, nil)
+	b3, _, err := r.buvids.GetBuvids(ctx, cookieHeader)
 	if err != nil {
 		return "", err
 	}
-	request.Header.Set("User-Agent", biliutil.BiliUserAgent)
-	request.Header.Set("Referer", "https://www.bilibili.com")
-	request.Header.Set("Origin", "https://www.bilibili.com")
-	if cookieHeader != "" {
-		request.Header.Set("Cookie", cookieHeader)
-	}
-
-	response, err := r.httpClient.Do(request)
-	if err != nil {
-		return "", err
-	}
-	defer response.Body.Close()
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", fmt.Errorf("get buvid3 http status %d", response.StatusCode)
-	}
-
-	var raw struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-		Data    struct {
-			B3 string `json:"b_3"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&raw); err != nil {
-		return "", err
-	}
-	if raw.Code != 0 {
-		return "", fmt.Errorf("get buvid3 code=%d message=%s", raw.Code, raw.Message)
-	}
-	if raw.Data.B3 == "" {
-		return "", fmt.Errorf("get buvid3 returned empty b_3")
-	}
-
-	r.buvidsMu.Lock()
-	if r.buvids == nil {
-		r.buvids = make(map[string]cachedBuvid)
-	}
-	r.buvids[cookieHeader] = cachedBuvid{
-		value:     raw.Data.B3,
-		expiresAt: now.Add(24 * time.Hour),
-	}
-	r.buvidsMu.Unlock()
-
-	return raw.Data.B3, nil
+	return b3, nil
 }
 
 const (

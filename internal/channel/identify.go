@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"hikami-go/internal/biliutil"
@@ -37,13 +38,36 @@ type Identifier struct {
 	httpClient *http.Client
 	baseURL    string
 	cookieFile identifyCookieFileProvider
+	buvids     *biliutil.BuvidStore
+	signers    map[string]biliutil.URLSigner
+	signersMu  sync.Mutex
+	// newSigner 按 cookie 创建 WBISigner（默认 biliutil.NewWBISigner），测试可注入桩。
+	newSigner func(cookie string) biliutil.URLSigner
 }
 
 func NewIdentifier() *Identifier {
-	return &Identifier{
+	i := &Identifier{
 		httpClient: &http.Client{Timeout: 15 * time.Second},
 		baseURL:    "https://api.live.bilibili.com",
+		signers:    make(map[string]biliutil.URLSigner),
+		newSigner:  func(cookie string) biliutil.URLSigner { return biliutil.NewWBISigner(cookie) },
 	}
+	i.buvids = biliutil.NewBuvidStoreWithHTTPClient(i.httpClient)
+	return i
+}
+
+// signerForCookie 返回指定 cookie 对应的 URLSigner，按 cookie 懒初始化和缓存（与 danmaku 同模式）。
+// WBI 签名（w_rid + wts）是 getInfoByRoom / getRoomInfoOld 端点通过 -352 风控的必要条件，
+// 单靠 buvid 注入不够（探针实测：buvid only 仍 -352，buvid + WBI → 200 code=0）。
+func (i *Identifier) signerForCookie(cookie string) biliutil.URLSigner {
+	i.signersMu.Lock()
+	defer i.signersMu.Unlock()
+	if s, ok := i.signers[cookie]; ok {
+		return s
+	}
+	s := i.newSigner(cookie)
+	i.signers[cookie] = s
+	return s
 }
 
 func NewIdentifierWithChannelStore(store *Store) *Identifier {
@@ -64,6 +88,16 @@ func NewIdentifierWithBaseURL(baseURL string) *Identifier {
 	return identifier
 }
 
+// SetBuvidStore 替换内部 buvid 存储，仅用于测试注入指向 httptest 桩的 spi URL。
+func (i *Identifier) SetBuvidStore(store *biliutil.BuvidStore) {
+	i.buvids = store
+}
+
+// SetSignerFactory 替换签名器工厂，仅用于测试注入桩签名器（避免打真实 WBI nav）。
+func (i *Identifier) SetSignerFactory(fn func(cookie string) biliutil.URLSigner) {
+	i.newSigner = fn
+}
+
 func (i *Identifier) Identify(ctx context.Context, input IdentifyInput) (IdentifyResult, error) {
 	normalized, source, err := normalizeIdentifyInput(input)
 	if err != nil {
@@ -71,6 +105,14 @@ func (i *Identifier) Identify(ctx context.Context, input IdentifyInput) (Identif
 	}
 	cookieFile := i.downloadCookieFile(ctx, normalized)
 	cookieHeader := cookieHeaderForFile(cookieFile)
+	// 注入 buvid3/buvid4 对抗 -352 风控（与 publisher/danmaku 同一套共享 BuvidStore）。
+	// GetBuvids 失败或返回空值（nil store / 拉取失败）时降级为不改 cookie（仅 warn），
+	// 避免在无新指纹时误剔除 cookie 文件里已有的 buvid3。
+	if b3, b4, berr := i.buvids.GetBuvids(ctx, cookieHeader); berr != nil {
+		slog.Warn("identify: get buvids failed, continuing without buvid", "error", berr)
+	} else if b3 != "" || b4 != "" {
+		cookieHeader = biliutil.InjectBuvids(cookieHeader, b3, b4)
+	}
 	var result IdentifyResult
 	if normalized.LiveRoomID > 0 {
 		result, err = i.identifyByRoom(ctx, normalized.LiveRoomID, source, cookieHeader)
@@ -114,6 +156,12 @@ func (i *Identifier) identifyByUID(ctx context.Context, uid int64, source string
 func (i *Identifier) identifyByRoom(ctx context.Context, roomID int64, source string, cookieHeader string) (IdentifyResult, error) {
 	var response roomInfoResponse
 	endpoint := i.baseURL + "/xlive/web-room/v1/index/getInfoByRoom?room_id=" + url.QueryEscape(strconv.FormatInt(roomID, 10))
+	// WBI 签名对抗 -352（失败降级为不签名，仍可能被风控，但保持容错策略）。
+	if signed, err := i.signerForCookie(cookieHeader).SignURL(endpoint); err == nil {
+		endpoint = signed
+	} else {
+		slog.Warn("identify: wbi sign failed for getInfoByRoom, continuing unsigned", "error", err)
+	}
 	if err := i.getJSON(ctx, endpoint, &response, cookieHeader); err != nil {
 		return IdentifyResult{}, err
 	}
@@ -153,6 +201,12 @@ func (i *Identifier) identifyByRoom(ctx context.Context, roomID int64, source st
 func (i *Identifier) liveRoomIDByUID(ctx context.Context, uid int64, cookieHeader string) (int64, error) {
 	var response roomInfoOldResponse
 	endpoint := i.baseURL + "/room/v1/Room/getRoomInfoOld?mid=" + url.QueryEscape(strconv.FormatInt(uid, 10))
+	// WBI 签名对抗 -352（失败降级为不签名）。
+	if signed, err := i.signerForCookie(cookieHeader).SignURL(endpoint); err == nil {
+		endpoint = signed
+	} else {
+		slog.Warn("identify: wbi sign failed for getRoomInfoOld, continuing unsigned", "error", err)
+	}
 	if err := i.getJSON(ctx, endpoint, &response, cookieHeader); err != nil {
 		return 0, err
 	}
@@ -167,7 +221,9 @@ func (i *Identifier) getJSON(ctx context.Context, endpoint string, target any, c
 	if err != nil {
 		return err
 	}
-	request.Header.Set("User-Agent", "Mozilla/5.0 Hikami-Go")
+	request.Header.Set("User-Agent", biliutil.BiliUserAgent)
+	request.Header.Set("Referer", "https://live.bilibili.com")
+	request.Header.Set("Origin", "https://live.bilibili.com")
 	if cookieHeader != "" {
 		request.Header.Set("Cookie", cookieHeader)
 	}
