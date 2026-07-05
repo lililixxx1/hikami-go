@@ -15,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -39,31 +38,24 @@ type OpusCoverUploader interface {
 }
 
 type BiliOpusClient struct {
-	httpClient   *http.Client
-	urlSigner    biliutil.URLSigner
-	buvidCache   map[string]cachedBuvid
-	buvidCacheMu sync.Mutex
-}
-
-type cachedBuvid struct {
-	buvid3    string
-	buvid4    string
-	expiresAt time.Time
+	httpClient *http.Client
+	urlSigner  biliutil.URLSigner
+	buvids     *biliutil.BuvidStore
 }
 
 func NewBiliOpusClient() *BiliOpusClient {
-	return &BiliOpusClient{
-		httpClient: &http.Client{Timeout: 30 * time.Second},
-		buvidCache: make(map[string]cachedBuvid),
-	}
+	c := &BiliOpusClient{httpClient: &http.Client{Timeout: 30 * time.Second}}
+	c.buvids = biliutil.NewBuvidStoreWithHTTPClient(c.httpClient)
+	return c
 }
 
 func NewBiliOpusClientWithSigner(signer biliutil.URLSigner) *BiliOpusClient {
-	return &BiliOpusClient{
+	c := &BiliOpusClient{
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 		urlSigner:  signer,
-		buvidCache: make(map[string]cachedBuvid),
 	}
+	c.buvids = biliutil.NewBuvidStoreWithHTTPClient(c.httpClient)
+	return c
 }
 
 type DraftRequest struct {
@@ -416,11 +408,11 @@ func (c *BiliOpusClient) uploadCoverToURL(ctx context.Context, baseURL string, c
 	// 与 doRequest/doRequestWithGaia 一致:注入 buvid3+buvid4 以通过风控。
 	// getBuvids 失败时降级为不带 buvid(仅 warn),保持与既有请求函数相同容错策略。
 	cookieHeader := cookie.CookieHeader()
-	buvid3, buvid4, berr := c.getBuvids(ctx, cookieHeader)
+	buvid3, buvid4, berr := c.buvids.GetBuvids(ctx, cookieHeader)
 	if berr != nil {
 		slog.Warn("failed to get buvids for cover upload, continuing without them", "error", berr)
 	} else {
-		cookieHeader = injectBuvids(cookieHeader, buvid3, buvid4)
+		cookieHeader = biliutil.InjectBuvids(cookieHeader, buvid3, buvid4)
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("Cookie", cookieHeader)
@@ -488,11 +480,11 @@ func normalizeBiliCoverURL(coverURL string) string {
 func (c *BiliOpusClient) doRequestWithGaia(ctx context.Context, cookie *BiliCookie, url string, body []byte) (json.RawMessage, error) {
 	// 获取 buvid3+buvid4 并注入到 Cookie
 	cookieHeader := cookie.CookieHeader()
-	buvid3, buvid4, err := c.getBuvids(ctx, cookieHeader)
+	buvid3, buvid4, err := c.buvids.GetBuvids(ctx, cookieHeader)
 	if err != nil {
 		slog.Warn("failed to get buvids, continuing without them", "error", err)
 	} else {
-		cookieHeader = injectBuvids(cookieHeader, buvid3, buvid4)
+		cookieHeader = biliutil.InjectBuvids(cookieHeader, buvid3, buvid4)
 		slog.Info("buvids injected into request", "buvid3", buvid3, "buvid4", buvid4)
 	}
 
@@ -586,11 +578,11 @@ func (c *BiliOpusClient) doRequestWithGaia(ctx context.Context, cookie *BiliCook
 func (c *BiliOpusClient) doRequest(ctx context.Context, cookie *BiliCookie, url string, body []byte) (json.RawMessage, error) {
 	// 获取 buvid3+buvid4 并注入到 Cookie
 	cookieHeader := cookie.CookieHeader()
-	buvid3, buvid4, err := c.getBuvids(ctx, cookieHeader)
+	buvid3, buvid4, err := c.buvids.GetBuvids(ctx, cookieHeader)
 	if err != nil {
 		slog.Warn("failed to get buvids, continuing without them", "error", err)
 	} else {
-		cookieHeader = injectBuvids(cookieHeader, buvid3, buvid4)
+		cookieHeader = biliutil.InjectBuvids(cookieHeader, buvid3, buvid4)
 		slog.Info("buvids injected into request", "buvid3", buvid3, "buvid4", buvid4)
 	}
 
@@ -686,85 +678,6 @@ func mapBiliError(code int, message string) error {
 	default:
 		return apiErr
 	}
-}
-
-// getBuvids 从 B 站指纹接口获取 buvid3 和 buvid4，并缓存 24 小时
-func (c *BiliOpusClient) getBuvids(ctx context.Context, cookieHeader string) (buvid3, buvid4 string, err error) {
-	// 检查缓存（24小时有效期）
-	now := time.Now()
-	c.buvidCacheMu.Lock()
-	if cached, ok := c.buvidCache[cookieHeader]; ok && now.Before(cached.expiresAt) {
-		c.buvidCacheMu.Unlock()
-		return cached.buvid3, cached.buvid4, nil
-	}
-	c.buvidCacheMu.Unlock()
-
-	// 请求 B 站指纹接口
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.bilibili.com/x/frontend/finger/spi", nil)
-	if err != nil {
-		return "", "", err
-	}
-	req.Header.Set("User-Agent", biliutil.BiliUserAgent)
-	req.Header.Set("Referer", "https://www.bilibili.com")
-	req.Header.Set("Origin", "https://www.bilibili.com")
-	if cookieHeader != "" {
-		req.Header.Set("Cookie", cookieHeader)
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", "", fmt.Errorf("get buvids http status %d", resp.StatusCode)
-	}
-
-	var result struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-		Data    struct {
-			B3 string `json:"b_3"`
-			B4 string `json:"b_4"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", "", err
-	}
-	if result.Code != 0 {
-		return "", "", fmt.Errorf("get buvids code=%d message=%s", result.Code, result.Message)
-	}
-	if result.Data.B3 == "" {
-		return "", "", fmt.Errorf("get buvids returned empty b_3")
-	}
-
-	// 缓存（24小时）
-	c.buvidCacheMu.Lock()
-	c.buvidCache[cookieHeader] = cachedBuvid{
-		buvid3:    result.Data.B3,
-		buvid4:    result.Data.B4,
-		expiresAt: now.Add(24 * time.Hour),
-	}
-	c.buvidCacheMu.Unlock()
-
-	slog.Info("buvids fetched and cached", "buvid3", result.Data.B3, "buvid4", result.Data.B4)
-	return result.Data.B3, result.Data.B4, nil
-}
-
-// injectBuvids 将 buvid3 和 buvid4 追加到 Cookie 头部
-func injectBuvids(cookieHeader, buvid3, buvid4 string) string {
-	var parts []string
-	if cookieHeader != "" {
-		parts = append(parts, cookieHeader)
-	}
-	if buvid3 != "" {
-		parts = append(parts, "buvid3="+buvid3)
-	}
-	if buvid4 != "" {
-		parts = append(parts, "buvid4="+buvid4)
-	}
-	return strings.Join(parts, "; ")
 }
 
 // performGaiaVerification 执行 gaia 风控验证流程

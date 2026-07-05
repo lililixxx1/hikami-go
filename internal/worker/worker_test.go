@@ -9,9 +9,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"hikami-go/internal/config"
 	"hikami-go/internal/db"
 )
 
@@ -637,6 +639,134 @@ func TestStoreRecoverRunningMethod(t *testing.T) {
 	}
 	if task.Status != StatusFailed {
 		t.Fatalf("expected failed, got %q", task.Status)
+	}
+}
+
+// TestRecoverRunningReEnqueuesOrphanPending 验证 recoverRunning 恢复 pending 孤儿任务:
+// 重启后内存队列清空,DB 里 pending 的 task 必须被重新入队执行(异常 #6)。
+// pending task 从未被 worker 消费,重新入队不应递增 attempt、不应改 DB 状态。
+func TestRecoverRunningReEnqueuesOrphanPending(t *testing.T) {
+	database := setupDB(t)
+	insertChannel(t, database)
+	store := NewStore(database)
+	hub := NewHub()
+	ctx := context.Background()
+
+	// 创建一个 pending task(直接 Create 即 pending,从未 MarkRunning)。
+	created, err := store.Create(ctx, CreateInput{
+		ChannelID: "test_ch",
+		Type:      "test_type",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// 记录原始 attempt(Create 默认 0 或 1,不动它)。
+	before, err := store.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get before: %v", err)
+	}
+
+	pool := NewPool(store, hub, 1, nil)
+	// 注册 handler:执行时把 task id 记下,证明被重新入队并执行。
+	var executed atomic.Value // string
+	pool.Register("test_type", func(ctx context.Context, task Task, reporter Reporter) error {
+		executed.Store(task.ID)
+		return nil
+	})
+
+	// Start 会先 recoverRunning(重新入队 pending),再起 worker goroutines 消费队列。
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if err := pool.Start(ctx, 1); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer pool.Stop()
+
+	// 等待 worker 消费(最多 1s)。
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if executed.Load() != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if executed.Load() != created.ID {
+		t.Fatalf("orphan pending task not executed: got %v, want %q", executed.Load(), created.ID)
+	}
+
+	// 执行后状态应为 succeeded(handler 返回 nil)。
+	got, err := store.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusSucceeded {
+		t.Errorf("task status = %q, want succeeded", got.Status)
+	}
+	if got.Attempt != before.Attempt {
+		t.Errorf("attempt = %d, want %d(重新入队不应递增 attempt)", got.Attempt, before.Attempt)
+	}
+}
+
+// TestRecoverRunningOrphanPendingAttemptsExhausted 验证 attempt 超限的 pending 孤儿
+// 被标记 failed 并触发 syncSessionState(否则 session 永久卡 discovered)。
+// 用 live_record 类型 + 带 SessionID,模拟真实孤儿(session 卡 discovered 的场景)。
+func TestRecoverRunningOrphanPendingAttemptsExhausted(t *testing.T) {
+	database := setupDB(t)
+	insertChannel(t, database)
+	store := NewStore(database)
+	hub := NewHub()
+	ctx := context.Background()
+
+	// tasks.session_id 有 FK,先插 session(状态 discovered 模拟卡死的孤儿)。
+	if _, err := database.ExecContext(ctx,
+		`INSERT INTO sessions (id, slug, channel_id, source_type, source_id, title, status)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"sess_orphan_1", "slug1", "test_ch", "live_record", "src1", "Test", "discovered"); err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+
+	created, err := store.Create(ctx, CreateInput{
+		ChannelID: "test_ch",
+		Type:      "live_record",
+		SessionID: "sess_orphan_1",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// 手动把 attempt 调高到超限(模拟重启循环下累积的重试次数)。
+	if _, err := database.ExecContext(ctx, `UPDATE tasks SET attempt = 100 WHERE id = ?`, created.ID); err != nil {
+		t.Fatalf("bump attempt: %v", err)
+	}
+
+	pool := NewPool(store, hub, 1, &config.Config{Worker: config.WorkerConfig{MaxRetryAttempts: 3}})
+	// 注册 live_record handler(否则 syncSessionState 的 bypassFailState 检查无意义)。
+	pool.Register("live_record", func(ctx context.Context, task Task, reporter Reporter) error {
+		return nil
+	})
+	go hub.Run()
+	defer hub.Stop()
+
+	// 注入 failSessionState 捕获,验证 session 状态被同步(死锁解除的关键)。
+	var syncCalled atomic.Value // bool
+	pool.SetFailSessionStateFn(func(ctx context.Context, task Task, event, taskID, msg string, bypass bool) error {
+		syncCalled.Store(true)
+		return nil
+	})
+
+	if err := pool.recoverRunning(ctx); err != nil {
+		t.Fatalf("recoverRunning: %v", err)
+	}
+
+	got, err := store.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusFailed {
+		t.Errorf("task status = %q, want failed(attempts exhausted)", got.Status)
+	}
+	if !syncCalled.Load().(bool) {
+		t.Errorf("syncSessionState not called: orphan session would stay stuck in discovered")
 	}
 }
 

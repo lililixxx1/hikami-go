@@ -33,7 +33,7 @@
 
 - **全局**: `output_root`, `db_path`, `log_format`, `ffmpeg`, `ffprobe`, `yt_dlp`, `rclone`, `cookie_encryption_key`
 - **Web**: `web.enabled`（默认 true）, `web.listen`（默认 `:6334`）
-- **Worker**: `worker.num`, `worker.live_record_num`
+- **Worker**: `worker.num`
 - **Cron**: `cron.discovery`, `cron.live_check`
 - **直播录制**: `live_record.*`（9 个子项，含 record_danmaku、generate_asr_audio、segment_minutes、stop_grace_seconds）
 - **日志**: `log_format`, `logs.dir`, `logs.level`, `logs.format`

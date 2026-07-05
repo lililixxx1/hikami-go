@@ -37,8 +37,8 @@
 | PUT | `/api/config/archive` | 更新归档配置（cleanup_policy 取值校验 none/temp/generated/all） |
 | GET | `/api/config/webdav` | 获取 WebDAV 配置（url/username/base_path/remote/password_env/password_set） |
 | PUT | `/api/config/webdav` | 更新 WebDAV 配置（支持原生 WebDAV URL 和 rclone remote，同步 RuntimeStatus） |
-| GET | `/api/config/export` | 全量配置导出（JSON 附件下载，含 RecapAI/Publish/WebDAV/Secrets/Channels/Glossary/Templates/BiliAccounts） |
-| POST | `/api/config/import` | 全量配置导入（?strategy=merge/overwrite，merge 保留已有数据，overwrite 先清除再导入） |
+| GET | `/api/config/export` | 全量配置导出（JSON 附件下载，含 6 个全局配置段 recap_ai/publish/webdav/asr_s3/dashscope/archive + Secrets/Channels/Glossary/Templates/BiliAccounts；WebDAV/ASR S3 用专用 DTO 剔除明文密钥） |
+| POST | `/api/config/import` | 全量配置导入（?strategy=merge/overwrite）：6 段配置 + secrets 在同一事务持久化到 runtime_settings，commit 成功后才提交内存 cfg 与进程 env；持久化前复用各 update handler 的段内校验，非法值 400 不落盘 |
 
 ### 来源/下载/导入 API
 

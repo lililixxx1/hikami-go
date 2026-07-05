@@ -97,6 +97,16 @@
 3. Bootstrap 配置中匹配的主播 `download_cookie_file`
 4. Bootstrap 配置中首个有 `download_cookie_file` 的主播（兜底）
 
+## -352 风控对抗（2026-07-05 修复）
+
+`getInfoByRoom`/`getRoomInfoOld` 端点此前被 B 站 -352 风控拦截（前端误显示"网络错误"）。识别链路现具备完整对抗：
+
+1. **设备指纹（buvid）注入**：`Identify` 在调 `identifyByRoom`/`identifyByUID` 前，用共享的 `biliutil.BuvidStore` 按 cookie 拉取 buvid3/buvid4（24h 缓存），`biliutil.InjectBuvids`（replace 语义）注入 cookie 头。失败降级为不带 buvid（仅 warn）。
+2. **WBI 签名（必要）**：`identifyByRoom`/`liveRoomIDByUID` 在发请求前用按 cookie 缓存的 `biliutil.WBISigner`（`signerForCookie` 懒初始化）对 URL 做 WBI 签名（附加 `w_rid`/`wts`）。失败降级为不签名。**关键**：探针实测 buvid only 仍 -352，buvid + WBI → 200 code=0，WBI 是该端点的必要条件。
+3. **请求头**：`getJSON` 用 `biliutil.BiliUserAgent`（真实浏览器 UA，替换原 `"Mozilla/5.0 Hikami-Go"`）+ `Referer`/`Origin: https://live.bilibili.com`。
+
+> `Identifier` 新增字段 `buvids *biliutil.BuvidStore`、`signers map[string]biliutil.URLSigner`（+ `newSigner` 工厂，测试可注入桩），及测试 setter `SetBuvidStore`/`SetSignerFactory`。
+
 ## 测试与质量
 
 - `channel_test.go`: 54 个测试用例，覆盖：
@@ -107,8 +117,11 @@
   - `normalizeIdentifyInput`: 直播间 URL、空间 URL、UID 数字解析
   - `IdentifyByLiveRoom`: 通过直播间 ID 识别
   - `IdentifyByUIDLooksUpLiveRoom`: UID 反查直播间
-  - `IdentifyUsesConfiguredDownloadCookie`: 使用已配置主播的下载 Cookie
+  - `IdentifyUsesConfiguredDownloadCookie`: 使用已配置主播的下载 Cookie（验证 InjectBuvids replace 语义：cookie 文件旧 buvid3 被新值覆盖、无重复）
   - `IdentifyFallsBackToBootstrapDownloadCookie`: 回退到 Bootstrap Cookie
+  - `IdentifyContinuesWhenBuvidFetchFails`: finger/spi 故障时识别仍成功（容错降级）
+
+> 识别测试统一用 `withTestBuvidStore(identifier, server)` 把 BuvidStore 指向 httptest 桩 + 注入 passthroughSigner，避免打真实 api.bilibili.com。
 
 ## 常见问题 (FAQ)
 
@@ -127,14 +140,15 @@ A: `recap_model` 非空时覆盖全局 `recap_ai.model` 配置。`max_continuati
 ## 相关文件清单
 
 - `channel.go` -- Store 实现、SQL 常量（含 28 列 selectColumns/createSQL/updateSQL）、校验、UpdateCookieFile、`resolveAutoRecap(*bool, fallback)` 三态解析
-- `identify.go` -- Identifier 实现、B 站 API 交互、URL 解析、Cookie 查找
-- `channel_test.go` -- Store 单元测试（54 个用例）
-- `identify_test.go` -- 识别单元测试（5 个用例）
+- `identify.go` -- Identifier 实现、B 站 API 交互、URL 解析、Cookie 查找、-352 风控对抗（buvid 注入 + WBI 签名 + 浏览器 UA/Referer/Origin）
+- `channel_test.go` -- Store 单元测试（55 个用例）
+- `identify_test.go` -- 识别单元测试（7 个用例）
 
 ## 变更记录 (Changelog)
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-07-05 | 修复 | **identify -352 风控修复**：`Identify` 注入 buvid（共享 `biliutil.BuvidStore` + `InjectBuvids` replace 语义，空值时不改 cookie）；`identifyByRoom`/`liveRoomIDByUID` 用按 cookie 缓存的 `biliutil.WBISigner` 对 URL 做 WBI 签名（**关键**：探针实测 buvid only 仍 -352，buvid + WBI → 200 code=0）；`getJSON` 改用 `biliutil.BiliUserAgent` + `Referer`/`Origin: https://live.bilibili.com`。`Identifier` 加 `buvids`/`signers`/`newSigner` 字段 + 测试 setter。手动验证 924973 → 200 返回 UID 1401928（火西肆）。测试计数：channel 59→62（+1 容错、+1 WBI 签名断言、+口径修正）。前端"网络错误"提示实为后端 500 误导，根因后端已解 |
 | 2026-06-23 | 功能 | 自动触发链加固：Channel/UpssertInput 新增 `auto_recap` 字段（`Channel` 为 `bool` 默认 true，`UpsertInput` 为 `*bool` 三态）；新增 `resolveAutoRecap(*bool, fallback)` 助手（nil→fallback=true）；Create/Update/Bootstrap 持久化 `auto_recap`（`boolToInt`）。channel_test.go 49→54（+5 覆盖三态解析/持久化） |
 | 2026-05-23 | 更新 | Channel/UpsertInput 新增 recap_model（默认 ''）和 max_continuations（默认 -1）字段；selectColumns/createSQL/updateSQL 扩展至 28 列 |
 | 2026-05-14 | 更新 | Channel/UpsertInput 新增 source_mode（默认 'both'）和 discover_limit（默认 0）字段；selectColumns/createSQL/updateSQL 扩展至 26 列；mergeIdentified 保留 SourceMode/DiscoverLimit；Create/Update 默认 source_mode='both'；Bootstrap 传递 SourceMode/DiscoverLimit；新增 UpdateCookieFile 方法；新增 CookieUsage 类型和常量 |

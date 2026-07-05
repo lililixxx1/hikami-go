@@ -9,6 +9,12 @@ const accounts = ref<BiliCookieAccount[]>([])
 const loading = ref(false)
 const showQRDialog = ref(false)
 
+// 是否已登录：cookie_file 非空表示扫码登录成功、cookie 文件已落盘；
+// 空字符串表示仅元数据（如从备份导入的账号），下载/发布会因无 cookie 失败。
+function isLoggedIn(account: BiliCookieAccount): boolean {
+  return account.cookie_file !== ''
+}
+
 async function fetchAccounts() {
   loading.value = true
   try {
@@ -68,12 +74,13 @@ defineExpose({ reload: fetchAccounts })
         暂无账号，点击「扫码登录」添加 B 站账号
       </div>
       <div v-else class="account-list">
-        <div v-for="account in accounts" :key="account.id" class="account-card">
+        <div v-for="account in accounts" :key="account.id" class="account-card" :class="{ 'account-card--logged-out': !isLoggedIn(account) }">
           <div class="account-info">
             <div class="account-name">
               {{ account.nickname || `UID ${account.uid}` }}
               <el-tag v-if="account.is_default_download" type="success" size="small" style="margin-left: 6px">默认下载</el-tag>
               <el-tag v-if="account.is_default_publish" type="warning" size="small" style="margin-left: 6px">默认发布</el-tag>
+              <el-tag v-if="!isLoggedIn(account)" type="info" size="small" style="margin-left: 6px">未登录</el-tag>
             </div>
             <div class="account-uid">UID: {{ account.uid }}</div>
           </div>
@@ -128,6 +135,11 @@ defineExpose({ reload: fetchAccounts })
   padding: 12px;
   background: #fafafa;
   border-radius: 8px;
+}
+
+/* 未登录（仅元数据，如备份导入的账号）：整体置灰，提示需扫码登录 */
+.account-card--logged-out {
+  opacity: 0.6;
 }
 
 .account-info {

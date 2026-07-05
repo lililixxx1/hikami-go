@@ -477,11 +477,13 @@ func (r *roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) 
 }
 
 // newOpusClientWithRedirect 返回一个走 httptest.Server 的完整 BiliOpusClient。
-// 必须用 NewBiliOpusClient() 构造以初始化 buvidCache(否则 getBuvids 会 nil panic),
-// 再覆盖 httpClient 将请求重定向到测试服务器。
+// 必须用 NewBiliOpusClient() 构造以初始化 buvids store(否则 GetBuvids 走 nil-safe 返回空,不会拉取 buvid / 会走禁用路径),
+// 再覆盖 httpClient 将请求重定向到测试服务器,并同步重新绑定 buvids store
+// 指向同一份 redirecting client(否则 store 仍持有构造时的默认 client,spi 请求不会走测试 server)。
 func newOpusClientWithRedirect(srv *httptest.Server) *BiliOpusClient {
 	c := NewBiliOpusClient()
 	c.httpClient = newRedirectingClient(srv)
+	c.buvids = biliutil.NewBuvidStoreWithHTTPClient(c.httpClient)
 	return c
 }
 

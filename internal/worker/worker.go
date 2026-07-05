@@ -352,6 +352,39 @@ func (p *Pool) recoverRunning(ctx context.Context) error {
 		}
 	}
 
+	// 恢复 pending 孤儿任务:重启后内存队列清空,但 DB 里 pending 的 task 不会被 loop() 消费。
+	// 这些 task 从未被 worker 执行过,重新入队即可;不递增 attempt,不改 DB 状态。
+	// attempt 超限的 pending(理论上不该出现,防御性处理)标记 failed 并同步 session 状态,
+	// 否则 session 会永久卡在 discovered → ActiveLiveForChannel 误判 active → scheduler 死锁跳过。
+	pendingTasks, err := p.store.ListPending(ctx)
+	if err != nil {
+		return fmt.Errorf("list pending tasks for recovery: %w", err)
+	}
+	maxAttempts := 3
+	if p.cfg != nil && p.cfg.Worker.MaxRetryAttempts > 0 {
+		maxAttempts = p.cfg.Worker.MaxRetryAttempts
+	}
+	for _, task := range pendingTasks {
+		if task.Attempt >= maxAttempts {
+			failed, failErr := p.store.MarkFailed(ctx, task.ID,
+				"interrupted by service restart, retry attempts exhausted", nil)
+			if failErr != nil {
+				slog.Error("failed to mark pending task as failed on recovery",
+					"task_id", task.ID, "error", failErr)
+				continue
+			}
+			p.hub.Broadcast(failed)
+			p.syncSessionState(ctx, task, "interrupted by service restart, retry attempts exhausted")
+			slog.Info("orphan pending task marked as failed (attempts exhausted)",
+				"task_id", task.ID, "type", task.Type, "session_id", task.SessionID, "attempt", task.Attempt)
+			continue
+		}
+		// pending 状态本就是待执行,直接塞回内存队列;不递增 attempt(从未被消费)。
+		p.enqueueID(task.ID)
+		slog.Info("orphan pending task re-enqueued",
+			"task_id", task.ID, "type", task.Type, "session_id", task.SessionID, "attempt", task.Attempt)
+	}
+
 	return nil
 }
 

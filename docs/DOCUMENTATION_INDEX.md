@@ -2,7 +2,7 @@
 
 > 本文件是 Hikami-Go 全部文档的导航索引，按「常青参考 / 活跃计划 / 归档」三类组织。
 > 维护原则：顶层 `docs/` 与 `plans/` 只保留常青与活跃文档；历史/已落地/一次性报告归档于对应 `archive/` 子目录（保留 git 历史，可追溯）。
-> 最后更新：2026-07-01
+> 最后更新：2026-07-05
 
 ---
 
@@ -58,6 +58,8 @@
 
 | 文档 | 说明 |
 |------|------|
+| [录播稳定性测试-计划.md](archive/investigations/录播稳定性测试-计划.md) | 2026-07-05 录播稳定性 soak 测试计划：5 个真实主播 + 后台监控脚本(60s 轮询日志/DB/ffmpeg 进程)，含监控 SQL、稳定判据、bug 处理流程、新会话启动指引 |
+| [风控-352-剩余端点加固计划.md](archive/investigations/风控-352-剩余端点加固计划.md) | 2026-07-05 识别 -352 修复时发现的**其余 -352 风险端点**（live_record/bilibili.go、biliutil/video.go、handler/server.go 两处裸调）的待办加固计划，含证据、优先级、通用修复模板 |
 | [前端兜底页-embedded_web构建标签缺失.md](archive/investigations/前端兜底页-embedded_web构建标签缺失.md) | `embedded_web` build tag 缺失导致前端不嵌入、降级 API-only 兜底页的诊断报告 |
 | [录播时长不足-流断未重连.md](archive/investigations/录播时长不足-流断未重连.md) | 2026-07-03 直播漏录 2.5h 的根因分析:`live_record.auto_reconnect` 无默认值导致流断后零重连 |
 | [recap-compare-26.04.22-优化方案.md](archive/investigations/recap-compare-26.04.22-优化方案.md) | 单次回顾质量对比决策（v4-pro 已采纳为默认） |

@@ -820,6 +820,10 @@ func TestParseSpaceURLInvalid(t *testing.T) {
 // 41. TestIdentifyByRoom
 func TestIdentifyByRoom(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/x/frontend/finger/spi" {
+			_, _ = w.Write([]byte(`{"code":0,"message":"0","data":{"b_3":"newbuvid3","b_4":"newbuvid4"}}`))
+			return
+		}
 		_, _ = w.Write([]byte(`{
 			"code":0,
 			"message":"0",
@@ -832,6 +836,7 @@ func TestIdentifyByRoom(t *testing.T) {
 	defer server.Close()
 
 	identifier := NewIdentifierWithBaseURL(server.URL)
+	withTestBuvidStore(identifier, server)
 	result, err := identifier.Identify(context.Background(), IdentifyInput{LiveRoomID: 123})
 	if err != nil {
 		t.Fatalf("identify: %v", err)
@@ -853,6 +858,10 @@ func TestIdentifyByRoom(t *testing.T) {
 // 42. TestIdentifyByRoomFallbackUID
 func TestIdentifyByRoomFallbackUID(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/x/frontend/finger/spi" {
+			_, _ = w.Write([]byte(`{"code":0,"message":"0","data":{"b_3":"newbuvid3","b_4":"newbuvid4"}}`))
+			return
+		}
 		_, _ = w.Write([]byte(`{
 			"code":0,
 			"message":"0",
@@ -865,6 +874,7 @@ func TestIdentifyByRoomFallbackUID(t *testing.T) {
 	defer server.Close()
 
 	identifier := NewIdentifierWithBaseURL(server.URL)
+	withTestBuvidStore(identifier, server)
 	result, err := identifier.Identify(context.Background(), IdentifyInput{LiveRoomID: 123})
 	if err != nil {
 		t.Fatalf("identify: %v", err)
@@ -877,6 +887,10 @@ func TestIdentifyByRoomFallbackUID(t *testing.T) {
 // 43. TestIdentifyByRoomMissingName
 func TestIdentifyByRoomMissingName(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/x/frontend/finger/spi" {
+			_, _ = w.Write([]byte(`{"code":0,"message":"0","data":{"b_3":"newbuvid3","b_4":"newbuvid4"}}`))
+			return
+		}
 		_, _ = w.Write([]byte(`{
 			"code":0,
 			"message":"0",
@@ -889,6 +903,7 @@ func TestIdentifyByRoomMissingName(t *testing.T) {
 	defer server.Close()
 
 	identifier := NewIdentifierWithBaseURL(server.URL)
+	withTestBuvidStore(identifier, server)
 	_, err := identifier.Identify(context.Background(), IdentifyInput{LiveRoomID: 123})
 	if err == nil {
 		t.Fatalf("expected error, got nil")
@@ -902,6 +917,8 @@ func TestIdentifyByRoomMissingName(t *testing.T) {
 func TestIdentifyByUID(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/x/frontend/finger/spi":
+			_, _ = w.Write([]byte(`{"code":0,"message":"0","data":{"b_3":"newbuvid3","b_4":"newbuvid4"}}`))
 		case "/room/v1/Room/getRoomInfoOld":
 			_, _ = w.Write([]byte(`{"code":0,"message":"0","data":{"roomid":123}}`))
 		case "/xlive/web-room/v1/index/getInfoByRoom":
@@ -920,6 +937,7 @@ func TestIdentifyByUID(t *testing.T) {
 	defer server.Close()
 
 	identifier := NewIdentifierWithBaseURL(server.URL)
+	withTestBuvidStore(identifier, server)
 	result, err := identifier.Identify(context.Background(), IdentifyInput{UID: 456})
 	if err != nil {
 		t.Fatalf("identify: %v", err)
@@ -939,6 +957,8 @@ func TestIdentifyByUID(t *testing.T) {
 func TestIdentifyByUIDNoRoom(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/x/frontend/finger/spi":
+			_, _ = w.Write([]byte(`{"code":0,"message":"0","data":{"b_3":"newbuvid3","b_4":"newbuvid4"}}`))
 		case "/room/v1/Room/getRoomInfoOld":
 			_, _ = w.Write([]byte(`{"code":0,"message":"0","data":{"roomid":0}}`))
 		default:
@@ -948,6 +968,7 @@ func TestIdentifyByUIDNoRoom(t *testing.T) {
 	defer server.Close()
 
 	identifier := NewIdentifierWithBaseURL(server.URL)
+	withTestBuvidStore(identifier, server)
 	result, err := identifier.Identify(context.Background(), IdentifyInput{UID: 999})
 	if err != nil {
 		t.Fatalf("identify: %v", err)

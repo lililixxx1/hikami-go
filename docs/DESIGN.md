@@ -803,7 +803,7 @@ flowchart TB
 |---|---|
 | 根配置 | `output_root`、`db_path`、`ffmpeg`、`ffprobe`、`yt_dlp`、`rclone` |
 | `web` | `enabled`、`listen` |
-| `worker` | `num`、`live_record_num` |
+| `worker` | `num` |
 | `cron` | `discovery`、`live_check` |
 | `live_record` | `enabled`、`audio_only`、`record_danmaku`、`audio_container`、`require_audio_stream`、`fallback_extract_audio`、`generate_asr_audio`、`segment_minutes`、`stop_grace_seconds` |
 | `logs` | `dir`、`level` |
@@ -824,7 +824,7 @@ flowchart TB
 - 默认监听 `:8080`，worker 数为 3。
 - 默认定时：回放发现 `@every 20m`，直播检查 `@every 30s`。
 - `output_root`、`db_path` 必须非空；启用 Web 时 `web.listen` 必须非空。
-- `worker.num` 必须大于 0，`worker.live_record_num` 必须大于等于 0。
+- `worker.num` 必须大于 0。
 - `live_record.audio_container` 必须非空，`segment_minutes` 和 `stop_grace_seconds` 不能为负。
 - `publish.mode` 只能为空、`draft` 或 `publish`；`publish.summary_len` 不能为负。
 - `EnsureDirs` 创建 `output_root`、`logs.dir` 和数据库父目录。

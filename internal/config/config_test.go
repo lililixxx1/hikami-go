@@ -41,9 +41,6 @@ db_path: /tmp/hikami-test/hikami.db
 	if cfg.Worker.Num != 3 {
 		t.Errorf("worker.num = %d, 期望 3", cfg.Worker.Num)
 	}
-	if cfg.Worker.LiveRecordNum != 2 {
-		t.Errorf("worker.live_record_num = %d, 期望 2", cfg.Worker.LiveRecordNum)
-	}
 
 	// DashScope 默认值
 	if cfg.DashScope.APIKeyEnv != "DASHSCOPE_API_KEY" {
@@ -97,7 +94,7 @@ func TestValidate_Success(t *testing.T) {
 		OutputRoot: "/tmp/test",
 		DBPath:     "test.db",
 		Web:        WebConfig{Enabled: true, Listen: "127.0.0.1:6334"},
-		Worker:     WorkerConfig{Num: 3, LiveRecordNum: 1},
+		Worker:     WorkerConfig{Num: 3},
 		LiveRecord: LiveRecordConfig{AudioContainer: "m4a"},
 	}
 	if err := cfg.Validate(); err != nil {
@@ -590,5 +587,30 @@ func TestEffectivePasswordEnv_DefaultFallback(t *testing.T) {
 	w.PasswordEnv = "CUSTOM_WD"
 	if got := w.EffectivePasswordEnv(); got != "CUSTOM_WD" {
 		t.Fatalf("explicit PasswordEnv should win, got %q", got)
+	}
+}
+
+// TestLoadConfigBackcompatLiveRecordNumRemoved 验证异常 #5:旧配置文件含 worker.live_record_num
+// 字段(已删除)时,Load 不报错(viper 默认忽略未知字段),向后兼容。
+func TestLoadConfigBackcompatLiveRecordNumRemoved(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := tmpDir + "/config.yaml"
+	// 旧配置仍含 live_record_num(已删的字段),应被静默忽略。
+	configContent := []byte(`
+output_root: ./data
+db_path: ./test.db
+worker:
+  num: 3
+  live_record_num: 2
+`)
+	if err := os.WriteFile(configPath, configContent, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load with legacy live_record_num field failed: %v", err)
+	}
+	if cfg.Worker.Num != 3 {
+		t.Errorf("worker.num = %d, want 3", cfg.Worker.Num)
 	}
 }

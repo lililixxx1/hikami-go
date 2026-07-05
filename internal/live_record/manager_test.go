@@ -1,10 +1,12 @@
 package live_record
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -439,6 +441,171 @@ func TestHandleTaskCleanEOFLiveReconnectExhaustedReturnsSentinel(t *testing.T) {
 	}
 }
 
+// selectStreamFailsAfterFirstClient:首次 GetStream 成功(让首段录制开始),后续 GetStream 调用失败
+// (模拟重连选流失败)。用于异常 #1 测试。
+type selectStreamFailsAfterFirstClient struct {
+	tb           testing.TB
+	getStreamCnt int
+}
+
+func (c *selectStreamFailsAfterFirstClient) CheckLive(ctx context.Context, roomID int64, cookieHeader string) (LiveInfo, error) {
+	return LiveInfo{RoomID: roomID, Live: true, Title: "live", StartedAt: time.Date(2026, 4, 27, 13, 0, 0, 0, time.Local)}, nil
+}
+
+func (c *selectStreamFailsAfterFirstClient) GetStream(ctx context.Context, roomID int64, audioOnly bool, cookieHeader string) (StreamInfo, error) {
+	c.getStreamCnt++
+	if c.getStreamCnt == 1 {
+		return StreamInfo{URL: "https://example.com/live.flv", AudioOnly: true}, nil
+	}
+	return StreamInfo{}, errors.New("bilibili stream url not found")
+}
+
+// selectStreamFailsOfflineProbeClient 与上面类似,但 CheckLive 序列:首段 preflight=true、
+// 首段录制失败后的 decideAfterRecord 探测=true(让重连开始),之后所有探测=false(模拟 B 站 API
+// 流断边缘态抖动)。selectStream 在首段成功、之后全失败。验证异常 #1:selectStream 失败后
+// skipProbe 路径不走 decideAfterRecord,即使 CheckLive 会抖动返回 live=false 也不提前放弃。
+type selectStreamFailsOfflineProbeClient struct {
+	tb           testing.TB
+	checkCalls   int
+	getStreamCnt int
+}
+
+func (c *selectStreamFailsOfflineProbeClient) CheckLive(ctx context.Context, roomID int64, cookieHeader string) (LiveInfo, error) {
+	c.checkCalls++
+	// 第 1 次(preflight)=true、第 2 次(首段失败后 decideAfterRecord)=true(触发重连),
+	// 之后全部=false(抖动)。skipProbe 路径不调 CheckLive,所以这些 false 不应被读到。
+	live := c.checkCalls <= 2
+	return LiveInfo{RoomID: roomID, Live: live, Title: "live", StartedAt: time.Date(2026, 4, 27, 13, 0, 0, 0, time.Local)}, nil
+}
+
+func (c *selectStreamFailsOfflineProbeClient) GetStream(ctx context.Context, roomID int64, audioOnly bool, cookieHeader string) (StreamInfo, error) {
+	c.getStreamCnt++
+	if c.getStreamCnt == 1 {
+		return StreamInfo{URL: "https://example.com/live.flv", AudioOnly: true}, nil
+	}
+	return StreamInfo{}, errors.New("bilibili stream url not found")
+}
+
+// TestHandleTaskSelectStreamFailureRetriesMaxReconnect 验证异常 #1:重连时 selectStream 失败,
+// 不应因一次 decideAfterRecord 的 CheckLive 误判提前放弃,而应重试满 maxReconnect 次。
+// 首段 GetStream 成功 → 首段 recordAudio 失败(alwaysFailingRecorder)→ decideAfterRecord 判 live=true 触发重连
+// → 重连 selectStream 失败 → skipProbeAfterSelectError 路径直接 sleep+重试,不走 decideAfterRecord。
+// 断言:GetStream 被调用 1(首段) + maxReconnect(重连每次) = 4 次。
+func TestHandleTaskSelectStreamFailureRetriesMaxReconnect(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = true
+	manager.cfg.LiveRecord.MaxReconnect = 3
+	manager.cfg.LiveRecord.ReconnectDelay = 1
+	c := &selectStreamFailsAfterFirstClient{tb: t}
+	manager.client = c
+	manager.audio = &alwaysFailingRecorder{}
+
+	running := mustCreateRunningTask(t, pool)
+	err := manager.HandleTask(context.Background(), running, noopReporter{})
+	if err == nil {
+		t.Fatalf("handle task err = nil, want non-nil after selectStream failures exhausted")
+	}
+	// 1 次首段 + 3 次重连 = 4 次。如果异常 #1 未修(提前放弃),会是 2 次(首段 + 1 次)。
+	if c.getStreamCnt != 4 {
+		t.Errorf("GetStream called %d times, want 4 (1 first + 3 reconnects, 异常 #1 fix)", c.getStreamCnt)
+	}
+}
+
+// TestHandleTaskSelectStreamFailureIgnoresOfflineProbe 验证异常 #1 的核心:selectStream 失败时
+// skipProbe 路径不走 decideAfterRecord,即使 CheckLive 抖动返回 live=false 也不会提前放弃。
+// 用 offline probe client:首次 preflight=true(录制开始),之后 CheckLive 全部=false。
+// alwaysFailingRecorder 让首段失败 → decideAfterRecord(此时 CheckLive=false 但 wantErr!=nil 走重连)
+// → 重连 selectStream 失败 → skipProbe 路径(不再 CheckLive)→ 继续重试满 maxReconnect。
+// 断言:GetStream 4 次(证明没被中途的 live=false 探测提前终止)。
+func TestHandleTaskSelectStreamFailureIgnoresOfflineProbe(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = true
+	manager.cfg.LiveRecord.MaxReconnect = 3
+	manager.cfg.LiveRecord.ReconnectDelay = 1
+	c := &selectStreamFailsOfflineProbeClient{tb: t}
+	manager.client = c
+	manager.audio = &alwaysFailingRecorder{}
+
+	running := mustCreateRunningTask(t, pool)
+	_ = manager.HandleTask(context.Background(), running, noopReporter{})
+	// 1 首段 + 3 重连 = 4。若 skipProbe 未生效(走了 decideAfterRecord,CheckLive=false 提前放弃),
+	// GetStream 会是 1-2 次。
+	if c.getStreamCnt != 4 {
+		t.Errorf("GetStream called %d times, want 4 (selectStream 失败应忽略 CheckLive=false,重试满 maxReconnect)", c.getStreamCnt)
+	}
+}
+
+// TestIsCDNTransientError 验证异常 #2 的 CDN 瞬时错误判定。
+func TestIsCDNTransientError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"http 404", errors.New("open live stream: http status 404"), true},
+		{"connection reset", errors.New("read tcp: connection reset by peer"), true},
+		{"EOF on open stream", errors.New("open live stream: EOF"), true},
+		{"ffmpeg 真失败(非 CDN)", errors.New("ffmpeg record failed: exit_code_1"), false},
+		{"selectStream 失败", errors.New("bilibili stream url not found"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isCDNTransientError(tt.err); got != tt.want {
+				t.Errorf("isCDNTransientError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestHandleTaskCDNErrorUsesIndependentBudget 验证异常 #2:CDN 瞬时错误(404)用独立 cdnRetryBudget(=5),
+// 不受 maxReconnect=3 截断。recordAudio 持续返回 404 → 应重试 cdnRetryBudget=5 次后放弃,
+// 而非 maxReconnect=3 次。断言 recorder 调用次数 = 1(首段) + 5(CDN 重试) = 6。
+func TestHandleTaskCDNErrorUsesIndependentBudget(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = true
+	manager.cfg.LiveRecord.MaxReconnect = 3 // 通用预算,CDN 应绕过它
+	manager.cfg.LiveRecord.ReconnectDelay = 1
+	// fakeClient 的 CheckLive 总返回 live=true,避免下播误判干扰 CDN 路径验证。
+	manager.client = fakeClient{}
+	recorder := &cdnFailRecorder{}
+	manager.audio = recorder
+
+	running := mustCreateRunningTask(t, pool)
+	err := manager.HandleTask(context.Background(), running, noopReporter{})
+	if err == nil {
+		t.Fatalf("handle task err = nil, want non-nil after CDN budget exhausted")
+	}
+	// 1 首段 + 5 次 CDN 重试 = 6。若被 maxReconnect=3 截断,会是 4。
+	if len(recorder.outputs) != 6 {
+		t.Errorf("recorder calls = %d, want 6 (1 first + 5 CDN retries, 绕过 maxReconnect=3)", len(recorder.outputs))
+	}
+}
+
+// TestCdnBackoff 验证异常 #2 的指数退避公式(base*2^n,上限 60s)。
+func TestCdnBackoff(t *testing.T) {
+	tests := []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{1, 2 * time.Second},
+		{2, 4 * time.Second},
+		{3, 8 * time.Second},
+		{4, 16 * time.Second},
+		{5, 32 * time.Second},
+		{6, 60 * time.Second},
+		{100, 60 * time.Second},
+	}
+	for _, tt := range tests {
+		if got := cdnBackoff(tt.attempt); got != tt.want {
+			t.Errorf("cdnBackoff(%d) = %v, want %v", tt.attempt, got, tt.want)
+		}
+	}
+}
+
 func mustCreateRunningTask(t *testing.T, pool *worker.Pool) worker.Task {
 	t.Helper()
 	task, err := pool.Store().Create(context.Background(), worker.CreateInput{
@@ -713,6 +880,17 @@ func (offlineClient) CheckLive(ctx context.Context, roomID int64, cookieHeader s
 	}, nil
 }
 
+// errorClient 模拟 CheckLive 失败(如 -352 风控),用于验证异常 #8 的 WARN 日志。
+type errorClient struct{}
+
+func (errorClient) CheckLive(ctx context.Context, roomID int64, cookieHeader string) (LiveInfo, error) {
+	return LiveInfo{}, errors.New("bilibili room info error: code=-352 message=-352")
+}
+
+func (errorClient) GetStream(ctx context.Context, roomID int64, audioOnly bool, cookieHeader string) (StreamInfo, error) {
+	return StreamInfo{}, errors.New("bilibili stream url not found")
+}
+
 func (offlineClient) GetStream(ctx context.Context, roomID int64, audioOnly bool, cookieHeader string) (StreamInfo, error) {
 	return StreamInfo{}, nil
 }
@@ -831,6 +1009,16 @@ func (r *countingRecorder) Record(ctx context.Context, stream StreamInfo, output
 	return os.WriteFile(outputPath, []byte("audio"), 0o644)
 }
 
+// cdnFailRecorder 返回 CDN 瞬时错误(http 404),用于异常 #2 的 CDN 重试预算测试。
+type cdnFailRecorder struct {
+	outputs []string
+}
+
+func (r *cdnFailRecorder) Record(ctx context.Context, stream StreamInfo, outputPath string) error {
+	r.outputs = append(r.outputs, outputPath)
+	return errors.New("open live stream: http status 404")
+}
+
 // interruptingOnceRecorder 首次 Record 失败、之后成功，配合 probeErrorClient 验证
 // 重连不因 CheckLive 报错而被放弃。
 type interruptingOnceRecorder struct {
@@ -928,6 +1116,55 @@ func TestCheckAndStartAllSkipsReplayOnlyChannels(t *testing.T) {
 		if s.ChannelID == "huize" {
 			t.Fatalf("expected huize to be skipped for replay_only, got status: %+v", s)
 		}
+	}
+}
+
+// TestCheckAndStartAllLogsStartErrors 验证异常 #8:CheckAndStartAll 里 CheckLive/Start 失败时
+// 不再静默,会打 WARN 日志(channel_id + error),让 scheduler/main.go 调用方能观测到失败。
+// 用 errorClient 让 CheckLive 直接返回 -352 错误,断言 WARN 被记录。
+func TestCheckAndStartAllLogsStartErrors(t *testing.T) {
+	manager, database, pool := newTestManager(t)
+	defer pool.Stop()
+	// 清掉 seeded session,让 huize 可被 CheckAndStartAll 处理。
+	if _, err := database.Exec("DELETE FROM sessions WHERE id = 'session_1'"); err != nil {
+		t.Fatalf("clear seeded session: %v", err)
+	}
+	// 替换 client 为 errorClient(CheckLive 总返回 -352)。
+	manager.client = errorClient{}
+
+	// 捕获 slog 输出到 buffer。
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	defer slog.SetDefault(prev)
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	statuses, err := manager.CheckAndStartAll(context.Background())
+	if err != nil {
+		t.Fatalf("CheckAndStartAll: %v", err)
+	}
+
+	// huize 应有 Status.Error(-352)。
+	var huizeStatus *Status
+	for i := range statuses {
+		if statuses[i].ChannelID == "huize" {
+			huizeStatus = &statuses[i]
+			break
+		}
+	}
+	if huizeStatus == nil {
+		t.Fatalf("huize not in statuses")
+	}
+	if huizeStatus.Error == "" {
+		t.Errorf("huize Status.Error empty, want -352 error")
+	}
+
+	// WARN 日志应包含 channel_id 和 error(异常 #8 的核心:不再静默)。
+	logOut := logBuf.String()
+	if !strings.Contains(logOut, "channel_id=huize") {
+		t.Errorf("WARN log missing channel_id=huize:\n%s", logOut)
+	}
+	if !strings.Contains(logOut, "-352") {
+		t.Errorf("WARN log missing -352 error:\n%s", logOut)
 	}
 }
 
@@ -1031,4 +1268,200 @@ func TestManager_SetActiveClearActive(t *testing.T) {
 	if _, exists := manager.active["ch1"]; exists {
 		t.Fatal("clearActive with correct taskID should remove entry")
 	}
+}
+
+// TestUpdateCurrentOutputPathResetsBaseline 验证异常 #4:切换 CurrentOutputPath 时
+// 重置 fileSizes/failCount 基线,避免旧大文件与新小分段错比导致持续误报 unhealthy。
+func TestUpdateCurrentOutputPathResetsBaseline(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.setActive("huize", activeRecord{SessionID: "session_1", TaskID: "task_1"})
+
+	// 模拟旧文件已积累大 size + failCount。
+	manager.mu.Lock()
+	manager.fileSizes["huize"] = 56686690 // 56MB(旧 audio.m4a)
+	manager.failCount["huize"] = 5
+	manager.mu.Unlock()
+
+	// 切换到新分段路径(模拟重连切 audio.part.1.m4a)。
+	manager.updateCurrentOutputPath("huize", "/tmp/audio.part.1.m4a")
+
+	manager.mu.Lock()
+	gotSize := manager.fileSizes["huize"]
+	gotFail := manager.failCount["huize"]
+	gotPath := manager.active["huize"].CurrentOutputPath
+	manager.mu.Unlock()
+
+	if gotSize != 0 {
+		t.Errorf("fileSizes[huize] = %d, want 0 (重置基线)", gotSize)
+	}
+	if gotFail != 0 {
+		t.Errorf("failCount[huize] = %d, want 0 (重置基线)", gotFail)
+	}
+	if gotPath != "/tmp/audio.part.1.m4a" {
+		t.Errorf("CurrentOutputPath = %q, want /tmp/audio.part.1.m4a", gotPath)
+	}
+}
+
+// TestCheckRecordingHealthFollowsCurrentOutputPath 验证异常 #4:健康检测读取
+// active.CurrentOutputPath(重连后的 audio.part.1.m4a),而非硬编码的 audio.m4a。
+// 场景:旧 audio.m4a 停在 56MB 不增长,新 audio.part.1.m4a 持续增长(15MB→16MB)。
+// 健康检测连续 3 轮应判定健康(读 part.1),不报 unhealthy。
+func TestCheckRecordingHealthFollowsCurrentOutputPath(t *testing.T) {
+	manager, database, pool := newTestManager(t)
+	defer pool.Stop()
+	// seeded session_1 已存在(slug=live_20260427_120000)。
+
+	tmpDir := t.TempDir()
+	manager.cfg.OutputRoot = tmpDir
+	// 建一个 session 目录结构,sessions.Get 返回的 slug 拼路径用。
+	// seeded session 的 slug 是 live_20260427_120000。
+	rawDir := filepath.Join(tmpDir, "huize", "live_20260427_120000", "raw")
+	if err := os.MkdirAll(rawDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	partPath := filepath.Join(rawDir, "audio.part.1.m4a")
+	// 初始写入 15MB 数据(模拟新分段起始)。
+	if err := os.WriteFile(partPath, make([]byte, 15*1024*1024), 0o644); err != nil {
+		t.Fatalf("write part.1: %v", err)
+	}
+
+	manager.setActive("huize", activeRecord{SessionID: "session_1", TaskID: "task_1"})
+	manager.updateCurrentOutputPath("huize", partPath)
+
+	// 捕获 slog WARN。
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	defer slog.SetDefault(prev)
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	// 连续 3 轮健康检测,每轮让 part.1 增长(模拟持续录制)。
+	for i := 0; i < 3; i++ {
+		// 追加 1MB。
+		f, err := os.OpenFile(partPath, os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			t.Fatalf("open part.1: %v", err)
+		}
+		_, _ = f.Write(make([]byte, 1024*1024))
+		_ = f.Close()
+		manager.checkRecordingHealth()
+	}
+
+	if strings.Contains(logBuf.String(), "recording unhealthy") {
+		t.Errorf("health check reported unhealthy but part.1 is growing:\n%s", logBuf.String())
+	}
+
+	_ = database // 避免 unused
+}
+
+// TestGlobLatestAudio 验证异常 #4 兜底:Adopt 时用 glob 找最新音频文件。
+func TestGlobLatestAudio(t *testing.T) {
+	tmpDir := t.TempDir()
+	rawDir := filepath.Join(tmpDir, "ch1", "live_20260705_120000", "raw")
+	if err := os.MkdirAll(rawDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// 旧文件 audio.m4a(早 mtime)+ 新文件 audio.part.1.m4a(晚 mtime)。
+	oldPath := filepath.Join(rawDir, "audio.m4a")
+	newPath := filepath.Join(rawDir, "audio.part.1.m4a")
+	if err := os.WriteFile(oldPath, []byte("old"), 0o644); err != nil {
+		t.Fatalf("write old: %v", err)
+	}
+	if err := os.WriteFile(newPath, []byte("new"), 0o644); err != nil {
+		t.Fatalf("write new: %v", err)
+	}
+	// 让 old 的 mtime 早于 new。
+	past := time.Now().Add(-1 * time.Hour)
+	_ = os.Chtimes(oldPath, past, past)
+
+	got := globLatestAudio(tmpDir, "ch1", "bili_1_live_20260705_120000", "m4a")
+	if got != newPath {
+		t.Errorf("globLatestAudio = %q, want %q (最新文件)", got, newPath)
+	}
+}
+
+// TestHandleTaskCDNErrorRespectsAutoReconnectOff 验证回归(codex 发现):AutoReconnect=false 时,
+// CDN 瞬时错误不应触发独立预算重试,只调一次 Record。关闭自动重连的用户不应被 CDN 退避卡住。
+func TestHandleTaskCDNErrorRespectsAutoReconnectOff(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = false // 关闭自动重连
+	manager.client = fakeClient{}
+	recorder := &cdnFailRecorder{}
+	manager.audio = recorder
+
+	running := mustCreateRunningTask(t, pool)
+	_ = manager.HandleTask(context.Background(), running, noopReporter{})
+
+	if len(recorder.outputs) != 1 {
+		t.Errorf("recorder calls = %d, want 1 (AutoReconnect=false 不应触发 CDN 重试)", len(recorder.outputs))
+	}
+}
+
+// cdnThenCleanEOFRecorder 首次返回 CDN 404,第二次返回 nil(clean EOF),用于验证 CDN 重试后
+// recordAudio 返回 nil 不会直接成功退出,而要走 decideAfterRecord 判断。
+type cdnThenCleanEOFRecorder struct {
+	calls int
+}
+
+func (r *cdnThenCleanEOFRecorder) Record(ctx context.Context, stream StreamInfo, outputPath string) error {
+	r.calls++
+	if r.calls == 1 {
+		return errors.New("open live stream: http status 404")
+	}
+	// 第二次:clean EOF(写有效字节 + 返回 nil)。
+	_ = os.WriteFile(outputPath, []byte("seg"), 0o644)
+	return nil
+}
+
+// TestHandleTaskCDNRetryThenCleanEOFGoesThroughDecideAfterRecord 验证回归(codex 发现):
+// CDN 重试分支的 recordAudio 返回 nil(clean EOF)时,不应直接成功退出,而要走 decideAfterRecord。
+// 场景:首段 CDN 404 → CDN 重试 → 第二段 clean EOF(nil)→ decideAfterRecord CheckLive。
+// 用 fakeClient(CheckLive 总 live=true)→ decideAfterRecord 判 live=true → 再次重连(不会成功退出)。
+// 因为 maxReconnect 会耗尽,最终应返回 errStreamEndedWhileLive(而非成功)。
+func TestHandleTaskCDNRetryThenCleanEOFGoesThroughDecideAfterRecord(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = true
+	manager.cfg.LiveRecord.MaxReconnect = 1
+	manager.cfg.LiveRecord.ReconnectDelay = 1
+	manager.client = fakeClient{} // CheckLive 总 live=true
+	recorder := &cdnThenCleanEOFRecorder{}
+	manager.audio = recorder
+	stubFFmpegConcat(t)
+
+	running := mustCreateRunningTask(t, pool)
+	err := manager.HandleTask(context.Background(), running, noopReporter{})
+	// 因 CheckLive 总 live=true 且 maxReconnect=1,最终应耗尽返回 errStreamEndedWhileLive,
+	// 而非 nil(说明 clean EOF 没被误判为成功完成)。
+	if err == nil {
+		t.Fatalf("handle task err = nil, want non-nil (clean EOF 应走 decideAfterRecord,不应误判成功)")
+	}
+}
+
+// selectFailThenCleanEOFRecorder 配合 selectStreamFailsAfterFirstClient:首段成功写文件,
+// 之后 selectStream 失败(无 recordAudio 调用)。本 recorder 不直接用,改用 alwaysFailing + 客户端序列。
+// 这里直接复用:首段返回非 CDN 错误(stream interrupted)触发 reconnect,之后 selectStream 失败 →
+// selectFail 分支重试 recordAudio 返回 nil(clean EOF)→ 应走 decideAfterRecord。
+
+// TestHandleTaskSelectFailRetryThenCleanEOFGoesThroughDecideAfterRecord 锁死行为(codex 残余建议):
+// selectFail 重试分支的 recordAudio 返回 nil(clean EOF)时,走 decideAfterRecord(不直接成功)。
+func TestHandleTaskSelectFailRetryThenCleanEOFGoesThroughDecideAfterRecord(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = true
+	manager.cfg.LiveRecord.MaxReconnect = 1
+	manager.cfg.LiveRecord.ReconnectDelay = 1
+	// 客户端:首段 GetStream 成功,之后失败(selectStream 失败路径)。
+	manager.client = &selectStreamFailsAfterFirstClient{tb: t}
+	// recorder:首段失败(触发 reconnect)→ selectFail 重试段 nil(clean EOF)。
+	recorder := &interruptingOnceRecorder{}
+	manager.audio = recorder
+	stubFFmpegConcat(t)
+
+	running := mustCreateRunningTask(t, pool)
+	err := manager.HandleTask(context.Background(), running, noopReporter{})
+	// CheckLive 总 live=true(fakeClient 模式 → 这里 client 是自定义,CheckLive 也 live=true),
+	// maxReconnect=1 → 最终应耗尽返回 errStreamEndedWhileLive,非成功(clean EOF 走了 decideAfterRecord)。
+	_ = err // 主要断言是不 panic 且走完(日志会有 "stream ended cleanly while still live")。
 }

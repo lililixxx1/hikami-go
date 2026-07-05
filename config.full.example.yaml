@@ -19,7 +19,6 @@ web:
 
 worker:
   num: 3
-  live_record_num: 2
 
 cron:
   discovery: "@every 20m"
