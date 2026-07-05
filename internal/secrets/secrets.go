@@ -101,6 +101,14 @@ func (s *Store) Clear(ctx context.Context) error {
 	return err
 }
 
+// ClearTx 是 Clear 的事务版（同 SetTx/DeleteTx 的原子性用途）。
+// 配置备份 import 的 overwrite 策略用它把「清旧密钥 + 写新密钥 + 写配置段」绑进同一事务，
+// 避免 Clear 成功但后续写入失败导致密钥全丢。
+func (s *Store) ClearTx(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, "DELETE FROM secrets")
+	return err
+}
+
 func (s *Store) LoadIntoEnv(ctx context.Context) error {
 	rows, err := s.db.QueryContext(ctx, "SELECT key, value FROM secrets WHERE value != ''")
 	if err != nil {
