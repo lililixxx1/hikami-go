@@ -74,7 +74,6 @@ func isLoopbackListen(listen string) bool {
 
 type WorkerConfig struct {
 	Num              int  `mapstructure:"num"`
-	LiveRecordNum    int  `mapstructure:"live_record_num"`
 	AutoRetry        bool `mapstructure:"auto_retry"`
 	MaxRetryAttempts int  `mapstructure:"max_retry_attempts"`
 	RetryDelay       int  `mapstructure:"retry_delay_seconds"`
@@ -732,7 +731,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("web.listen", "127.0.0.1:6334")
 	v.SetDefault("web.auto_open_browser", true)
 	v.SetDefault("worker.num", 3)
-	v.SetDefault("worker.live_record_num", 2)
 	v.SetDefault("worker.auto_retry", false)
 	v.SetDefault("worker.max_retry_attempts", 3)
 	v.SetDefault("worker.retry_delay_seconds", 30)
@@ -831,9 +829,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Worker.Num <= 0 {
 		return fmt.Errorf("worker.num must be greater than 0")
-	}
-	if c.Worker.LiveRecordNum < 0 {
-		return fmt.Errorf("worker.live_record_num must be greater than or equal to 0")
 	}
 	if strings.TrimSpace(c.LiveRecord.AudioContainer) == "" {
 		return fmt.Errorf("live_record.audio_container is required")

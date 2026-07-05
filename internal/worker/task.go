@@ -156,7 +156,17 @@ func (s *Store) ActiveBySessionAndType(ctx context.Context, sessionID string, ta
 
 // ListRunning 返回所有状态为 running 的任务。
 func (s *Store) ListRunning(ctx context.Context) ([]Task, error) {
-	rows, err := s.db.QueryContext(ctx, listRunningSQL, StatusRunning)
+	return s.listByStatus(ctx, StatusRunning)
+}
+
+// ListPending 返回所有状态为 pending 的任务。
+// 用于服务重启时恢复从未被 worker 消费的孤儿任务（recoverRunning）。
+func (s *Store) ListPending(ctx context.Context) ([]Task, error) {
+	return s.listByStatus(ctx, StatusPending)
+}
+
+func (s *Store) listByStatus(ctx context.Context, status Status) ([]Task, error) {
+	rows, err := s.db.QueryContext(ctx, listRunningSQL, status)
 	if err != nil {
 		return nil, err
 	}

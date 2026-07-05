@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"hikami-go/internal/biliutil"
@@ -17,6 +18,11 @@ import (
 type BilibiliClient struct {
 	httpClient *http.Client
 	baseURL    string
+	buvids     *biliutil.BuvidStore
+	signers    map[string]biliutil.URLSigner
+	signersMu  sync.Mutex
+	// newSigner 按 cookie 创建 WBISigner（默认 biliutil.NewWBISigner），测试可注入桩。
+	newSigner func(cookie string) biliutil.URLSigner
 }
 
 type streamCandidate struct {
@@ -26,10 +32,14 @@ type streamCandidate struct {
 }
 
 func NewBilibiliClient() *BilibiliClient {
-	return &BilibiliClient{
+	c := &BilibiliClient{
 		httpClient: &http.Client{Timeout: 15 * time.Second},
 		baseURL:    "https://api.live.bilibili.com",
+		signers:    make(map[string]biliutil.URLSigner),
+		newSigner:  func(cookie string) biliutil.URLSigner { return biliutil.NewWBISigner(cookie) },
 	}
+	c.buvids = biliutil.NewBuvidStoreWithHTTPClient(c.httpClient)
+	return c
 }
 
 func NewBilibiliClientWithBaseURL(baseURL string) *BilibiliClient {
@@ -38,10 +48,63 @@ func NewBilibiliClientWithBaseURL(baseURL string) *BilibiliClient {
 	return client
 }
 
+// signerForCookie 返回指定 cookie 对应的 URLSigner，按 cookie 懒初始化和缓存（与 identify/danmaku 同模式）。
+// WBI 签名（w_rid + wts）是 getInfoByRoom / getRoomPlayInfo 端点通过 -352 风控的必要条件，
+// 单靠 buvid 注入不够（探针实测：buvid only 仍 -352，buvid + WBI → 200 code=0）。
+func (c *BilibiliClient) signerForCookie(cookie string) biliutil.URLSigner {
+	c.signersMu.Lock()
+	defer c.signersMu.Unlock()
+	if s, ok := c.signers[cookie]; ok {
+		return s
+	}
+	s := c.newSigner(cookie)
+	c.signers[cookie] = s
+	return s
+}
+
+// SetBuvidStore 替换内部 buvid 存储，仅用于测试注入指向 httptest 桩的 spi URL。
+func (c *BilibiliClient) SetBuvidStore(store *biliutil.BuvidStore) {
+	c.buvids = store
+}
+
+// SetSignerFactory 替换签名器工厂，仅用于测试注入桩签名器（避免打真实 WBI nav）。
+func (c *BilibiliClient) SetSignerFactory(fn func(cookie string) biliutil.URLSigner) {
+	c.newSigner = fn
+}
+
+// injectAntiRisk 注入 buvid3/buvid4 对抗 -352 风控（与 identify/danmaku/publisher 共享 BuvidStore）。
+// GetBuvids 失败或返回空值时降级为不改 cookie（仅 warn），避免在无新指纹时误剔除已有 buvid3。
+func (c *BilibiliClient) injectAntiRisk(ctx context.Context, cookieHeader string) string {
+	if c.buvids == nil {
+		return cookieHeader
+	}
+	b3, b4, berr := c.buvids.GetBuvids(ctx, cookieHeader)
+	if berr != nil {
+		slog.Warn("live_record: get buvids failed, continuing without buvid", "error", berr)
+		return cookieHeader
+	}
+	if b3 == "" && b4 == "" {
+		return cookieHeader
+	}
+	return biliutil.InjectBuvids(cookieHeader, b3, b4)
+}
+
+// signURL 对端点做 WBI 签名（失败降级为不签名，仍尝试，保持容错）。
+func (c *BilibiliClient) signURL(endpoint, cookieHeader string) string {
+	signed, err := c.signerForCookie(cookieHeader).SignURL(endpoint)
+	if err != nil {
+		slog.Warn("live_record: wbi sign failed, continuing unsigned", "error", err)
+		return endpoint
+	}
+	return signed
+}
+
 func (c *BilibiliClient) CheckLive(ctx context.Context, roomID int64, cookieHeader string) (LiveInfo, error) {
+	cookieHeader = c.injectAntiRisk(ctx, cookieHeader)
 	var response roomInfoResponse
 	endpoint := c.baseURL + "/xlive/web-room/v1/index/getInfoByRoom?room_id=" + url.QueryEscape(strconv.FormatInt(roomID, 10))
-	if err := c.getJSON(ctx, endpoint, &response, cookieHeader); err != nil {
+	endpoint = c.signURL(endpoint, cookieHeader)
+	if err := c.getJSON(ctx, endpoint, &response, cookieHeader, roomID); err != nil {
 		return LiveInfo{}, err
 	}
 	if response.Code != 0 {
@@ -77,10 +140,12 @@ func (c *BilibiliClient) CheckLive(ctx context.Context, roomID int64, cookieHead
 }
 
 func (c *BilibiliClient) GetStream(ctx context.Context, roomID int64, audioOnly bool, cookieHeader string) (StreamInfo, error) {
+	cookieHeader = c.injectAntiRisk(ctx, cookieHeader)
 	var response playInfoResponse
 	endpoint := c.baseURL + "/xlive/web-room/v2/index/getRoomPlayInfo?room_id=" +
 		url.QueryEscape(strconv.FormatInt(roomID, 10)) + "&protocol=0,1&format=0,1,2&codec=0,1&qn=10000&platform=web"
-	if err := c.getJSON(ctx, endpoint, &response, cookieHeader); err != nil {
+	endpoint = c.signURL(endpoint, cookieHeader)
+	if err := c.getJSON(ctx, endpoint, &response, cookieHeader, roomID); err != nil {
 		return StreamInfo{}, err
 	}
 	if response.Code != 0 {
@@ -198,12 +263,15 @@ func bilibiliStreamHeaders(cookieHeader string) map[string]string {
 	return headers
 }
 
-func (c *BilibiliClient) getJSON(ctx context.Context, endpoint string, target any, cookieHeader string) error {
+func (c *BilibiliClient) getJSON(ctx context.Context, endpoint string, target any, cookieHeader string, roomID int64) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return err
 	}
 	request.Header.Set("User-Agent", biliutil.BiliUserAgent)
+	// Referer/Origin 同步 identify.go 的 header 策略（异常 #7：-352 风控对抗的组成部分）。
+	request.Header.Set("Referer", "https://live.bilibili.com/"+strconv.FormatInt(roomID, 10))
+	request.Header.Set("Origin", "https://live.bilibili.com")
 	if cookieHeader != "" {
 		request.Header.Set("Cookie", cookieHeader)
 	}

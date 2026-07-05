@@ -84,9 +84,10 @@ const (
 )
 
 type activeRecord struct {
-	SessionID string
-	TaskID    string
-	Cancel    context.CancelFunc
+	SessionID         string
+	TaskID            string
+	Cancel            context.CancelFunc
+	CurrentOutputPath string // 异常 #4:健康检测需检查当前实际输出文件(重连切分段后会变)
 }
 
 type taskPayload struct {
@@ -244,6 +245,10 @@ func (m *Manager) CheckAndStartAll(ctx context.Context) ([]Status, error) {
 		checkCtx := context.WithValue(ctx, liveRecordChannelIDKey, item.ID)
 		info, err := m.client.CheckLive(checkCtx, item.LiveRoomID, m.cookieHeaderForChannel(ctx, item.ID))
 		if err != nil {
+			// 异常 #8:CheckLive 失败(如 -352 风控、网络抖动)此前被 checkOne 静默吞掉,
+			// scheduler/main 只看顶层 error,丢失 Status.Error。这里打 WARN 让失败可观测。
+			slog.Warn("live check: CheckLive failed for channel",
+				"channel_id", item.ID, "room_id", item.LiveRoomID, "error", err)
 			return Status{
 				ChannelID: item.ID,
 				RoomID:    item.LiveRoomID,
@@ -273,6 +278,9 @@ func (m *Manager) CheckAndStartAll(ctx context.Context) ([]Status, error) {
 			status, err = m.Check(ctx, item.ID)
 		}
 		if err != nil {
+			// 异常 #8:Start/Check 失败(-352、selectStream 失败、CreateLive 冲突等)此前被静默吞掉。
+			slog.Warn("live check: Start failed for channel",
+				"channel_id", item.ID, "room_id", item.LiveRoomID, "live", info.Live, "error", err)
 			return Status{
 				ChannelID: item.ID,
 				RoomID:    item.LiveRoomID,
@@ -445,7 +453,13 @@ func (m *Manager) Adopt(channelID, taskID, sessionID string, pid int) bool {
 			_ = proc.Signal(syscall.SIGTERM)
 		}
 	}
-	return m.setActive(channelID, activeRecord{SessionID: sessionID, TaskID: taskID, Cancel: cancel})
+	// 异常 #4:重启接管时 CurrentOutputPath 未知(进程在跑但路径丢失),用 glob 兜底取最新音频文件。
+	// cfg 为空时(测试桩)跳过 glob,CurrentOutputPath 留空,健康检测会 fallback。
+	var outputPath string
+	if m.cfg != nil {
+		outputPath = globLatestAudio(m.cfg.OutputRoot, channelID, sessionID, m.cfg.LiveRecord.AudioContainer)
+	}
+	return m.setActive(channelID, activeRecord{SessionID: sessionID, TaskID: taskID, Cancel: cancel, CurrentOutputPath: outputPath})
 }
 
 func (m *Manager) HandleTask(ctx context.Context, task worker.Task, reporter worker.Reporter) error {
@@ -574,6 +588,8 @@ func (m *Manager) HandleTask(ctx context.Context, task worker.Task, reporter wor
 	}
 
 	audioPath := filepath.Join(rawDir, "audio."+m.cfg.LiveRecord.AudioContainer)
+	// 异常 #4:首段录制前记录当前输出路径,供健康检测检查(重连切分段后会更新)。
+	m.updateCurrentOutputPath(task.ChannelID, audioPath)
 	recordStartedAt := time.Now()
 	audioSegments := make([]string, 0, 1)
 	recordedSegments := map[string]struct{}{}
@@ -612,6 +628,13 @@ func (m *Manager) HandleTask(ctx context.Context, task worker.Task, reporter wor
 	// 因此取消等待的 Done 分支用 labeled break（break reconnect）退出整个循环；
 	// decision 分支通过 fallthrough 到循环末尾的 break 退出。
 	attemptsUsed := 0
+	// 异常 #2:CDN 瞬时错误(404/connection reset)用独立预算 cdnRetryBudget,绕过 maxReconnect,
+	// 避免短窗口(3×reconnectDelay)内全部失败。cdnAttempt 用于指数退避计算(base*2^n)。
+	cdnRetryBudget := 5
+	cdnAttempt := 0
+	// 异常 #1:selectStream 失败时置位,下一轮跳过 decideAfterRecord(否则它会重新 CheckLive,
+	// 在流断边缘态的瞬时抖动下误判 live:false 而提前放弃)。
+	selectFailedPending := false
 reconnect:
 	for {
 		// 取消优先：Stop / worker 取消发生时立即退出，不因 helper 内的 CheckLive 而延迟。
@@ -622,6 +645,79 @@ reconnect:
 			break reconnect
 		}
 
+		// === 异常 #1/#2 重试分支(在 decideAfterRecord 之前) ===
+		// 这两类错误的重试不应调 CheckLive(decideAfterRecord 会),否则流断边缘态的瞬时抖动
+		// (live:false)会提前放弃,尽管预算还剩。
+		// 仅在 AutoReconnect 开启时生效(与 decideAfterRecord 的 AutoReconnect 语义一致):
+		// 关闭自动重连时,任何错误(含 CDN/selectFail)都直接走 decideAfterRecord 的关闭语义(保留 err 退出)。
+		// 异常 #2 优先:CDN 瞬时错误(404 等)用独立 cdnRetryBudget + 指数退避,绕过 maxReconnect。
+		if m.cfg.LiveRecord.AutoReconnect && err != nil && isCDNTransientError(err) {
+			if cdnRetryBudget <= 0 {
+				// CDN 预算耗尽:放弃。
+				break reconnect
+			}
+			cdnRetryBudget--
+			cdnAttempt++
+			backoff := cdnBackoff(cdnAttempt)
+			slog.Warn("cdn transient error, retrying with backoff",
+				"channel_id", task.ChannelID, "room_id", payload.RoomID,
+				"error", err, "cdn_retry_budget", cdnRetryBudget, "backoff", backoff)
+			select {
+			case <-time.After(backoff):
+			case <-runCtx.Done():
+				err = runCtx.Err()
+				break reconnect
+			}
+			stream, sErr := m.selectStream(runCtx, payload.RoomID, m.cookieHeaderForChannel(ctx, task.ChannelID))
+			if sErr != nil {
+				// selectStream 也失败:转 selectFail 路径(用 maxReconnect 预算)。
+				slog.Warn("reconnect stream selection failed after cdn error", "error", sErr)
+				selectFailedPending = true
+				err = sErr
+				continue
+			}
+			segmentPath := reconnectAudioSegmentPath(audioPath, cdnAttempt+1)
+			m.updateCurrentOutputPath(task.ChannelID, segmentPath)
+			segErr := m.recordAudio(runCtx, stream, segmentPath, reportRecording)
+			addAudioSegment(segmentPath)
+			// 不在 segErr==nil 时直接成功退出:recordAudio 返回 nil 也可能是上游 clean EOF,
+			// 需走 decideAfterRecord 判断是否仍在播(否则误判完成)。下轮统一进 decideAfterRecord。
+			err = segErr
+			continue
+		}
+
+		// 异常 #1:selectStream 失败用 maxReconnect 预算,不调 CheckLive。
+		if selectFailedPending {
+			selectFailedPending = false
+			if attemptsUsed >= maxReconnect {
+				break reconnect
+			}
+			_ = reporter.Progress(ctx, 15+attemptsUsed*5, fmt.Sprintf("reconnecting after stream select failure (attempt %d/%d)", attemptsUsed+1, maxReconnect))
+			select {
+			case <-time.After(reconnectDelay):
+			case <-runCtx.Done():
+				err = runCtx.Err()
+				break reconnect
+			}
+			stream, sErr := m.selectStream(runCtx, payload.RoomID, m.cookieHeaderForChannel(ctx, task.ChannelID))
+			if sErr != nil {
+				slog.Warn("reconnect stream selection failed", "error", sErr)
+				attemptsUsed++
+				selectFailedPending = true
+				err = sErr
+				continue
+			}
+			segmentPath := reconnectAudioSegmentPath(audioPath, attemptsUsed+1)
+			m.updateCurrentOutputPath(task.ChannelID, segmentPath)
+			segErr := m.recordAudio(runCtx, stream, segmentPath, reportRecording)
+			addAudioSegment(segmentPath)
+			// 不在 segErr==nil 时直接成功退出:同上,需走 decideAfterRecord 判断是否仍在播。
+			err = segErr
+			attemptsUsed++
+			continue
+		}
+
+		// === decideAfterRecord 路径(非 CDN / 非 selectFail 的 recordAudio 结果) ===
 		// 唯一探测点：判定上一次 recordAudio（首段或重连分段）的结果该如何继续。
 		decision, carryErr := m.decideAfterRecord(runCtx, task, payload, err)
 
@@ -666,14 +762,18 @@ reconnect:
 		stream, sErr := m.selectStream(runCtx, payload.RoomID, m.cookieHeaderForChannel(ctx, task.ChannelID))
 		if sErr != nil {
 			slog.Warn("reconnect stream selection failed", "error", sErr)
+			// 异常 #1:设置 selectFailedPending,下一轮走 selectFail 路径(不调 decideAfterRecord)。
+			attemptsUsed++
+			selectFailedPending = true
 			err = sErr
-			attemptsUsed++ // 选流失败也算一次重连尝试（沿用原 continue 后 attempt++ 的语义）
 			continue
 		}
 
 		segmentPath := reconnectAudioSegmentPath(audioPath, attemptsUsed+1)
+		m.updateCurrentOutputPath(task.ChannelID, segmentPath)
 		segErr := m.recordAudio(runCtx, stream, segmentPath, reportRecording)
 		addAudioSegment(segmentPath)
+		// 下轮按 err 类型分类:CDN 错误走 CDN 块(独立预算),非 CDN 走 decideAfterRecord。
 		err = segErr
 		attemptsUsed++
 	}
@@ -827,6 +927,56 @@ func reconnectAudioSegmentPath(audioPath string, index int) string {
 func audioFileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir() && info.Size() > 0
+}
+
+// isCDNTransientError 判定错误是否为 CDN 瞬时错误(异常 #2):B 站 CDN 节点切换瞬间,
+// selectStream 拿到的流地址在 Go http.Get 时返回 404,或连接被重置。这类错误值得用
+// 独立预算 + 指数退避重试(每轮重新 selectStream 拿新地址),不应占用通用 maxReconnect 额度。
+func isCDNTransientError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "http status 404") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "EOF") && strings.Contains(msg, "open live stream")
+}
+
+// cdnBackoff 返回 CDN 重试的指数退避时长(base*2^n,上限 60s)。n 从 1 开始:2s,4s,8s,16s,32s,60s。
+func cdnBackoff(attempt int) time.Duration {
+	if attempt >= 6 { // 2^6=64 > 60,直接封顶
+		return 60 * time.Second
+	}
+	return time.Duration(1<<attempt) * time.Second
+}
+
+// globLatestAudio 在 session 的 raw 目录下找 mtime 最新的音频文件(异常 #4 兜底)。
+// 用于 Adopt 重启接管时恢复 CurrentOutputPath(进程在跑但路径丢失)。
+func globLatestAudio(outputRoot, channelID, sessionID, container string) string {
+	if outputRoot == "" || channelID == "" || sessionID == "" || container == "" {
+		return ""
+	}
+	// sessionID 形如 bili_123_live_20260705_120000;slug 是 live_... 部分。
+	slug := sessionID
+	if idx := strings.LastIndex(sessionID, "_live_"); idx >= 0 {
+		slug = sessionID[idx+1:] // live_20260705_120000
+	}
+	pattern := filepath.Join(outputRoot, channelID, slug, "raw", "audio*."+container)
+	matches, err := filepath.Glob(pattern)
+	if err != nil || len(matches) == 0 {
+		return ""
+	}
+	latest := matches[0]
+	latestMtime := time.Time{}
+	for _, m := range matches {
+		if info, err := os.Stat(m); err == nil {
+			if info.ModTime().After(latestMtime) {
+				latestMtime = info.ModTime()
+				latest = m
+			}
+		}
+	}
+	return latest
 }
 
 func (m *Manager) finalizeAudioSegments(ctx context.Context, audioPath string, segments []string) error {
@@ -1144,7 +1294,17 @@ func (m *Manager) checkRecordingHealth() {
 			continue
 		}
 		sessionDir := filepath.Join(m.cfg.OutputRoot, channelID, sessionInfo.Slug)
-		audioPath := filepath.Join(sessionDir, "raw", "audio."+m.cfg.LiveRecord.AudioContainer)
+		// 异常 #4:优先用 active.CurrentOutputPath(重连切分段后会更新为 part.N);
+		// 为空时(Adopt 未填、或路径丢失)先 glob 最新音频文件,再 fallback 到硬编码 audio.{container}。
+		fallbackPath := filepath.Join(sessionDir, "raw", "audio."+m.cfg.LiveRecord.AudioContainer)
+		audioPath := active.CurrentOutputPath
+		if audioPath == "" {
+			if globbed := globLatestAudio(m.cfg.OutputRoot, channelID, active.SessionID, m.cfg.LiveRecord.AudioContainer); globbed != "" {
+				audioPath = globbed
+			} else {
+				audioPath = fallbackPath
+			}
+		}
 
 		info, err := os.Stat(audioPath)
 		if err != nil {
@@ -1179,6 +1339,23 @@ func (m *Manager) setActive(channelID string, record activeRecord) bool {
 	}
 	m.active[channelID] = record
 	return true
+}
+
+// updateCurrentOutputPath 更新 active 记录的当前输出路径(异常 #4)。
+// 切换文件时(首段/重连分段)在同一把锁下重置 fileSizes[channelID]=0 + failCount[channelID]=0,
+// 避免健康检测拿旧大文件和新小分段错比,持续误报 unhealthy。
+func (m *Manager) updateCurrentOutputPath(channelID, outputPath string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if active, ok := m.active[channelID]; ok {
+		if active.CurrentOutputPath != outputPath {
+			active.CurrentOutputPath = outputPath
+			m.active[channelID] = active
+			// 切换文件:重置该 channel 的基线,强制重新学习新文件的 size。
+			m.fileSizes[channelID] = 0
+			m.failCount[channelID] = 0
+		}
+	}
 }
 
 func (m *Manager) clearActive(channelID string, taskID string) {
