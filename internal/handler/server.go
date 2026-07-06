@@ -45,6 +45,11 @@ import (
 	"hikami-go/internal/worker"
 )
 
+// biliCreativeReferer 是 B站创作类端点（topic 搜索 / 文集列表）的 Referer/Origin。
+// 2026-07-06 加入：searchBiliTopics/listBiliSeries 原为内联裸调，缺 Referer/Origin，
+// 风控收紧即挂；biliutil.biliReferer 是包内私有常量，handler 包不可见，故本地定义。
+const biliCreativeReferer = "https://www.bilibili.com"
+
 type Server struct {
 	cfg                *config.Config
 	runtimeStatus      *runtime.Status
@@ -66,6 +71,10 @@ type Server struct {
 	glossary           *glossary.Store
 	glossaryDiscoverer *glossary.Discoverer
 	biliLogin          *biliutil.QRCodeManager
+	// biliCreativeClient 是 B站创作类端点（topic 搜索 / 文集列表）的共享 HTTP client。
+	// 2026-07-06 加入：替代 searchBiliTopics/listBiliSeries 两处函数内联的 &http.Client{}，
+	// 统一带风控对抗头（UA + Referer + Origin + Cookie）。
+	biliCreativeClient *http.Client
 	router             *gin.Engine
 	asrTempHandler     http.Handler
 	upgrader           websocket.Upgrader
@@ -134,6 +143,7 @@ func NewServer(
 		recapTemplates:     recapTemplates,
 		cookieAccounts:     cookieAccounts,
 		biliLogin:          biliutil.NewQRCodeManager(biliutil.NewQRLoginClient(&http.Client{Timeout: 15 * time.Second}), 180*time.Second),
+		biliCreativeClient: &http.Client{Timeout: 15 * time.Second},
 		router:             router,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
@@ -3975,6 +3985,37 @@ func (s *Server) handleStatsCost(c *gin.Context) {
 	})
 }
 
+// biliCreativeGet 发起带 -352 风控对抗头的 B站创作类 GET 请求（topic 搜索 / 文集列表共用）。
+// 2026-07-06 加入：替代 searchBiliTopics/listBiliSeries 各自内联的 &http.Client{} 裸调，
+// 统一补 Referer/Origin（原仅 UA + Accept/Cookie，无 Referer/Origin，风控收紧即挂）。
+// cookie 为空时跳过 Cookie 头（适用于无账号也能调的端点，如 topic 搜索）。
+// 失败（建请求/网络错误）返回 error，由调用方决定如何向用户反馈；HTTP 非 2xx 也返回 error。
+func (s *Server) biliCreativeGet(ctx context.Context, endpoint, cookieHeader string, target any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("User-Agent", biliutil.BiliUserAgent)
+	req.Header.Set("Referer", biliCreativeReferer)
+	req.Header.Set("Origin", biliCreativeReferer)
+	req.Header.Set("Accept", "application/json")
+	if cookieHeader != "" {
+		req.Header.Set("Cookie", cookieHeader)
+	}
+	resp, err := s.biliCreativeClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("bili request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("bili http status %d", resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
+		return fmt.Errorf("parse bili response: %w", err)
+	}
+	return nil
+}
+
 func (s *Server) searchBiliTopics(ctx *gin.Context) {
 	keywords := ctx.Query("keywords")
 	if keywords == "" || len([]rune(keywords)) < 2 {
@@ -3995,21 +4036,8 @@ func (s *Server) searchBiliTopics(ctx *gin.Context) {
 		url.QueryEscape(keywords), pageSize, pageNum,
 	)
 
-	req, err := http.NewRequestWithContext(ctx.Request.Context(), http.MethodGet, biliURL, nil)
-	if err != nil {
-		writeError(ctx, fmt.Errorf("create request: %w", err))
-		return
-	}
-	req.Header.Set("User-Agent", biliutil.BiliUserAgent)
-	req.Header.Set("Accept", "application/json")
-
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		ctx.JSON(http.StatusBadGateway, gin.H{"error": "B站话题搜索请求失败"})
-		return
-	}
-	defer resp.Body.Close()
+	// topic 端点无账号也能用，但补 cookie 更稳；失败则不带 cookie 继续。
+	cookieHeader, _ := s.defaultPublishCookieHeader(ctx.Request.Context())
 
 	var result struct {
 		Code int `json:"code"`
@@ -4021,8 +4049,9 @@ func (s *Server) searchBiliTopics(ctx *gin.Context) {
 			} `json:"topic_items"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		ctx.JSON(http.StatusBadGateway, gin.H{"error": "解析B站响应失败"})
+	if err := s.biliCreativeGet(ctx.Request.Context(), biliURL, cookieHeader, &result); err != nil {
+		slog.Warn("search bili topics failed", "error", err)
+		ctx.JSON(http.StatusBadGateway, gin.H{"error": "B站话题搜索请求失败"})
 		return
 	}
 
@@ -4035,6 +4064,24 @@ func (s *Server) searchBiliTopics(ctx *gin.Context) {
 		})
 	}
 	ctx.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+// defaultPublishCookieHeader 解析默认发布账号的 Cookie header（searchBiliTopics/listBiliSeries 共用）。
+// 未配置账号 / 无默认发布账号 / Cookie 加载失败时返回 "" + error，调用方降级为不带 cookie 继续（topic 端点）
+// 或向用户反馈（listBiliSeries 由其自己做更精确的错误提示）。
+func (s *Server) defaultPublishCookieHeader(ctx context.Context) (string, error) {
+	if s.cookieAccounts == nil {
+		return "", fmt.Errorf("cookie accounts not configured")
+	}
+	account, err := s.cookieAccounts.GetDefaultPublish(ctx)
+	if err != nil || account == nil {
+		return "", fmt.Errorf("no default publish account: %w", err)
+	}
+	cookie, err := biliutil.LoadCookie(account.CookieFile)
+	if err != nil {
+		return "", fmt.Errorf("load cookie: %w", err)
+	}
+	return cookie.CookieHeader(), nil
 }
 
 func (s *Server) listBiliSeries(ctx *gin.Context) {
@@ -4065,22 +4112,6 @@ func (s *Server) listBiliSeries(ctx *gin.Context) {
 	}
 
 	biliURL := "https://api.bilibili.com/x/article/creative/list/all"
-	req, err := http.NewRequestWithContext(ctx.Request.Context(), http.MethodGet, biliURL, nil)
-	if err != nil {
-		writeError(ctx, fmt.Errorf("create request: %w", err))
-		return
-	}
-	req.Header.Set("User-Agent", biliutil.BiliUserAgent)
-	req.Header.Set("Cookie", cookie.CookieHeader())
-
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		ctx.JSON(http.StatusBadGateway, gin.H{"error": "B站文集列表请求失败"})
-		return
-	}
-	defer resp.Body.Close()
-
 	var result struct {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
@@ -4092,8 +4123,11 @@ func (s *Server) listBiliSeries(ctx *gin.Context) {
 			} `json:"lists"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		ctx.JSON(http.StatusBadGateway, gin.H{"error": "解析B站响应失败"})
+	// 2026-07-06 改用共享 biliCreativeGet（补 Referer/Origin 风控对抗头）；
+	// 业务码（-101 登录过期 / 非 0 错误）仍由本函数判断，helper 只管 HTTP + 解码。
+	if err := s.biliCreativeGet(ctx.Request.Context(), biliURL, cookie.CookieHeader(), &result); err != nil {
+		slog.Warn("list bili series failed", "error", err)
+		ctx.JSON(http.StatusBadGateway, gin.H{"error": "B站文集列表请求失败"})
 		return
 	}
 	if result.Code == -101 {
