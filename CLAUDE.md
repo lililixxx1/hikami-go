@@ -126,20 +126,20 @@ graph TD
 | 路径 | 职责 | 测试用例 | 文档 |
 |------|------|----------|------|
 | `cmd/hikami` | CLI 入口、服务启动、自动触发链（normalize→asr→recap→publish→archive 的 SetOnSuccess 回调）、归档注入与旁路注册、初始化 | 0 | [CLAUDE.md](./cmd/hikami/CLAUDE.md) |
-| `internal/config` | YAML 配置加载、校验、默认值、DownloaderConfig、ASRS3Config、ArchiveConfig、Effective\* 默认方法、AdminToken/loopback 校验 | 19 | [CLAUDE.md](./internal/config/CLAUDE.md) |
+| `internal/config` | YAML 配置加载、校验、默认值、DownloaderConfig、ASRS3Config、ArchiveConfig、Effective\* 默认方法、AdminToken/loopback 校验、ApplyOverrides（runtimeconfig 持久化覆盖） | 31 | [CLAUDE.md](./internal/config/CLAUDE.md) |
 | `internal/db` | SQLite 打开与 schema 迁移 (v33，含 runtime_settings/archived_at/auto_recap)、DB 文件权限 0600 | 9 | [CLAUDE.md](./internal/db/CLAUDE.md) |
 | `internal/fsutil` | 原子文件写入辅助（WriteFileAtomic/WriteJSONAtomic） | 4 | [CLAUDE.md](./internal/fsutil/CLAUDE.md) |
 | `internal/aiprovider` | AI Provider 共享返回类型 | 5 | [CLAUDE.md](./internal/aiprovider/CLAUDE.md) |
 | `internal/runtime` | 外部工具探测、FFmpeg 自动解析/下载/嵌入、健康检查、磁盘/Cookie 检查 | 26 | [CLAUDE.md](./internal/runtime/CLAUDE.md) |
-| `internal/biliutil` | B 站 Cookie、登录、WBI、UA、加密工具、视频链接解析、view/playurl/弹幕 XML/seg.so API 客户端、buvid 设备指纹（-352 风控对抗共享层） | 80 | [CLAUDE.md](./internal/biliutil/CLAUDE.md) |
+| `internal/biliutil` | B 站 Cookie、登录、WBI、UA、加密工具、视频链接解析、view/playurl/弹幕 XML/seg.so API 客户端、buvid 设备指纹（-352 风控对抗共享层：GetBuvids 24h 缓存 + Invalidate 失效重试 + InjectBuvids replace 注入）、封面下载/回放标题清洗 | 84 | [CLAUDE.md](./internal/biliutil/CLAUDE.md) |
 | `internal/channel` | 主播 CRUD、识别（-352 风控对抗：buvid 注入 + WBI 签名）、自动化配置（auto_record/auto_asr/auto_publish/auto_recap 三态）、per-channel 发布配置 | 62 | [CLAUDE.md](./internal/channel/CLAUDE.md) |
 | `internal/session` | 场次 CRUD、去重、统计（GetStats/GetDashboardStats）、失败重试、local_available/archived_at 标记；CreateLive 同槽冲突返回 ErrAlreadyLive（不再复用/重置） | 39 | [CLAUDE.md](./internal/session/CLAUDE.md) |
 | `internal/state` | 场次聚合状态机与失败恢复、ApplyWithPublishTarget（published 为终态，无 publish_reverted 出口） | 11 | [CLAUDE.md](./internal/state/CLAUDE.md) |
-| `internal/worker` | 任务池、任务存储、Hub 广播、重试取消、Register+WithBypassFailState（状态旁路任务元数据）、任务实例级 BypassFailState（重新生成等非推进型任务失败不降级主状态）、live_record 进程接管回调 | 38 | [CLAUDE.md](./internal/worker/CLAUDE.md) |
+| `internal/worker` | 任务池、任务存储、Hub 广播、重试取消、Register+WithBypassFailState（状态旁路任务元数据）、任务实例级 BypassFailState（重新生成等非推进型任务失败不降级主状态）、live_record 进程接管回调、recoverRunning 两阶段（running 类型分发 + pending 孤儿重入队解除 scheduler 死锁） | 41 | [CLAUDE.md](./internal/worker/CLAUDE.md) |
 | `internal/handler` | Gin REST API、WebSocket、引导、诊断、配置导出/导入（6 段配置+secrets 事务化持久化到 runtime_settings）、回顾模型列表、DashScope/ASR S3/archive 配置端点、stats/dashboard（单连接查询，已修复自死锁）、recap/regenerate 重新生成端点、运行时状态代际校验、admin token 认证中间件 | 66 | [CLAUDE.md](./internal/handler/CLAUDE.md) |
 | `internal/discover` | B 站回放发现（两步式预览勾选下载：PreviewAll 预览→Execute 执行；保留一步式 DiscoverAll 作回退） | 10 | [CLAUDE.md](./internal/discover/CLAUDE.md) |
 | `internal/download` | 回放音频下载（native 单 P/多 P + yt-dlp 双后端，concat list 路径转义）、单链接触发、CookieAccountStore cookie 解析 | 48 | [CLAUDE.md](./internal/download/CLAUDE.md) |
-| `internal/live_record` | 直播音频与弹幕录制、ffmpeg 进程接管（Adopt） | 36 | [CLAUDE.md](./internal/live_record/CLAUDE.md) |
+| `internal/live_record` | 直播音频与弹幕录制、ffmpeg 进程接管（Adopt）、-352 频道级阶梯冷却（5/10/20m，CheckLive RefreshKeys+Invalidate 重试 + ErrRiskControl352 哨兵 + jitter）、重连按错误类型分支（selectStream→maxReconnect / CDN 瞬时→cdnRetryBudget） | 72 | [CLAUDE.md](./internal/live_record/CLAUDE.md) |
 | `internal/importer` | 手动 multipart 导入 | 15 | [CLAUDE.md](./internal/importer/CLAUDE.md) |
 | `internal/normalize` | 媒体标准化、弹幕解析（JSONL/XML/多 P 合并）、元数据生成 | 68 | [CLAUDE.md](./internal/normalize/CLAUDE.md) |
 | `internal/asr` | DashScope ASR、S3 存储后端、本地临时音频、公网 IP 检测、弹幕校正 | 63 | [CLAUDE.md](./internal/asr/CLAUDE.md) |
@@ -246,6 +246,13 @@ systemctl status hikami      # 状态
 优先运行与改动相关的最小测试；跨模块、迁移、API 或前端类型变更后运行 `make test`，前端变更运行 `cd web && npm run type-check` 或 `make web-build`。
 
 ## 变更记录 (Changelog)
+
+### 2026-07-06 · 录播稳定性 9 个异常修复
+
+- **异常 #1~#8**（`3ae2435`）：录播稳定性专项 8 个异常。① **重启后孤儿 pending 任务死锁**：`worker.recoverRunning` 阶段二恢复 pending 任务（只入队不递增 attempt，超限 MarkFailed + syncSessionState 同步 session 状态），解除 `discovered → ActiveLiveForChannel 误判 active → scheduler 死锁跳过该主播`的死锁——根因是重启后内存队列清空但 DB pending 任务不会被 `loop()` 消费。② `CheckAndStartAll.checkOne` 对 CheckLive/Start 失败打 WARN 不再静默吞。③ `BilibiliClient` 注入共享 `BuvidStore` + WBI 签名 + Referer/Origin，加固 CheckLive/GetStream 的 -352（降级容错）。④ **删除 `worker.live_record_num` 死配置项**：调度器从不读它，录制走共享 `worker.num` 池，`worker.num` 为唯一并发旋钮；viper 默认忽略未知字段，旧配置含此字段被静默忽略（新增 `TestLoadConfigBackcompatLiveRecordNumRemoved` 验证）。⑤ **重连循环重构**：按 err 类型分支——selectStream 失败（含 CheckLive 判定下播）走 `maxReconnect`，CDN 瞬时错误（404/connection reset）走独立 `cdnRetryBudget=5` + 指数退避绕过 maxReconnect；两类重试均不调 CheckLive 避免 `live:false` 抖动误判为下播而放弃整段录制。⑥ 健康检测 `activeRecord` 加 `CurrentOutputPath`，切换分段时 `updateCurrentOutputPath` 重置 `fileSizes`/`failCount` 基线。⑦ `globLatestAudio` 兜底 Adopt 重启接管时恢复丢失的 CurrentOutputPath。⑧ checkOne 经 `ensureStartAllowed`+`startWithInfo` 透传已得 info，省掉 Start 路径的二次 `getInfoByRoom`。
+- **异常 #9**（`f13c854`）：**scheduler 批量 CheckLive 触发 -352 频率风控**。B 站 -352 实为周期性脉冲（实测 8~9min/波），修复前调度器雪崩式硬打致 100% 持续失败。① **CheckLive 单次重试**：把 buvid 注入+WBI 签名+请求封进 `query()` 闭包，首请求 -352 时按 **baseCookie**（BuvidStore 缓存 key + signer 选择 key，注入前的原始 cookie）`RefreshKeys` 刷 WBI 密钥 + `buvids.Invalidate(baseCookie)` 失效指纹缓存后重试一次，仍 -352 返回新哨兵 `ErrRiskControl352`（`live_record/types.go`）。WBI 密钥源自账号身份（nav API）不随 buvid 变，故 signer 按 baseCookie 选（codex 审核要点）。② **频道级阶梯冷却**：`cooldown352Until`/`cooldownStep`（5/10/20m），`checkOne`/`Check` 用 `errors.Is(err, ErrRiskControl352)` 识别哨兵触发冷却，冷却期跳过该频道的 CheckLive，CheckLive 成功后重置 step。③ **jitter**：CheckLive 前 0~800ms 随机抖动（放在 activeFor/冷却早退之后、CheckLive 之前），摊开并发突发。④ 新增配套 `biliutil.BuvidStore.Invalidate`（+4 测试）。
+- **部署验证**（61min 实战，3 路录制）：CheckLive 成功率 95%（3470/3645），脉冲期冷却兜住、脉冲间即恢复，0 ERROR；3 路录制健康。调研文档：`docs/archive/录播稳定性/`（测试计划/结果/修复计划/异常9修复方案/测试结果）。
+- **文档**：同步 live_record/biliutil/worker/config 的 CLAUDE.md + 根 CLAUDE.md/AGENTS.md changelog。**测试计数**：live_record 36→72、biliutil 80→84（+Invalidate 4、+cover 2/replay_title 2 此前漏登）、worker 38→41、config 19→31。
 
 ### 2026-07-05 · 修复识别主播 -352 风控 + buvid 风控对抗下沉共享
 
