@@ -369,7 +369,7 @@ func (m *Manager) CheckAndStartAll(ctx context.Context) ([]Status, error) {
 	return statuses, nil
 }
 
-// cooldownRiskUntil 返回该频道的 -352 冷却到期时间。第二返回值 true 表示仍在冷却期(应跳过 CheckLive)。
+// cooldownRiskUntil 返回该频道的风控冷却到期时间(-352 / HTTP 412/403/429 共用)。第二返回值 true 表示仍在冷却期(应跳过 CheckLive)。
 func (m *Manager) cooldownRiskUntil(channelID string) (time.Time, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -397,7 +397,7 @@ func (m *Manager) applyCooldownRiskControl(channelID string) time.Time {
 	return until
 }
 
-// resetCooldownRiskControl 清除频道的 -352 冷却和阶梯计数(CheckLive 成功后调用,避免跨成功探测累积)。
+// resetCooldownRiskControl 清除频道的风控冷却和阶梯计数(CheckLive 成功后调用,避免跨成功探测累积)。
 func (m *Manager) resetCooldownRiskControl(channelID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -434,7 +434,7 @@ func (m *Manager) Check(ctx context.Context, channelID string) (Status, error) {
 	if item.LiveRoomID <= 0 || !item.Enabled {
 		return Status{}, ErrChannelNotRecordable
 	}
-	// 异常 #9 第2层:Check(被 /api/live/status 30s 轮询)也尊重 -352 冷却,
+	// 异常 #9 第2层 / P2:Check(被 /api/live/status 30s 轮询)也尊重风控冷却(-352 / HTTP 412/403/429),
 	// 否则 Home 页轮询绕过冷却继续打被风控的端点(codex 实际代码审核中等项)。
 	if until, cooled := m.cooldownRiskUntil(channelID); cooled {
 		return Status{
@@ -996,15 +996,24 @@ reconnect:
 
 	// 异常 #11:健康检测可能在循环外(另一个 goroutine)通过 markAbort 取消了 task。
 	// 读 healthStats.abortReason(**不 clearActive**,active 仍由 defer 清理),据此决定收尾路径:
-	//   - ErrZeroByteStalled(0 字节僵尸):走失败路径,不送 normalize;
-	//   - ErrRecordingNotGrowing(文件曾增长后停滞):有已录音频则覆盖 err 走成功收尾保留;
+	//   - ErrZeroByteStalled / ErrRecordingNotGrowing + 有已录分段(hasRecordedAudio):
+	//     覆盖 err=nil 走成功收尾保留前序有效音频(codex impl 复审 Important:0 字节 abort
+	//     可能发生在重连切到新分段后,前序分段仍有效,不应无条件丢弃);
+	//   - 任一 abort 哨兵 + 无有效分段:走失败路径(0 字节僵尸无音频,不送 normalize 污染回顾);
 	//   - nil:未 abort,按循环原本的 err 走。
 	if abortReason := m.peekAbortReason(task.ChannelID); abortReason != nil {
-		if errors.Is(abortReason, ErrZeroByteStalled) {
-			return fmt.Errorf("%w: channel_id=%s session_id=%s", ErrZeroByteStalled, task.ChannelID, task.SessionID)
-		}
-		if errors.Is(abortReason, ErrRecordingNotGrowing) && hasRecordedAudio(audioSegments) {
+		if hasRecordedAudio(audioSegments) {
+			// 有前序有效分段:无论 ZeroByteStalled 还是 NotGrowing,保留音频走成功收尾。
+			slog.Info("health abort with recorded audio preserved, finishing success",
+				"channel_id", task.ChannelID, "room_id", payload.RoomID,
+				"abort_reason", abortReason, "segments", len(audioSegments))
 			err = nil
+		} else {
+			// 无有效分段:走失败路径。abortReason 区分错误类型(0 字节 / 不增长)。
+			if errors.Is(abortReason, ErrZeroByteStalled) {
+				return fmt.Errorf("%w: channel_id=%s session_id=%s", ErrZeroByteStalled, task.ChannelID, task.SessionID)
+			}
+			err = abortReason
 		}
 	}
 

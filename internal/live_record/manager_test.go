@@ -1717,7 +1717,8 @@ func TestHandleTaskZeroByteStallReturnsError(t *testing.T) {
 // TestCheckOneChannelHealthNotGrowingAborts (异常 #11,检测端):
 // 文件曾增长到正大小后连续停滞(failCount>=3)→ 标记 ErrRecordingNotGrowing + Cancel。
 // (HandleTask 端"有已录音频→成功保留"由 peekAbortReason 处理,此处只测健康检测 abort 触发;
-//  收尾路径的覆盖见 TestHandleTaskProbeErrorBudgetExhaustedWithAudioFinishesSuccess 的成功收尾语义。)
+//
+//	收尾路径的覆盖见 TestHandleTaskProbeErrorBudgetExhaustedWithAudioFinishesSuccess 的成功收尾语义。)
 func TestCheckOneChannelHealthNotGrowingAborts(t *testing.T) {
 	manager, _, pool := newTestManager(t)
 	defer pool.Stop()
@@ -1776,6 +1777,122 @@ func (r *hangingZeroByteRecorder) Record(ctx context.Context, stream StreamInfo,
 	// 挂起直到健康检测 abort 触发 Cancel。
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+// recordValidThenHangRecorder 首次 Record 写有效音频(>0 字节)并返回 nil(触发 clean-EOF→decideAfterRecord
+// 重连路径),第二次(重连分段)创建文件后挂起直到 ctx 取消(模拟重连分段拿不到流)。
+// 用于验证"前序分段有效 + 当前分段 0 字节卡死 → 健康检测 abort → HandleTask 保留前序音频"。
+type recordValidThenHangRecorder struct {
+	calls   int
+	outputs []string
+}
+
+func (r *recordValidThenHangRecorder) Record(ctx context.Context, stream StreamInfo, outputPath string) error {
+	r.calls++
+	r.outputs = append(r.outputs, outputPath)
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return err
+	}
+	if r.calls == 1 {
+		// 首段:写有效音频(100 字节),返回 nil(clean EOF 触发重连)。
+		return os.WriteFile(outputPath, []byte("valid-audio-data-100-bytes-padding-padding-padding-pa"), 0o644)
+	}
+	// 重连分段:创建 0 字节文件后挂起(模拟拿不到流)。
+	if err := os.WriteFile(outputPath, []byte{}, 0o644); err != nil {
+		return err
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// TestHandleTaskZeroByteStallWithPriorAudioPreservesIt (异常 #11, codex impl 复审 Important 回归):
+// 验证 hasRecordedAudio 保护:首段录到有效音频后,若健康检测因后续 0 字节分段触发 abort,
+// HandleTask 走**成功**收尾保留前序分段,不返回 ErrZeroByteStalled。
+// 实现方式:首段写有效音频并返回错(进重连),重连段 0 字节挂起;健康检测在重连段上累计
+// zeroSizeStreak 达阈值 abort。用较长 health interval(200ms)+ reconnectDelay(1)确保重连先发生。
+func TestHandleTaskZeroByteStallWithPriorAudioPreservesIt(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = true
+	manager.cfg.LiveRecord.MaxReconnect = 3
+	manager.cfg.LiveRecord.ReconnectDelay = 1
+	// preflight live=true 放行;首段后 clean-EOF→decideAfterRecord 探测仍 live=true→重连;
+	// 重连段挂起期间不再 probe(因 selectFailedPending/CDN 路径不调 CheckLive,而重连段返回 ctx 错)。
+	manager.client = &statefulLiveClient{tb: t, lives: []bool{true, true}}
+	recorder := &recordValidThenHangRecorder{}
+	manager.audio = recorder
+	stubFFmpegConcat(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.StartHealthCheck(ctx, 200*time.Millisecond)
+	defer manager.StopHealthCheck()
+
+	running := mustCreateRunningTask(t, pool)
+	err := manager.HandleTask(context.Background(), running, noopReporter{})
+	// 关键断言:有前序有效音频 → 不返回 ErrZeroByteStalled,走成功收尾。
+	if err != nil {
+		t.Fatalf("HandleTask err = %v, want nil (prior valid segment preserved)", err)
+	}
+	// 成功收尾应产出 audio.m4a(首段内容)。
+	rawDir := filepath.Join(manager.cfg.OutputRoot, "huize", "live_20260427_120000", "raw")
+	audioPath := filepath.Join(rawDir, "audio.m4a")
+	info, statErr := os.Stat(audioPath)
+	if statErr != nil {
+		t.Fatalf("expected preserved audio at %s: %v", audioPath, statErr)
+	}
+	if info.Size() == 0 {
+		t.Errorf("preserved audio is 0 bytes, want >0 (prior segment content)")
+	}
+}
+
+// recordHundredBytesThenHangRecorder 写 100 字节后挂起(文件停在 100 字节 → failCount 累积到 3 → NotGrowing)。
+type recordHundredBytesThenHangRecorder struct {
+	outputs []string
+}
+
+func (r *recordHundredBytesThenHangRecorder) Record(ctx context.Context, stream StreamInfo, outputPath string) error {
+	r.outputs = append(r.outputs, outputPath)
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(outputPath, make([]byte, 100), 0o644); err != nil {
+		return err
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// TestHandleTaskNotGrowingWithAudioPreservesIt (异常 #11, codex impl 复审 Minor 测试缺口):
+// 文件曾增长到 100 字节后连续停滞 → 健康检测 ErrRecordingNotGrowing abort → HandleTask 走成功收尾保留。
+// 覆盖 manager.go peekAbortReason 处理中"有已录音频 → err=nil 成功收尾"分支。
+func TestHandleTaskNotGrowingWithAudioPreservesIt(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = true
+	manager.cfg.LiveRecord.MaxReconnect = 1
+	manager.cfg.LiveRecord.ReconnectDelay = 1
+	manager.client = &statefulLiveClient{tb: t, lives: []bool{true, true, true}}
+	recorder := &recordHundredBytesThenHangRecorder{}
+	manager.audio = recorder
+	stubFFmpegConcat(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.StartHealthCheck(ctx, 100*time.Millisecond)
+	defer manager.StopHealthCheck()
+
+	running := mustCreateRunningTask(t, pool)
+	err := manager.HandleTask(context.Background(), running, noopReporter{})
+	// 有已录音频(100 字节)→ NotGrowing abort → 成功收尾保留。
+	if err != nil {
+		t.Fatalf("HandleTask err = %v, want nil (NotGrowing with audio → preserve)", err)
+	}
+	rawDir := filepath.Join(manager.cfg.OutputRoot, "huize", "live_20260427_120000", "raw")
+	audioPath := filepath.Join(rawDir, "audio.m4a")
+	if info, statErr := os.Stat(audioPath); statErr != nil || info.Size() == 0 {
+		t.Errorf("expected non-empty preserved audio at %s (statErr=%v)", audioPath, statErr)
+	}
 }
 
 // TestGlobLatestAudio 验证异常 #4 兜底:Adopt 时用 glob 找最新音频文件。
