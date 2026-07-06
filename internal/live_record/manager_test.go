@@ -1714,10 +1714,11 @@ func TestHandleTaskZeroByteStallReturnsError(t *testing.T) {
 	}
 }
 
-// TestCheckOneChannelHealthNotGrowingAbortsThenHandleTaskPreservesAudio (异常 #11):
-// 文件曾增长到正大小后连续 3 轮不增长 → failCount=3 → 标记 ErrRecordingNotGrowing。
-// HandleTask 端:有已录音频 → peekAbortReason 覆盖 err=nil 走成功收尾保留。
-func TestCheckOneChannelHealthNotGrowingAbortsThenHandleTaskPreservesAudio(t *testing.T) {
+// TestCheckOneChannelHealthNotGrowingAborts (异常 #11,检测端):
+// 文件曾增长到正大小后连续停滞(failCount>=3)→ 标记 ErrRecordingNotGrowing + Cancel。
+// (HandleTask 端"有已录音频→成功保留"由 peekAbortReason 处理,此处只测健康检测 abort 触发;
+//  收尾路径的覆盖见 TestHandleTaskProbeErrorBudgetExhaustedWithAudioFinishesSuccess 的成功收尾语义。)
+func TestCheckOneChannelHealthNotGrowingAborts(t *testing.T) {
 	manager, _, pool := newTestManager(t)
 	defer pool.Stop()
 	tmpDir := t.TempDir()
