@@ -122,6 +122,20 @@ func (s *BuvidStore) GetBuvids(ctx context.Context, cookieHeader string) (buvid3
 	return result.Data.B3, result.Data.B4, nil
 }
 
+// Invalidate 删除指定 cookie 维度的 buvid3/buvid4 缓存条目，下次 GetBuvids 会重新拉取 finger/spi。
+// 用于 -352 风控重试前强制刷新指纹（与 RefreshKeys 配合，确保重试用新 buvid + 新签名）。
+// key 必须是传给 GetBuvids 的**原始** cookieHeader（injectAntiRisk 注入前的 baseCookie），
+// 否则会删错 key（注入后的 cookie 含 buvid3/buvid4，与缓存 key 不一致）。
+// nil-safe：nil 接收者直接返回，不打网络、不动 map。
+func (s *BuvidStore) Invalidate(cookieHeader string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	delete(s.cache, cookieHeader)
+	s.mu.Unlock()
+}
+
 // InjectBuvids 把 buvid3/buvid4 注入 cookie 头，采用 **replace 语义**：
 // 先剔除 cookieHeader 里已存在的 buvid3=/buvid4= 段，再追加新值。
 // 这样无论源 cookie 文件是否带旧指纹，最终头里同名 key 只剩新值，

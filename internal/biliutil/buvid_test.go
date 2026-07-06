@@ -6,21 +6,18 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
 
 // spiStub 起一个 httptest server 模拟 /x/frontend/finger/spi，返回给定 buvid3/buvid4。
-// 同时统计请求数（用于验证缓存命中），并用 mutex 保护（并发场景）。
+// 同时统计请求数（用于验证缓存命中），用 atomic 保证并发安全。
 func spiStub(t *testing.T, b3, b4 string, fail bool) (*httptest.Server, *int32) {
 	t.Helper()
 	var count int32
-	var mu sync.Mutex
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		count++
-		mu.Unlock()
+		atomic.AddInt32(&count, 1)
 		if fail {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -168,12 +165,85 @@ func TestInjectBuvids_ReplaceSemantics(t *testing.T) {
 	}
 }
 
-// readCount 读 spiStub 的请求计数（mutex 保护，spiStub 内部自增）。
+func TestBuvidStoreInvalidate_NilSafe(t *testing.T) {
+	// nil 接收者必须不 panic
+	var s *BuvidStore
+	s.Invalidate("SESSDATA=abc") // 不应 panic
+}
+
+func TestBuvidStoreInvalidate_DeletesByKeyAndForcesRefetch(t *testing.T) {
+	srv, count := spiStub(t, "fake3", "fake4", false)
+	s := NewBuvidStoreWithOptions(nil, srv.URL)
+	const cookie = "SESSDATA=abc"
+
+	// 第一次：拉取并缓存
+	if _, _, err := s.GetBuvids(context.Background(), cookie); err != nil {
+		t.Fatalf("first GetBuvids: %v", err)
+	}
+	if got := readCount(count); got != 1 {
+		t.Fatalf("after first fetch, count = %d, want 1", got)
+	}
+
+	// 第二次同 cookie：命中缓存，不打远程
+	if _, _, err := s.GetBuvids(context.Background(), cookie); err != nil {
+		t.Fatalf("second GetBuvids: %v", err)
+	}
+	if got := readCount(count); got != 1 {
+		t.Fatalf("after cached fetch, count = %d, want 1 (cache hit)", got)
+	}
+
+	// Invalidate 按 baseCookie 删条目
+	s.Invalidate(cookie)
+
+	// 第三次：缓存已失效，重新拉取
+	if _, _, err := s.GetBuvids(context.Background(), cookie); err != nil {
+		t.Fatalf("third GetBuvids after Invalidate: %v", err)
+	}
+	if got := readCount(count); got != 2 {
+		t.Fatalf("after Invalidate + refetch, count = %d, want 2", got)
+	}
+}
+
+func TestBuvidStoreInvalidate_OnlyAffectsSpecifiedCookie(t *testing.T) {
+	srv, count := spiStub(t, "fake3", "fake4", false)
+	s := NewBuvidStoreWithOptions(nil, srv.URL)
+
+	// 两个 cookie 各拉一次
+	if _, _, err := s.GetBuvids(context.Background(), "SESSDATA=one"); err != nil {
+		t.Fatalf("GetBuvids one: %v", err)
+	}
+	if _, _, err := s.GetBuvids(context.Background(), "SESSDATA=two"); err != nil {
+		t.Fatalf("GetBuvids two: %v", err)
+	}
+	if got := readCount(count); got != 2 {
+		t.Fatalf("after two distinct cookies, count = %d, want 2", got)
+	}
+
+	// 只 Invalidate one
+	s.Invalidate("SESSDATA=one")
+
+	// one：重新拉取
+	if _, _, err := s.GetBuvids(context.Background(), "SESSDATA=one"); err != nil {
+		t.Fatalf("GetBuvids one after Invalidate: %v", err)
+	}
+	// two：仍命中缓存
+	if _, _, err := s.GetBuvids(context.Background(), "SESSDATA=two"); err != nil {
+		t.Fatalf("GetBuvids two after Invalidate: %v", err)
+	}
+	if got := readCount(count); got != 3 {
+		t.Fatalf("after selective Invalidate, count = %d, want 3 (only one refetched)", got)
+	}
+}
+
+func TestBuvidStoreInvalidate_MissingKeyIsNoop(t *testing.T) {
+	s := NewBuvidStore()
+	// 不存在的 key 不应 panic
+	s.Invalidate("never-cached")
+}
+
+// readCount 读 spiStub 的请求计数（atomic 读取，spiStub 内部 atomic 自增）。
 func readCount(p *int32) int32 {
-	mu := &sync.Mutex{}
-	mu.Lock()
-	defer mu.Unlock()
-	return *p
+	return atomic.LoadInt32(p)
 }
 
 // 保证 cache TTL 常量存在（编译期约束）

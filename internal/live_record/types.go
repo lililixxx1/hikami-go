@@ -2,10 +2,16 @@ package live_record
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
 const TaskType = "live_record"
+
+// ErrRiskControl352 表示 B 站返回 -352 风控(且刷新密钥/buvid 后重试一次仍 -352)。
+// checkOne 用 errors.Is 识别它,触发频道级冷却(阶梯 5/10/20m),避免调度器继续高频打被风控的端点。
+// 非 -352 的错误(网络抖动、其它业务码)不会包装成本错误,不会触发冷却。
+var ErrRiskControl352 = errors.New("bilibili -352 risk control")
 
 type Status struct {
 	ChannelID string    `json:"channel_id"`

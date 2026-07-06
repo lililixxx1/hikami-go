@@ -100,14 +100,59 @@ func (c *BilibiliClient) signURL(endpoint, cookieHeader string) string {
 }
 
 func (c *BilibiliClient) CheckLive(ctx context.Context, roomID int64, cookieHeader string) (LiveInfo, error) {
-	cookieHeader = c.injectAntiRisk(ctx, cookieHeader)
-	var response roomInfoResponse
-	endpoint := c.baseURL + "/xlive/web-room/v1/index/getInfoByRoom?room_id=" + url.QueryEscape(strconv.FormatInt(roomID, 10))
-	endpoint = c.signURL(endpoint, cookieHeader)
-	if err := c.getJSON(ctx, endpoint, &response, cookieHeader, roomID); err != nil {
+	// baseCookie 是原始入参,同时是 BuvidStore 缓存 key 和 signer 选择 key。
+	// injectAntiRisk 会向 cookie 注入 buvid3/buvid4(改 Cookie 头),但 WBI 签名密钥源自
+	// B站账号身份(nav API)不随 buvid 变,故 signer 按 baseCookie 选(账号维度)。
+	// 这样 -352 重试时 RefreshKeys 刷的就是 query() 实际签名用的 signer(codex 审核要点)。
+	baseCookie := cookieHeader
+
+	// query 每次都从 baseCookie 重新注入 buvid + 重新签名 + 重新请求,
+	// 确保 -352 重试(已 Invalidate(baseCookie) + RefreshKeys)用新 buvid + 新签名。
+	query := func() (roomInfoResponse, error) {
+		injected := c.injectAntiRisk(ctx, baseCookie)
+		endpoint := c.baseURL + "/xlive/web-room/v1/index/getInfoByRoom?room_id=" + url.QueryEscape(strconv.FormatInt(roomID, 10))
+		// signer 按 baseCookie 选(v3 修正:不再按 injected),WBI 密钥随账号不随 buvid
+		if signed, err := c.signerForCookie(baseCookie).SignURL(endpoint); err == nil {
+			endpoint = signed
+		} else {
+			slog.Warn("live_record: wbi sign failed, continuing unsigned", "error", err)
+		}
+		var resp roomInfoResponse
+		if err := c.getJSON(ctx, endpoint, &resp, injected, roomID); err != nil {
+			return roomInfoResponse{}, err
+		}
+		return resp, nil
+	}
+
+	response, err := query()
+	if err != nil {
 		return LiveInfo{}, err
 	}
+
+	// -352 单次重试(对齐 danmaku.go:326 范式):刷新 WBI 密钥 + 失效 buvid 缓存后重试一次。
+	if response.Code == -352 {
+		slog.Warn("checklive risk control -352, refreshing keys/buvid and retrying once",
+			"channel_id", ctx.Value(liveRecordChannelIDKey), "room_id", roomID)
+		// 局部断言访问 RefreshKeys(不扩大公共 URLSigner 接口,避免影响 playurl/publisher/channel)
+		if rs, ok := c.signerForCookie(baseCookie).(interface{ RefreshKeys() error }); ok {
+			if rerr := rs.RefreshKeys(); rerr != nil {
+				slog.Warn("checklive RefreshKeys failed, retrying with existing keys", "error", rerr)
+			}
+		}
+		if c.buvids != nil {
+			c.buvids.Invalidate(baseCookie)
+		}
+		response, err = query()
+		if err != nil {
+			return LiveInfo{}, err
+		}
+	}
+
 	if response.Code != 0 {
+		if response.Code == -352 {
+			// 重试仍 -352:返回可识别哨兵,checkOne 据此触发频道级冷却
+			return LiveInfo{}, fmt.Errorf("%w: room_id=%d", ErrRiskControl352, roomID)
+		}
 		return LiveInfo{}, fmt.Errorf("bilibili room info error: code=%d message=%s", response.Code, response.Message)
 	}
 

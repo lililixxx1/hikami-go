@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"net/url"
 	"os"
 	"os/exec"
@@ -74,6 +75,11 @@ type Manager struct {
 	fileSizes    map[string]int64 // channelID -> last known file size
 	failCount    map[string]int   // channelID -> consecutive health check fail count
 	healthCancel context.CancelFunc
+
+	// 异常 #9:-352 频率风控的频道级冷却。last352Cooldown[id]=冷却到期时间,
+	// cooldownStep[id]=连续 -352 次数(阶梯 5/10/20m)。冷却期内 checkOne 跳过该频道的 CheckLive。
+	last352Cooldown map[string]time.Time
+	cooldownStep    map[string]int
 }
 
 type liveRecordLogContextKey string
@@ -126,6 +132,8 @@ func NewManager(
 		active:             map[string]activeRecord{},
 		fileSizes:          map[string]int64{},
 		failCount:          map[string]int{},
+		last352Cooldown:    map[string]time.Time{},
+		cooldownStep:       map[string]int{},
 	}
 }
 
@@ -233,6 +241,7 @@ func (m *Manager) CheckAndStartAll(ctx context.Context) ([]Status, error) {
 	}
 
 	checkOne := func(item channel.Channel) Status {
+		// 录制中频道早退(codex 边界提示):不发 CheckLive,不进任何兜底,降频首要来源。
 		if active, ok := m.activeFor(item.ID); ok {
 			return Status{
 				ChannelID: item.ID,
@@ -242,11 +251,38 @@ func (m *Manager) CheckAndStartAll(ctx context.Context) ([]Status, error) {
 				TaskID:    active.TaskID,
 			}
 		}
+		// 异常 #9 第2层:-352 频道级冷却。冷却期内跳过 CheckLive,避免每 30s 全量重打被风控的端点。
+		if until, cooled := m.cooldown352Until(item.ID); cooled {
+			return Status{
+				ChannelID: item.ID,
+				RoomID:    item.LiveRoomID,
+				Error:     fmt.Sprintf("risk control cooldown until %s", until.Format(time.RFC3339)),
+			}
+		}
+		// 异常 #9 第3层:jitter(0~800ms)放在 activeFor/冷却 早退**之后**、CheckLive **之前**,
+		// 只对真正要发请求的频道生效(codex 实际代码审核低项)。用 select 支持取消,避免 Stop 时空等。
+		jitter := time.Duration(rand.Intn(800)) * time.Millisecond
+		select {
+		case <-time.After(jitter):
+		case <-ctx.Done():
+			return Status{ChannelID: item.ID, RoomID: item.LiveRoomID, Error: ctx.Err().Error()}
+		}
 		checkCtx := context.WithValue(ctx, liveRecordChannelIDKey, item.ID)
 		info, err := m.client.CheckLive(checkCtx, item.LiveRoomID, m.cookieHeaderForChannel(ctx, item.ID))
 		if err != nil {
-			// 异常 #8:CheckLive 失败(如 -352 风控、网络抖动)此前被 checkOne 静默吞掉,
-			// scheduler/main 只看顶层 error,丢失 Status.Error。这里打 WARN 让失败可观测。
+			// 异常 #9 第2层:识别 -352 哨兵,触发阶梯冷却(5/10/20m)。
+			// 非 -352 错误(网络抖动等)走原 #8 WARN 路径,不触发冷却(避免误冷却瞬时抖动)。
+			if errors.Is(err, ErrRiskControl352) {
+				until := m.applyCooldown352(item.ID)
+				slog.Warn("live check: -352 risk control, channel enters cooldown",
+					"channel_id", item.ID, "room_id", item.LiveRoomID, "cooldown_until", until)
+				return Status{
+					ChannelID: item.ID,
+					RoomID:    item.LiveRoomID,
+					Error:     fmt.Sprintf("risk control cooldown until %s", until.Format(time.RFC3339)),
+				}
+			}
+			// 异常 #8:CheckLive 失败(网络抖动等)此前被 checkOne 静默吞掉,这里打 WARN 让失败可观测。
 			slog.Warn("live check: CheckLive failed for channel",
 				"channel_id", item.ID, "room_id", item.LiveRoomID, "error", err)
 			return Status{
@@ -255,6 +291,8 @@ func (m *Manager) CheckAndStartAll(ctx context.Context) ([]Status, error) {
 				Error:     err.Error(),
 			}
 		}
+		// CheckLive 成功:重置该频道的冷却计数(避免跨成功探测累积)。
+		m.resetCooldown352(item.ID)
 		if !info.Live {
 			return Status{
 				ChannelID: item.ID,
@@ -273,13 +311,31 @@ func (m *Manager) CheckAndStartAll(ctx context.Context) ([]Status, error) {
 				StartedAt: info.StartedAt,
 			}
 		}
-		status, err := m.Start(ctx, item.ID)
-		if err != nil && errors.Is(err, ErrAlreadyRecording) {
-			status, err = m.Check(ctx, item.ID)
+		// 异常 #9 第1层:checkOne 已 CheckLive 拿到 info,直接走 startWithInfo 透传 info,
+		// 省掉原 m.Start 内部的二次 CheckLive。先复用 ensureStartAllowed 的全部防护(codex v2 #2)。
+		if gerr := m.ensureStartAllowed(ctx, item); gerr != nil {
+			if errors.Is(gerr, ErrAlreadyRecording) {
+				// 同期已开播(竞态)或同槽已有 session:走既有兜底,查当前状态返回。
+				status, cerr := m.Check(ctx, item.ID)
+				if cerr == nil {
+					return status
+				}
+			}
+			slog.Warn("live check: ensureStartAllowed failed for channel",
+				"channel_id", item.ID, "room_id", item.LiveRoomID, "live", info.Live, "error", gerr)
+			return Status{
+				ChannelID: item.ID,
+				RoomID:    item.LiveRoomID,
+				Live:      info.Live,
+				Title:     info.Title,
+				StartedAt: info.StartedAt,
+				Error:     gerr.Error(),
+			}
 		}
+		status, err := m.startWithInfo(ctx, item, info)
 		if err != nil {
-			// 异常 #8:Start/Check 失败(-352、selectStream 失败、CreateLive 冲突等)此前被静默吞掉。
-			slog.Warn("live check: Start failed for channel",
+			// 异常 #8:startWithInfo 失败(CreateLive 冲突、Enqueue 失败等)此前被静默吞掉。
+			slog.Warn("live check: startWithInfo failed for channel",
 				"channel_id", item.ID, "room_id", item.LiveRoomID, "live", info.Live, "error", err)
 			return Status{
 				ChannelID: item.ID,
@@ -310,6 +366,42 @@ func (m *Manager) CheckAndStartAll(ctx context.Context) ([]Status, error) {
 	return statuses, nil
 }
 
+// cooldown352Until 返回该频道的 -352 冷却到期时间。第二返回值 true 表示仍在冷却期(应跳过 CheckLive)。
+func (m *Manager) cooldown352Until(channelID string) (time.Time, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	until, ok := m.last352Cooldown[channelID]
+	return until, ok && time.Now().Before(until)
+}
+
+// applyCooldown352 给频道设阶梯冷却(首次 5m、二次 10m、三次+ 20m,封顶 20m),返回到期时间。
+func (m *Manager) applyCooldown352(channelID string) time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	step := m.cooldownStep[channelID]
+	var d time.Duration
+	switch step {
+	case 0:
+		d = 5 * time.Minute
+	case 1:
+		d = 10 * time.Minute
+	default:
+		d = 20 * time.Minute
+	}
+	until := time.Now().Add(d)
+	m.last352Cooldown[channelID] = until
+	m.cooldownStep[channelID] = step + 1
+	return until
+}
+
+// resetCooldown352 清除频道的 -352 冷却和阶梯计数(CheckLive 成功后调用,避免跨成功探测累积)。
+func (m *Manager) resetCooldown352(channelID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.last352Cooldown, channelID)
+	delete(m.cooldownStep, channelID)
+}
+
 func (m *Manager) Check(ctx context.Context, channelID string) (Status, error) {
 	item, err := m.channels.Get(ctx, channelID)
 	if err != nil {
@@ -318,11 +410,33 @@ func (m *Manager) Check(ctx context.Context, channelID string) (Status, error) {
 	if item.LiveRoomID <= 0 || !item.Enabled {
 		return Status{}, ErrChannelNotRecordable
 	}
+	// 异常 #9 第2层:Check(被 /api/live/status 30s 轮询)也尊重 -352 冷却,
+	// 否则 Home 页轮询绕过冷却继续打被风控的端点(codex 实际代码审核中等项)。
+	if until, cooled := m.cooldown352Until(channelID); cooled {
+		return Status{
+			ChannelID: item.ID,
+			RoomID:    item.LiveRoomID,
+			Error:     fmt.Sprintf("risk control cooldown until %s", until.Format(time.RFC3339)),
+		}, nil
+	}
 	checkCtx := context.WithValue(ctx, liveRecordChannelIDKey, channelID)
 	info, err := m.client.CheckLive(checkCtx, item.LiveRoomID, m.cookieHeaderForChannel(ctx, channelID))
 	if err != nil {
+		// -352 在 Check 路径也触发冷却(与 checkOne 一致),避免 /api/live/status 轮询单独累频。
+		if errors.Is(err, ErrRiskControl352) {
+			until := m.applyCooldown352(channelID)
+			slog.Warn("check: -352 risk control, channel enters cooldown",
+				"channel_id", channelID, "room_id", item.LiveRoomID, "cooldown_until", until)
+			return Status{
+				ChannelID: channelID,
+				RoomID:    item.LiveRoomID,
+				Error:     fmt.Sprintf("risk control cooldown until %s", until.Format(time.RFC3339)),
+			}, nil
+		}
 		return Status{}, err
 	}
+	// 成功:重置冷却(与 checkOne 一致)。
+	m.resetCooldown352(channelID)
 	status := Status{
 		ChannelID: item.ID,
 		RoomID:    item.LiveRoomID,
@@ -338,36 +452,31 @@ func (m *Manager) Check(ctx context.Context, channelID string) (Status, error) {
 	return status, nil
 }
 
-func (m *Manager) Start(ctx context.Context, channelID string) (Status, error) {
+// ensureStartAllowed 承载 Start 的全部前置防护(codex 审核 v2 设计#2):
+// 全局录播开关、频道可录制性、内存 active、DB active session。
+// Start 和 checkOne → startWithInfo 路径都先调它,确保 checkOne 绕过 Start 直接建 session 时
+// 不削弱任何防护(尤其 LiveRecord.Enabled=false 必须挡在建 session 之前)。
+func (m *Manager) ensureStartAllowed(ctx context.Context, item channel.Channel) error {
 	if !m.cfg.LiveRecord.Enabled {
-		return Status{}, ErrLiveDisabled
-	}
-
-	item, err := m.channels.Get(ctx, channelID)
-	if err != nil {
-		return Status{}, err
+		return ErrLiveDisabled
 	}
 	if item.LiveRoomID <= 0 || !item.Enabled {
-		return Status{}, ErrChannelNotRecordable
+		return ErrChannelNotRecordable
 	}
-	if _, ok := m.activeFor(channelID); ok {
-		return Status{}, ErrAlreadyRecording
+	if _, ok := m.activeFor(item.ID); ok {
+		return ErrAlreadyRecording
 	}
 	if _, ok, err := m.sessions.ActiveLiveForChannel(ctx, item.ID); err != nil {
-		return Status{}, err
+		return err
 	} else if ok {
-		return Status{}, ErrAlreadyRecording
+		return ErrAlreadyRecording
 	}
+	return nil
+}
 
-	checkCtx := context.WithValue(ctx, liveRecordChannelIDKey, channelID)
-	info, err := m.client.CheckLive(checkCtx, item.LiveRoomID, m.cookieHeaderForChannel(ctx, channelID))
-	if err != nil {
-		return Status{}, err
-	}
-	if !info.Live {
-		return Status{}, ErrNotLive
-	}
-
+// startWithInfo 用已得的 LiveInfo 建 session + 入队,不重复 CheckLive。
+// checkOne 已 CheckLive 拿到 info,直接透传给它,省掉 Start 路径的二次 getInfoByRoom(异常 #9 第1层)。
+func (m *Manager) startWithInfo(ctx context.Context, item channel.Channel, info LiveInfo) (Status, error) {
 	createdSession, err := m.sessions.CreateLive(ctx, session.CreateLiveInput{
 		ChannelID: item.ID,
 		Title:     info.Title,
@@ -417,6 +526,26 @@ func (m *Manager) Start(ctx context.Context, channelID string) (Status, error) {
 		SessionID: createdSession.ID,
 		TaskID:    task.ID,
 	}, nil
+}
+
+func (m *Manager) Start(ctx context.Context, channelID string) (Status, error) {
+	item, err := m.channels.Get(ctx, channelID)
+	if err != nil {
+		return Status{}, err
+	}
+	if err := m.ensureStartAllowed(ctx, item); err != nil {
+		return Status{}, err
+	}
+
+	checkCtx := context.WithValue(ctx, liveRecordChannelIDKey, channelID)
+	info, err := m.client.CheckLive(checkCtx, item.LiveRoomID, m.cookieHeaderForChannel(ctx, channelID))
+	if err != nil {
+		return Status{}, err
+	}
+	if !info.Live {
+		return Status{}, ErrNotLive
+	}
+	return m.startWithInfo(ctx, item, info)
 }
 
 func (m *Manager) Stop(channelID string) error {
