@@ -254,7 +254,7 @@ func (m *Manager) CheckAndStartAll(ctx context.Context) ([]Status, error) {
 				TaskID:    active.TaskID,
 			}
 		}
-		// 异常 #9 第2层:-352 频道级冷却。冷却期内跳过 CheckLive,避免每 30s 全量重打被风控的端点。
+		// 异常 #9 第2层 / P2:风控频道级冷却(-352 / HTTP 412/403/429 共用)。冷却期内跳过 CheckLive,避免每 30s 全量重打被风控的端点。
 		if until, cooled := m.cooldownRiskUntil(item.ID); cooled {
 			return Status{
 				ChannelID: item.ID,

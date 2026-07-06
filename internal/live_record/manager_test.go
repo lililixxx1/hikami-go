@@ -1780,11 +1780,13 @@ func (r *hangingZeroByteRecorder) Record(ctx context.Context, stream StreamInfo,
 }
 
 // recordValidThenHangRecorder 首次 Record 写有效音频(>0 字节)并返回 nil(触发 clean-EOF→decideAfterRecord
-// 重连路径),第二次(重连分段)创建文件后挂起直到 ctx 取消(模拟重连分段拿不到流)。
+// 重连路径),第二次(重连分段)创建 0 字节文件后通过 secondFileReady 通知测试,然后挂起直到 ctx 取消。
 // 用于验证"前序分段有效 + 当前分段 0 字节卡死 → 健康检测 abort → HandleTask 保留前序音频"。
+// secondFileReady 由测试消费,确保**重连 0 字节文件已创建**后才启动健康检测,避免首段被误测为 NotGrowing。
 type recordValidThenHangRecorder struct {
-	calls   int
-	outputs []string
+	calls           int
+	outputs         []string
+	secondFileReady chan struct{}
 }
 
 func (r *recordValidThenHangRecorder) Record(ctx context.Context, stream StreamInfo, outputPath string) error {
@@ -1794,47 +1796,91 @@ func (r *recordValidThenHangRecorder) Record(ctx context.Context, stream StreamI
 		return err
 	}
 	if r.calls == 1 {
-		// 首段:写有效音频(100 字节),返回 nil(clean EOF 触发重连)。
+		// 首段:写有效音频(>0 字节),返回 nil(clean EOF 触发重连)。
 		return os.WriteFile(outputPath, []byte("valid-audio-data-100-bytes-padding-padding-padding-pa"), 0o644)
 	}
-	// 重连分段:创建 0 字节文件后挂起(模拟拿不到流)。
+	// 重连分段:创建 0 字节文件,通知测试可启动健康检测,然后挂起(模拟拿不到流)。
 	if err := os.WriteFile(outputPath, []byte{}, 0o644); err != nil {
 		return err
+	}
+	if r.secondFileReady != nil {
+		close(r.secondFileReady)
+		r.secondFileReady = nil
 	}
 	<-ctx.Done()
 	return ctx.Err()
 }
 
 // TestHandleTaskZeroByteStallWithPriorAudioPreservesIt (异常 #11, codex impl 复审 Important 回归):
-// 验证 hasRecordedAudio 保护:首段录到有效音频后,若健康检测因后续 0 字节分段触发 abort,
-// HandleTask 走**成功**收尾保留前序分段,不返回 ErrZeroByteStalled。
-// 实现方式:首段写有效音频并返回错(进重连),重连段 0 字节挂起;健康检测在重连段上累计
-// zeroSizeStreak 达阈值 abort。用较长 health interval(200ms)+ reconnectDelay(1)确保重连先发生。
+// 验证 hasRecordedAudio 保护:首段录到有效音频后,健康检测因重连的 0 字节分段触发 ErrZeroByteStalled
+// abort → HandleTask 走**成功**收尾保留前序分段,不返回 ErrZeroByteStalled。
+// 时序确定性:测试等 recorder 第二次调用(创建重连 0 字节文件)close secondFileReady 后,才启动
+// 健康检测(StartHealthCheck),确保 abort 一定是 ZeroByteStalled(而非首段 NotGrowing)。
+// abort 类型(ZeroByteStalled)通过 slog WARN "abort_reason=..." 捕获验证(health 在 HandleTask
+// defer clearActive 后被清理,无法事后 peekAbortReason)。
 func TestHandleTaskZeroByteStallWithPriorAudioPreservesIt(t *testing.T) {
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	defer slog.SetDefault(prev)
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
 	manager, _, pool := newTestManager(t)
 	defer pool.Stop()
 	manager.cfg.LiveRecord.AutoReconnect = true
 	manager.cfg.LiveRecord.MaxReconnect = 3
 	manager.cfg.LiveRecord.ReconnectDelay = 1
-	// preflight live=true 放行;首段后 clean-EOF→decideAfterRecord 探测仍 live=true→重连;
-	// 重连段挂起期间不再 probe(因 selectFailedPending/CDN 路径不调 CheckLive,而重连段返回 ctx 错)。
+	// preflight live=true 放行;首段 clean-EOF 后 decideAfterRecord 探测 live=true → 重连。
 	manager.client = &statefulLiveClient{tb: t, lives: []bool{true, true}}
-	recorder := &recordValidThenHangRecorder{}
+	secondReady := make(chan struct{})
+	recorder := &recordValidThenHangRecorder{secondFileReady: secondReady}
 	manager.audio = recorder
 	stubFFmpegConcat(t)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	manager.StartHealthCheck(ctx, 200*time.Millisecond)
+	// 健康检测 ctx,但**先不启动** —— 等重连 0 字节文件就绪后再 StartHealthCheck。
+	healthCtx, healthCancel := context.WithCancel(context.Background())
+	defer healthCancel()
+
+	// HandleTask 在后台跑(它会阻塞在重连分段的 <-ctx.Done() 直到 abort)。
+	type result struct{ err error }
+	done := make(chan result, 1)
+	go func() {
+		running := mustCreateRunningTask(t, pool)
+		done <- result{manager.HandleTask(context.Background(), running, noopReporter{})}
+	}()
+
+	// 等重连 0 字节文件就绪(确定性同步)。
+	select {
+	case <-secondReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for reconnect 0-byte file creation")
+	}
+
+	// 现在启动健康检测:重连分段 0 字节 → zeroSizeStreak 累计达阈值(2)→ ErrZeroByteStalled abort。
+	manager.StartHealthCheck(healthCtx, 100*time.Millisecond)
 	defer manager.StopHealthCheck()
 
-	running := mustCreateRunningTask(t, pool)
-	err := manager.HandleTask(context.Background(), running, noopReporter{})
-	// 关键断言:有前序有效音频 → 不返回 ErrZeroByteStalled,走成功收尾。
-	if err != nil {
-		t.Fatalf("HandleTask err = %v, want nil (prior valid segment preserved)", err)
+	select {
+	case res := <-done:
+		// 关键断言:有前序有效音频 → 不返回 ErrZeroByteStalled,走成功收尾。
+		if res.err != nil {
+			t.Fatalf("HandleTask err = %v, want nil (prior valid segment preserved)", res.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("HandleTask did not finish within 10s")
 	}
-	// 成功收尾应产出 audio.m4a(首段内容)。
+	// 确定性断言:recorder 必须被调 2 次(首段 + 重连段)。
+	if recorder.calls != 2 {
+		t.Errorf("recorder calls = %d, want 2 (initial + reconnect 0-byte)", recorder.calls)
+	}
+	// abort 必须是 ErrZeroByteStalled(非 NotGrowing):从 slog WARN 行验证 abort_reason。
+	logStr := logBuf.String()
+	if !strings.Contains(logStr, "zero-byte output") {
+		t.Errorf("log does not contain zero-byte abort:\n%s", logStr)
+	}
+	if strings.Contains(logStr, "file not growing") {
+		t.Errorf("abort was NotGrowing, want ZeroByteStalled (首段不应被误测):\n%s", logStr)
+	}
+	// 成功收尾应产出 audio.m4a(首段内容,>0 字节)。
 	rawDir := filepath.Join(manager.cfg.OutputRoot, "huize", "live_20260427_120000", "raw")
 	audioPath := filepath.Join(rawDir, "audio.m4a")
 	info, statErr := os.Stat(audioPath)

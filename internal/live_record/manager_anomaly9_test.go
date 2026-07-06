@@ -258,8 +258,8 @@ func TestEnsureStartAllowed(t *testing.T) {
 	}
 }
 
-// TestCheckRespectsCooldown352 (异常 #9 codex 实际审核中等项):
-// Check(/api/live/status 30s 轮询走它)也尊重 -352 冷却——冷却期内不发 CheckLive,返回冷却 Status。
+// TestCheckRespectsCooldown352 (异常 #9 codex 实际审核中等项;P2 扩展后冷却覆盖 -352 + HTTP 412/403/429):
+// Check(/api/live/status 30s 轮询走它)也尊重风控冷却——冷却期内不发 CheckLive,返回冷却 Status。
 // 否则 Home 页轮询绕过冷却,继续打被风控的端点。
 func TestCheckRespectsCooldown352(t *testing.T) {
 	client := &countingClient{live: true}
