@@ -22,6 +22,26 @@ func (nativeFakeSigner) SignURL(rawURL string) (string, error) {
 	return rawURL + "&signed=1", nil
 }
 
+// nativeHandleAntiRisk 处理 view 端点 -352 风控对抗的副请求（spi/nav）。
+// 2026-07-06 VideoClient 加 buvid/WBI 注入后，Fetch 会先打 spi/nav。
+// 测试 mock 需放行这两个路径并返回让对抗组件降级的响应：
+//   - spi: 返回空 buvid（b_3 空）→ GetBuvids 报错 → 调用方降级不改 cookie
+//   - nav: 返回 502 → WBISigner.ensureKeys 失败 → SignURL 降级不签名
+//
+// 已处理返回 true，调用方应直接 return。
+func nativeHandleAntiRisk(w http.ResponseWriter, r *http.Request) bool {
+	switch r.URL.Path {
+	case "/x/frontend/finger/spi":
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"data":{"b_3":"","b_4":""}}`))
+		return true
+	case "/x/web-interface/nav":
+		http.Error(w, "nav unavailable in test", http.StatusBadGateway)
+		return true
+	}
+	return false
+}
+
 type nativeRoundTripFunc func(req *http.Request) *httptest.ResponseRecorder
 
 func (f nativeRoundTripFunc) Do(req *http.Request) (*http.Response, error) {
@@ -39,6 +59,9 @@ func TestNativeDownloaderDownload(t *testing.T) {
 	var sawBaseAudio bool
 	const baseURL = "https://bili.test"
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if nativeHandleAntiRisk(w, r) {
+			return
+		}
 		if r.Header.Get("Cookie") != "SESSDATA=sess; bili_jct=jct; DedeUserID=100" {
 			t.Fatalf("Cookie = %q", r.Header.Get("Cookie"))
 		}
@@ -160,6 +183,9 @@ func TestNativeDownloaderDownloadMultiP(t *testing.T) {
 		"/audio/p2": "audio-p2",
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if nativeHandleAntiRisk(w, r) {
+			return
+		}
 		switch r.URL.Path {
 		case "/x/web-interface/view":
 			_, _ = w.Write([]byte(`{
@@ -328,6 +354,9 @@ func TestNativeDownloaderNoPages(t *testing.T) {
 		baseURL = "https://bili.test"
 	)
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if nativeHandleAntiRisk(w, r) {
+			return
+		}
 		if r.URL.Path != "/x/web-interface/view" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
@@ -409,6 +438,9 @@ func mockNativeHTTPDoer(handler http.Handler) nativeRoundTripFunc {
 func nativeSinglePHandler(t *testing.T, baseURL string, bvid string, danmaku http.HandlerFunc) http.Handler {
 	t.Helper()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if nativeHandleAntiRisk(w, r) {
+			return
+		}
 		switch r.URL.Path {
 		case "/x/web-interface/view":
 			_, _ = w.Write([]byte(`{

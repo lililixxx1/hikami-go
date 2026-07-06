@@ -39,6 +39,7 @@ type Downloader interface {
 |------|------|
 | `FFmpeg` | ffmpeg 可执行文件路径，用于 native 多 P 音频 concat |
 | `FFprobe` | ffprobe 可执行文件路径，用于 native/yt-dlp 多 P 时长探测 |
+| `ViewBuvids` / `ViewSignerFactory` | view 端点 -352 风控对抗的可选注入点（2026-07-06）。零值时 `VideoClient` 内部懒初始化真实 `BuvidStore`/`WBISigner`；测试注入桩以避免 spi/nav 副请求联网（见 `native_test.go` 的 `nativeHandleAntiRisk` + `nativeFakeSigner`） |
 
 ## 关键依赖与配置
 

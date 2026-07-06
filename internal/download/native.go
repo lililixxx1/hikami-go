@@ -42,6 +42,10 @@ type NativeDownloader struct {
 	Cookie      *biliutil.BiliCookie
 	FFmpeg      string
 	FFprobe     string
+	// ViewBuvids/ViewSignerFactory 是 view 端点 -352 风控对抗的可选注入点（2026-07-06）。
+	// 零值时 VideoClient 内部懒初始化真实 BuvidStore/WBISigner；测试注入桩以避免 spi/nav 副请求。
+	ViewBuvids        *biliutil.BuvidStore
+	ViewSignerFactory func(cookie string) biliutil.URLSigner
 }
 
 type nativeMetadata struct {
@@ -80,9 +84,16 @@ func (d NativeDownloader) Download(ctx context.Context, sourceURL string, rawDir
 	if bvid == "" {
 		return fmt.Errorf("%w: only BV video URLs are supported", ErrNativeUnsupported)
 	}
-	viewClient := biliutil.VideoClient{
+	viewClient := &biliutil.VideoClient{
 		HTTPClient: d.HTTPClient,
 		BaseURL:    firstNonEmpty(d.ViewBaseURL, d.APIBaseURL),
+	}
+	// 注入可选的风控对抗组件（测试用桩，生产留空走真实 BuvidStore/WBISigner）。
+	if d.ViewBuvids != nil {
+		viewClient.SetBuvidStore(d.ViewBuvids)
+	}
+	if d.ViewSignerFactory != nil {
+		viewClient.SetSignerFactory(d.ViewSignerFactory)
 	}
 	info, err := viewClient.Fetch(ctx, bvid, cookieHeader)
 	if err != nil {

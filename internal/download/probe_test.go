@@ -45,7 +45,7 @@ func probeCookie(t *testing.T) string {
 func TestProbeView(t *testing.T) {
 	cookie := probeCookie(t)
 	bvid := probeEnv(t, "PROBE_BVID")
-	info, err := biliutil.VideoClient{}.Fetch(context.Background(), bvid, cookie)
+	info, err := (&biliutil.VideoClient{}).Fetch(context.Background(), bvid, cookie)
 	if err != nil {
 		t.Fatalf("view 接口失败: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestProbeView(t *testing.T) {
 func TestProbePlayURL(t *testing.T) {
 	cookie := probeCookie(t)
 	bvid := probeEnv(t, "PROBE_BVID")
-	info, err := biliutil.VideoClient{}.Fetch(context.Background(), bvid, cookie)
+	info, err := (&biliutil.VideoClient{}).Fetch(context.Background(), bvid, cookie)
 	if err != nil {
 		t.Fatalf("view: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestProbePlayURL(t *testing.T) {
 func TestProbeDanmaku(t *testing.T) {
 	cookie := probeCookie(t)
 	bvid := probeEnv(t, "PROBE_BVID")
-	info, err := biliutil.VideoClient{}.Fetch(context.Background(), bvid, cookie)
+	info, err := (&biliutil.VideoClient{}).Fetch(context.Background(), bvid, cookie)
 	if err != nil {
 		t.Fatalf("view: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestProbeE2E(t *testing.T) {
 func TestProbeSegDanmaku(t *testing.T) {
 	cookie := probeCookie(t)
 	bvid := probeEnv(t, "PROBE_BVID")
-	info, err := biliutil.VideoClient{}.Fetch(context.Background(), bvid, cookie)
+	info, err := (&biliutil.VideoClient{}).Fetch(context.Background(), bvid, cookie)
 	if err != nil {
 		t.Fatalf("view: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestProbeMultiP(t *testing.T) {
 func TestProbeSegDiag(t *testing.T) {
 	cookie := probeCookie(t)
 	bvid := probeEnv(t, "PROBE_BVID")
-	info, err := biliutil.VideoClient{}.Fetch(context.Background(), bvid, cookie)
+	info, err := (&biliutil.VideoClient{}).Fetch(context.Background(), bvid, cookie)
 	if err != nil {
 		t.Fatalf("view: %v", err)
 	}

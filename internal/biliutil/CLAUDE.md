@@ -89,7 +89,7 @@
 
 | 函数/方法 | 说明 |
 |-----------|------|
-| `FetchVideoInfo(ctx, bvid, cookie)` / `VideoClient.Fetch` | 调用 `/x/web-interface/view` 获取 `VideoInfo`（aid/bvid/title/pages） |
+| `FetchVideoInfo(ctx, bvid, cookie)` / `VideoClient.Fetch` | 调用 `/x/web-interface/view` 获取 `VideoInfo`（aid/bvid/title/pages）。2026-07-06 起接入 -352 风控对抗三件套（buvid 注入 + WBI 签名 + Origin 头），`VideoClient` 改指针语义 + 懒缓存 buvids/signers（`SetBuvidStore`/`SetSignerFactory` 测试注入桩） |
 | `FetchPlayURL(ctx, aid, cid, bvid, cookie, signer)` / `PlayURLClient.Fetch` | 调用 WBI playurl 获取 DASH 音频流列表 |
 | `SelectBestAudioStream(streams)` | 从 `AudioStream` 列表选择 bandwidth 最高且有 URL 的音频流 |
 | `AudioStream.URLs()` | 返回 baseUrl + backupUrl 顺序列表 |
@@ -251,7 +251,7 @@
   - `TestRefreshKeysForceRefresh`: 强制刷新密钥
 - `login_test.go`: QR Login 客户端和会话管理测试（3 个用例）
 - `cookie_writer_test.go`: Netscape Cookie 文件写入测试（3 个用例）
-- `video_test.go`: 3 个测试用例，覆盖 view 成功、HTTP 非 2xx、API code 非 0
+- `video_test.go`: 3 个测试用例，覆盖 view 成功（含 Origin 头 + buvid 注入降级断言）、HTTP 非 2xx、API code 非 0。2026-07-06 加 `stubSigner`/`handleAntiRisk` 测试基建（view 加 buvid/WBI 后避免 spi/nav 副请求联网）
 - `playurl_test.go`: 4 个测试用例，覆盖 playurl 成功+选流、无音频流、HTTP 非 2xx、API code 非 0
 - `danmaku_test.go`: 2 个测试用例，覆盖明文 XML 和 `Content-Encoding: deflate`（zlib）解压
 - `danmaku_seg_test.go`: 9 个测试用例，覆盖多段解码、未知字段、截断、varint overflow、fixed64/fixed32 跳过、XML 转义、midHash 转义、空页停止、段数上限

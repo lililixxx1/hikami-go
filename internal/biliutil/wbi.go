@@ -55,6 +55,29 @@ func NewWBISigner(cookie string) *WBISigner {
 	}
 }
 
+// NewWBISignerWithHTTPClient 创建一个沿用指定 HTTP client 的 WBI 签名器。
+// 2026-07-06 加入：供 VideoClient 等值类型把配置的 HTTPClient（测试 httptest 桩 / 生产代理）
+// 透传给 signer 的 nav 请求，避免 signer 用自己的默认 client 绕过配置的 transport。
+// client 为 nil 时退化为 NewWBISigner 的默认 15s client。
+func NewWBISignerWithHTTPClient(cookie string, client HTTPDoer) *WBISigner {
+	s := NewWBISigner(cookie)
+	if client != nil {
+		// WBISigner.httpClient 是 *http.Client;若传入的是 *http.Client 直接用,
+		// 否则(HTTPDoer 桩)包装一层。检查类型断言以兼容两种。
+		if c, ok := client.(*http.Client); ok {
+			s.httpClient = c
+		} else {
+			s.httpClient = &http.Client{Transport: doerTransport{client}}
+		}
+	}
+	return s
+}
+
+// doerTransport 把 HTTPDoer 适配为 http.RoundTripper,让 *http.Client 能复用 HTTPDoer 桩。
+type doerTransport struct{ doer HTTPDoer }
+
+func (t doerTransport) RoundTrip(req *http.Request) (*http.Response, error) { return t.doer.Do(req) }
+
 // SignURL 对 URL 进行 WBI 签名，附加 w_rid 和 wts 参数。
 func (s *WBISigner) SignURL(rawURL string) (string, error) {
 	if err := s.ensureKeys(); err != nil {
