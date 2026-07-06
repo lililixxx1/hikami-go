@@ -1157,7 +1157,7 @@ func TestSourceModeDefaultBoth(t *testing.T) {
 }
 
 // TestAutoRecapRoundTrip 验证 auto_recap 的三态语义（*bool）：
-//   - Create 不提供 → 默认 true（保持历史「ASR 后自动回顾」行为，对齐 v32 迁移 DEFAULT 1）
+//   - Create 不提供 → 默认 false（2026-07-06 反转,新建主播默认不自动回顾）
 //   - Create 显式 false → 关闭
 //   - Update 不提供（nil）→ 保留现有值
 //   - Update 显式值 → 覆盖
@@ -1165,7 +1165,7 @@ func TestAutoRecapRoundTrip(t *testing.T) {
 	store := NewStore(setupDB(t))
 	ctx := context.Background()
 
-	// 1. Create 不提供 auto_recap → 默认 true
+	// 1. Create 不提供 auto_recap → 默认 false
 	ch, err := store.Create(ctx, UpsertInput{
 		ID:   "ch_recap",
 		Name: "RecapTest",
@@ -1174,8 +1174,8 @@ func TestAutoRecapRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if !ch.AutoRecap {
-		t.Fatalf("AutoRecap = false on create (omitted), want true (default)")
+	if ch.AutoRecap {
+		t.Fatalf("AutoRecap = true on create (omitted), want false (default)")
 	}
 
 	// 2. Update 显式关闭
@@ -1235,7 +1235,7 @@ func TestAutoRecapRoundTrip(t *testing.T) {
 func boolPtr(b bool) *bool { return &b }
 
 // TestBootstrapAutoRecapDefault 验证 bootstrap_channels 配置省略 auto_recap（AutoRecap=nil）
-// 时频道默认开启自动回顾（对齐 v32 迁移 DEFAULT 1 与历史「ASR 后自动回顾」行为），
+// 时频道默认关闭自动回顾（2026-07-06 反转默认,对齐 DEFAULT 0），
 // 显式 false 时则关闭。覆盖 codex 复审指出的「Bootstrap 默认 true 未真正生效」阻断项。
 func TestBootstrapAutoRecapDefault(t *testing.T) {
 	store := NewStore(setupDB(t))
@@ -1243,7 +1243,7 @@ func TestBootstrapAutoRecapDefault(t *testing.T) {
 
 	off := false
 	err := store.Bootstrap(ctx, []config.BootstrapChannel{
-		{ID: "ch_omit", Name: "Omit", UID: 1, Enabled: true},                // AutoRecap=nil → 默认 true
+		{ID: "ch_omit", Name: "Omit", UID: 1, Enabled: true},                // AutoRecap=nil → 默认 false
 		{ID: "ch_off", Name: "Off", UID: 2, Enabled: true, AutoRecap: &off}, // 显式 false
 	})
 	if err != nil {
@@ -1254,8 +1254,8 @@ func TestBootstrapAutoRecapDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get ch_omit: %v", err)
 	}
-	if !omit.AutoRecap {
-		t.Fatalf("ch_omit AutoRecap = false, want true (default when omitted)")
+	if omit.AutoRecap {
+		t.Fatalf("ch_omit AutoRecap = true, want false (default when omitted)")
 	}
 
 	offCh, err := store.Get(ctx, "ch_off")

@@ -175,7 +175,7 @@ func (s *Store) Bootstrap(ctx context.Context, channels []config.BootstrapChanne
 			boolToInt(input.Enabled),
 			boolToInt(input.AutoRecord),
 			boolToInt(input.AutoASR),
-			boolToInt(resolveAutoRecap(input.AutoRecap, true)),
+			boolToInt(resolveAutoRecap(input.AutoRecap, false)),
 			boolToInt(input.RecordDanmaku),
 			input.SourceMode,
 			input.DiscoverLimit,
@@ -254,7 +254,7 @@ func (s *Store) Create(ctx context.Context, input UpsertInput) (Channel, error) 
 		boolToInt(input.Enabled),
 		boolToInt(input.AutoRecord),
 		boolToInt(input.AutoASR),
-		boolToInt(resolveAutoRecap(input.AutoRecap, true)),
+		boolToInt(resolveAutoRecap(input.AutoRecap, false)),
 		boolToInt(input.RecordDanmaku),
 		input.SourceMode,
 		input.DiscoverLimit,
@@ -538,11 +538,11 @@ func boolToInt(value bool) int {
 }
 
 // resolveAutoRecap 解析 UpsertInput.AutoRecap 的三态语义：
-//   - nil（调用方未提供）：Create/Bootstrap 默认 true（保持历史「ASR 后自动回顾」行为，对齐 v32 迁移 DEFAULT 1）；
+//   - nil（调用方未提供）：Create/Bootstrap 默认 false（2026-07-06 反转,新建主播默认不自动回顾）;
 //     Update 默认保留现有值（fallback）。
 //   - 非 nil：取其显式值。
 //
-// 其余 bool 字段（auto_record/auto_asr/...）沿用既有零值机制，唯独 auto_recap 因承诺「默认 true」需三态。
+// 其余 bool 字段（auto_record/auto_asr/...）沿用既有零值机制，唯独 auto_recap 需三态（其余 bool 字段零值即 false,无需三态）。
 func resolveAutoRecap(v *bool, fallback bool) bool {
 	if v == nil {
 		return fallback

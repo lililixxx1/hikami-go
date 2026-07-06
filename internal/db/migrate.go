@@ -183,7 +183,10 @@ ALTER TABLE channels ADD COLUMN publish_topics TEXT NOT NULL DEFAULT '';`,
 	`ALTER TABLE channels ADD COLUMN max_continuations INTEGER NOT NULL DEFAULT -1;`,
 	// v31: session 归档时间戳（发布成功后自动归档到 WebDAV 用，不推进主状态）
 	`ALTER TABLE sessions ADD COLUMN archived_at TEXT;`,
-	// v32: per-channel 自动回顾开关（ASR 成功后是否自动生成回顾；默认 1=开，保持历史行为）
+	// v32: per-channel 自动回顾开关（ASR 成功后是否自动生成回顾）。
+	// DEFAULT 1 保留：ADD COLUMN 用 DEFAULT 回填所有已有行,旧库升级时保持历史"自动回顾开"行为不变。
+	// 新建主播的默认值由应用层 channel.Create/Bootstrap 的 resolveAutoRecap(nil, false) 决定（2026-07-06 反转为默认关），
+	// 应用层总显式插值,所以这里的 DEFAULT 只影响"从无 auto_recap 列的旧库升级"这一条路径,不能改为 0（否则静默关闭已有主播）。
 	`ALTER TABLE channels ADD COLUMN auto_recap INTEGER NOT NULL DEFAULT 1;`,
 	// v33: 全局运行时配置持久化。config.yaml 降级为只读基线，UI 改动按配置段存此表，
 	// 启动时 ApplyOverrides 用本表覆盖 viper 加载的基线值。data 是该段 DTO 的 JSON。

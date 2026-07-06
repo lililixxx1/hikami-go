@@ -29,7 +29,7 @@
 
 1. **channels** -- 主播配置
    - `id TEXT PK`, `name`, `uid`, `live_room_id`, `replay_source_url`, `space_url`, `title_prefix`, `cookie_file`, `enabled`, `created_at`, `updated_at`
-   - 追加列: `download_cookie_file` (v9), `auto_record` (v10, 默认 1), `auto_asr` (v11, 默认 0), `record_danmaku` (v13, 默认 1), `publish_enabled`/`publish_mode`/`publish_category_id`/`publish_list_id`/`publish_private_pub`/`publish_original`/`auto_publish` (v17), `publish_aigc`/`publish_timer_pub_time`/`publish_cover_url`/`publish_topics` (v18), `source_mode` (v19, 默认 'both'), `discover_limit` (v20, 默认 0), `download_account_id` (v26, 默认 NULL), `publish_account_id` (v27, 默认 NULL), `recap_model` (v29, 默认 ''), `max_continuations` (v30, 默认 -1), `auto_recap` (v32, 默认 1)
+   - 追加列: `download_cookie_file` (v9), `auto_record` (v10, 默认 1), `auto_asr` (v11, 默认 0), `record_danmaku` (v13, 默认 1), `publish_enabled`/`publish_mode`/`publish_category_id`/`publish_list_id`/`publish_private_pub`/`publish_original`/`auto_publish` (v17), `publish_aigc`/`publish_timer_pub_time`/`publish_cover_url`/`publish_topics` (v18), `source_mode` (v19, 默认 'both'), `discover_limit` (v20, 默认 0), `download_account_id` (v26, 默认 NULL), `publish_account_id` (v27, 默认 NULL), `recap_model` (v29, 默认 ''), `max_continuations` (v30, 默认 -1), `auto_recap` (v32, DEFAULT 1 保留——保护旧库升级路径,新建主播默认值由应用层 `resolveAutoRecap(nil,false)` 决定)
 
 2. **sessions** -- 场次
    - `id TEXT PK`, `slug`, `channel_id FK`, `source_type`, `source_id`, `title`, `started_at`, `ended_at`, `source_url`, `status`, `current_task_id`, `last_error`, `local_available`, `uploaded_at`, `published_at`, `publish_target`, `archived_at` (v31), `created_at`, `updated_at`
@@ -105,7 +105,7 @@
 | 29 | `channels` 追加 `recap_model`（默认 ''） |
 | 30 | `channels` 追加 `max_continuations`（默认 -1） |
 | 31 | `sessions` 追加 `archived_at`（发布成功后自动归档到 WebDAV 用，不推进主状态） |
-| 32 | `channels` 追加 `auto_recap`（默认 1，per-channel 自动回顾开关，ASR 成功后是否自动生成回顾） |
+| 32 | `channels` 追加 `auto_recap`（DEFAULT 1 保留;2026-07-06 反转默认值时未改迁移 DEFAULT,因 ADD COLUMN 用 DEFAULT 回填已有行——改 0 会静默关闭旧库升级时已有主播的自动回顾。新建主播默认值由应用层 `resolveAutoRecap(nil, false)` 决定,应用层总显式插值） |
 | 34 | `tasks.bypass_fail_state` 列（任务实例级 bypass fail state，配合重新生成回顾） |
 | 33 | `runtime_settings` 表（全局运行时配置覆盖，per-section JSON；`CHECK(section)` 白名单 6 段 + `CHECK(json_valid(data))`） |
 

@@ -151,7 +151,7 @@
 |------|------|
 | `source_mode` | 来源模式：both（默认）/live_only/replay_only/live_first/replay_first |
 | `discover_limit` | 每次回放发现最大新建场次数（0 = 不限制，默认 0） |
-| `auto_recap` | `*bool` 三态：标准化/ASR 完成后是否自动提交回顾。YAML/config 未显式设置（`nil`）时由 `channel.resolveAutoRecap(nil, true)` 兜底为**默认开**；显式 `true`/`false` 直接采用（设计 4.1，对应 db migrate v32 的 `channels.auto_recap` 列，默认 1） |
+| `auto_recap` | `*bool` 三态：标准化/ASR 完成后是否自动提交回顾。YAML/config 未显式设置（`nil`）时由 `channel.resolveAutoRecap(nil, false)` 兜底为**默认关**（2026-07-06 反转,原默认开）；显式 `true`/`false` 直接采用（设计 4.1，对应 db migrate v32 的 `channels.auto_recap` 列,默认 0） |
 
 （其余字段同 Channel 结构体，详见 internal/channel 模块文档。）
 

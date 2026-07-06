@@ -64,7 +64,7 @@
 | `enabled` | bool | 是否启用 |
 | `auto_record` | bool | 检测到开播后是否自动开始录制（默认 true） |
 | `auto_asr` | bool | 录播完成后是否自动提交 ASR 转写（默认 false） |
-| `auto_recap` | bool | 标准化/ASR 完成后是否自动提交回顾（默认 true）。`UpsertInput.AutoRecap` 为 `*bool` 三态：显式 true/false 直接采用，`nil` 时经 `resolveAutoRecap(nil, true)` 兜底为 true |
+| `auto_recap` | bool | 标准化/ASR 完成后是否自动提交回顾（默认 false,2026-07-06 反转）。`UpsertInput.AutoRecap` 为 `*bool` 三态：显式 true/false 直接采用，`nil` 时经 `resolveAutoRecap(nil, false)` 兜底为 false |
 | `record_danmaku` | bool | 录制直播时是否同时采集弹幕（默认 true） |
 | `source_mode` | string | 来源模式：`both`（默认）/`live_only`/`replay_only`/`live_first`/`replay_first` |
 | `discover_limit` | int | 每次回放发现最大新建场次数（0 = 不限制，默认 0） |
@@ -110,7 +110,7 @@
 ## 测试与质量
 
 - `channel_test.go`: 54 个测试用例，覆盖：
-  - Store CRUD: Create（成功、重复、校验-无 ID/无 Name/无效 UID/路径分隔符/负 RoomID）、Get（成功/未找到）、List（空/排序）、Update（成功/未找到/校验）、Delete（成功/未找到/关联场次）、SaveIdentified（新建/已存在/保留 TitlePrefix/CookieFile/Enabled/PublishFields）、**auto_recap 三态解析（resolveAutoRecap：nil→true、显式值、UpsertInput 持久化）**
+  - Store CRUD: Create（成功、重复、校验-无 ID/无 Name/无效 UID/路径分隔符/负 RoomID）、Get（成功/未找到）、List（空/排序）、Update（成功/未找到/校验）、Delete（成功/未找到/关联场次）、SaveIdentified（新建/已存在/保留 TitlePrefix/CookieFile/Enabled/PublishFields）、**auto_recap 三态解析（resolveAutoRecap：nil→false 默认(2026-07-06 反转)、显式值、UpsertInput 持久化）**
   - Bootstrap: 空表导入、非空表跳过、空列表、校验
   - identify.go: normalizeIdentifyInput（10 种输入格式）、parseLiveURL、parseSpaceURL、Identify（直播间/UID/缺失）、mergeIdentified（合并策略）、boolToInt
 - `identify_test.go`: 5 个测试用例，覆盖：
