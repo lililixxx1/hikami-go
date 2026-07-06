@@ -13,6 +13,11 @@ const TaskType = "live_record"
 // 非 -352 的错误(网络抖动、其它业务码)不会包装成本错误,不会触发冷却。
 var ErrRiskControl352 = errors.New("bilibili -352 risk control")
 
+// ErrHTTPRiskControl 表示 B 站在 HTTP 网关层返回风控状态码(412/403/429)(异常 P2),
+// 区别于业务码 -352(200 OK body 内 code 字段)。两者共用同一套频道级冷却(见 isRiskControlError)。
+// checkOne/Check/Start/preflight/decideAfterRecord/selectStream 调用方用 errors.Is 识别它。
+var ErrHTTPRiskControl = errors.New("bilibili http-layer risk control")
+
 // ErrZeroByteStalled 表示录制文件持续 0 字节(ffmpeg 起来但 selectStream 拿不到有效流),
 // 健康检测判定为僵尸录制(异常 #11)。触发取消并走**失败**路径(不送 normalize,避免空音频污染回顾)。
 var ErrZeroByteStalled = errors.New("recording stalled: zero-byte output")

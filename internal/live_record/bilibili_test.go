@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"hikami-go/internal/biliutil"
@@ -523,5 +525,114 @@ func TestCheckLiveInvalidatesBaseCookieWithBuvidStore(t *testing.T) {
 	// spi:首次 injectAntiRisk 拉 1 次 → -352 Invalidate 清缓存 → 重试 injectAntiRisk 再拉 1 次 = 2
 	if spiCount != 2 {
 		t.Fatalf("spi count = %d, want 2 (initial fetch + refetch after Invalidate)", spiCount)
+	}
+}
+
+// statusResponse 是 newStatusSequenceServer 的预设响应项(异常 P2, codex v1 P3)。
+type statusResponse struct {
+	status int // 0 视为 200
+	body   string
+}
+
+// newStatusSequenceServer 按顺序返回预设 (status, body) 响应,统计请求数。
+// 与 newSequenceServer 区别:支持设置 HTTP status code(用于测 412/403/429 风控映射)。
+// 计数用 sync.Mutex + int32,不用 unsafe.Pointer。
+func newStatusSequenceServer(t *testing.T, responses []statusResponse) (*httptest.Server, *int32) {
+	t.Helper()
+	var mu sync.Mutex
+	var idx int
+	var count int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/xlive/web-room/v1/index/getInfoByRoom" {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		atomic.AddInt32(&count, 1)
+		if idx >= len(responses) {
+			mu.Unlock()
+			t.Fatalf("unexpected request #%d", idx+1)
+			return
+		}
+		resp := responses[idx]
+		idx++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if resp.status != 0 && resp.status != 200 {
+			w.WriteHeader(resp.status)
+		}
+		_, _ = w.Write([]byte(resp.body))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &count
+}
+
+// TestGetJSONMapsRiskControlStatusToSentinel (异常 P2, codex v1 P3):
+// 412/403/429 → ErrHTTPRiskControl;500 → 普通错误(不触发冷却)。
+func TestGetJSONMapsRiskControlStatusToSentinel(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		want   bool // 是否应 errors.Is ErrHTTPRiskControl
+	}{
+		{"412", http.StatusPreconditionFailed, true},
+		{"403", http.StatusForbidden, true},
+		{"429", http.StatusTooManyRequests, true},
+		{"500", http.StatusInternalServerError, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// 风控类(412/403/429):CheckLive 会 RefreshKeys+Invalidate 后重试一次 → 2 次请求。
+			// 非风控(500):不重试,1 次请求。提供足够响应避免 "unexpected request"。
+			respCount := 1
+			if tc.want {
+				respCount = 2
+			}
+			responses := make([]statusResponse, respCount)
+			for i := range responses {
+				responses[i] = statusResponse{status: tc.status, body: ""}
+			}
+			srv, count := newStatusSequenceServer(t, responses)
+			client := NewBilibiliClientWithBaseURL(srv.URL)
+			client.SetSignerFactory(func(cookie string) biliutil.URLSigner { return &refreshableFakeSigner{} })
+			client.SetBuvidStore(nil)
+			_, err := client.CheckLive(context.Background(), 123, "SESSDATA=abc")
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			got := errors.Is(err, ErrHTTPRiskControl)
+			if got != tc.want {
+				t.Errorf("errors.Is(err, ErrHTTPRiskControl) = %v, want %v (err=%v)", got, tc.want, err)
+			}
+			if got := atomic.LoadInt32(count); got != int32(respCount) {
+				t.Errorf("request count = %d, want %d", got, respCount)
+			}
+		})
+	}
+}
+
+// TestCheckLiveRetriesOnHTTP412ThenSucceeds (异常 P2):
+// 首次 412 → RefreshKeys+Invalidate → 重试 200 code=0 成功。
+func TestCheckLiveRetriesOnHTTP412ThenSucceeds(t *testing.T) {
+	srv, count := newStatusSequenceServer(t, []statusResponse{
+		{status: 412, body: ""},
+		{status: 200, body: `{"code":0,"message":"0","data":{"room_info":{"room_id":123,"live_status":1,"title":"ok","live_start_time":1700000000},"anchor_info":{"base_info":{"uname":"a"}}}}`},
+	})
+	client := NewBilibiliClientWithBaseURL(srv.URL)
+	signer := &refreshableFakeSigner{}
+	client.SetSignerFactory(func(cookie string) biliutil.URLSigner { return signer })
+	client.SetBuvidStore(nil)
+
+	info, err := client.CheckLive(context.Background(), 123, "SESSDATA=abc")
+	if err != nil {
+		t.Fatalf("CheckLive should succeed after retry, got: %v", err)
+	}
+	if !info.Live || info.Title != "ok" {
+		t.Fatalf("unexpected info after retry: %+v", info)
+	}
+	if got := atomic.LoadInt32(count); got != 2 {
+		t.Fatalf("request count = %d, want 2 (initial + retry)", got)
+	}
+	if signer.refreshCalls != 1 {
+		t.Fatalf("RefreshKeys calls = %d, want 1", signer.refreshCalls)
 	}
 }

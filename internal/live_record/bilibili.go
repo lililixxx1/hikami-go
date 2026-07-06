@@ -3,6 +3,7 @@ package live_record
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -126,7 +127,25 @@ func (c *BilibiliClient) CheckLive(ctx context.Context, roomID int64, cookieHead
 
 	response, err := query()
 	if err != nil {
-		return LiveInfo{}, err
+		// 异常 P2:HTTP 层风控(412/403/429)单次重试(刷新密钥/buvid,同 -352 范式)。
+		// 重试后仍风控 → getJSON 再返回 ErrHTTPRiskControl 包装错 → 原样 return,
+		// 由调用方 isRiskControlError 识别触发频道冷却。
+		if errors.Is(err, ErrHTTPRiskControl) {
+			slog.Warn("checklive http-layer risk control, refreshing keys/buvid and retrying once",
+				"room_id", roomID, "error", err)
+			if rs, ok := c.signerForCookie(baseCookie).(interface{ RefreshKeys() error }); ok {
+				if rerr := rs.RefreshKeys(); rerr != nil {
+					slog.Warn("checklive RefreshKeys failed, retrying with existing keys", "error", rerr)
+				}
+			}
+			if c.buvids != nil {
+				c.buvids.Invalidate(baseCookie)
+			}
+			response, err = query()
+		}
+		if err != nil {
+			return LiveInfo{}, err
+		}
 	}
 
 	// -352 单次重试(对齐 danmaku.go:326 范式):刷新 WBI 密钥 + 失效 buvid 缓存后重试一次。
@@ -326,9 +345,23 @@ func (c *BilibiliClient) getJSON(ctx context.Context, endpoint string, target an
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("bilibili http status %d", response.StatusCode)
+		return c.httpStatusError(response.StatusCode)
 	}
 	return json.NewDecoder(response.Body).Decode(target)
+}
+
+// httpStatusError 把非 2xx HTTP 状态码映射为错误(异常 P2)。
+// 风控相关码(412 Precondition Failed / 403 Forbidden / 429 Too Many Requests)
+// 包装 ErrHTTPRiskControl 哨兵,供调用方(checkOne/Check/Start/preflight/decideAfterRecord/selectStream)
+// 用 errors.Is 识别并触发与 -352 相同的阶梯冷却;
+// 其它非 2xx(5xx 服务器错误等)返回普通错误,不触发冷却(重试有值,不该惩罚)。
+func (c *BilibiliClient) httpStatusError(status int) error {
+	switch status {
+	case http.StatusPreconditionFailed, http.StatusForbidden, http.StatusTooManyRequests:
+		return fmt.Errorf("%w: status=%d", ErrHTTPRiskControl, status)
+	default:
+		return fmt.Errorf("bilibili http status %d", status)
+	}
 }
 
 func parseBilibiliTime(value int64) time.Time {

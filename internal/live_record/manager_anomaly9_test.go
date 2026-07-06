@@ -3,6 +3,8 @@ package live_record
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -112,7 +114,7 @@ func TestCheckAndStartAllDedupCheckLive(t *testing.T) {
 }
 
 // TestCheckAndStartAllMarksCooldownOn352 (异常 #9 第2层):
-// CheckLive 返回 ErrRiskControl352 → 频道进入冷却(last352Cooldown[id] 设为未来时间)。
+// CheckLive 返回 ErrRiskControl352 → 频道进入冷却(lastRiskCooldown[id] 设为未来时间)。
 func TestCheckAndStartAllMarksCooldownOn352(t *testing.T) {
 	client := &countingClient{err: ErrRiskControl352}
 	manager, _ := newAnomaly9Manager(t, client)
@@ -122,7 +124,7 @@ func TestCheckAndStartAllMarksCooldownOn352(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CheckAndStartAll: %v", err)
 	}
-	until, cooled := manager.cooldown352Until("huize")
+	until, cooled := manager.cooldownRiskUntil("huize")
 	if !cooled {
 		t.Fatal("expected huize to be in cooldown after -352")
 	}
@@ -138,7 +140,7 @@ func TestCheckAndStartAllSkipsCooldown352(t *testing.T) {
 	client := &countingClient{live: true}
 	manager, _ := newAnomaly9Manager(t, client)
 	// 预置冷却到 5 分钟后
-	manager.applyCooldown352("huize")
+	manager.applyCooldownRiskControl("huize")
 
 	statuses, err := manager.CheckAndStartAll(context.Background())
 	if err != nil {
@@ -172,10 +174,10 @@ func TestCheckAndStartAllResetsCooldownOnSuccess(t *testing.T) {
 	client := &countingClient{live: false} // offline 但成功响应(无 error)
 	manager, _ := newAnomaly9Manager(t, client)
 	// 先打一个冷却(step→1, until=now+5m)
-	manager.applyCooldown352("huize")
+	manager.applyCooldownRiskControl("huize")
 	// 手动让冷却到期
 	manager.mu.Lock()
-	manager.last352Cooldown["huize"] = time.Now().Add(-1 * time.Minute) // 已过期
+	manager.lastRiskCooldown["huize"] = time.Now().Add(-1 * time.Minute) // 已过期
 	manager.mu.Unlock()
 
 	_, err := manager.CheckAndStartAll(context.Background())
@@ -184,7 +186,7 @@ func TestCheckAndStartAllResetsCooldownOnSuccess(t *testing.T) {
 	}
 	// 成功 CheckLive(offline 但无 error)应清掉冷却和 step
 	manager.mu.Lock()
-	_, hasCooldown := manager.last352Cooldown["huize"]
+	_, hasCooldown := manager.lastRiskCooldown["huize"]
 	step := manager.cooldownStep["huize"]
 	manager.mu.Unlock()
 	if hasCooldown {
@@ -263,7 +265,7 @@ func TestCheckRespectsCooldown352(t *testing.T) {
 	client := &countingClient{live: true}
 	manager, _ := newAnomaly9Manager(t, client)
 	// 预置冷却
-	manager.applyCooldown352("huize")
+	manager.applyCooldownRiskControl("huize")
 
 	status, err := manager.Check(context.Background(), "huize")
 	if err != nil {
@@ -287,7 +289,46 @@ func TestCheckMarksCooldownOn352(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Check should swallow -352 into Status, got err: %v", err)
 	}
-	if _, cooled := manager.cooldown352Until("huize"); !cooled {
+	if _, cooled := manager.cooldownRiskUntil("huize"); !cooled {
 		t.Error("expected huize in cooldown after Check got -352")
+	}
+}
+
+// TestCheckAndStartAllMarksCooldownOnHTTP412 (异常 P2):
+// countingClient 返回 ErrHTTPRiskControl 包装错 → checkOne 识别触发与 -352 相同的阶梯冷却。
+func TestCheckAndStartAllMarksCooldownOnHTTP412(t *testing.T) {
+	client := &countingClient{err: fmt.Errorf("%w: status=412", ErrHTTPRiskControl)}
+	manager, _ := newAnomaly9Manager(t, client)
+
+	before := time.Now()
+	_, err := manager.CheckAndStartAll(context.Background())
+	if err != nil {
+		t.Fatalf("CheckAndStartAll: %v", err)
+	}
+	until, cooled := manager.cooldownRiskUntil("huize")
+	if !cooled {
+		t.Fatal("expected huize to be in cooldown after HTTP 412")
+	}
+	// 首次冷却 5 分钟(与 -352 同阶梯)
+	if until.Before(before.Add(4 * time.Minute)) {
+		t.Fatalf("cooldown until = %v, want at least 4m from %v", until, before)
+	}
+}
+
+// TestCheckMarksCooldownOnHTTP412 (异常 P2, codex v2 测试缺口):
+// Check(/api/live/status 轮询路径)收到 ErrHTTPRiskControl 也触发冷却(与 CheckAndStartAll 对称)。
+func TestCheckMarksCooldownOnHTTP412(t *testing.T) {
+	client := &countingClient{err: fmt.Errorf("%w: status=412", ErrHTTPRiskControl)}
+	manager, _ := newAnomaly9Manager(t, client)
+
+	status, err := manager.Check(context.Background(), "huize")
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if !strings.Contains(status.Error, "risk control cooldown") {
+		t.Errorf("status.Error = %q, want contains 'risk control cooldown'", status.Error)
+	}
+	if _, cooled := manager.cooldownRiskUntil("huize"); !cooled {
+		t.Error("expected huize in cooldown after Check got HTTP 412")
 	}
 }

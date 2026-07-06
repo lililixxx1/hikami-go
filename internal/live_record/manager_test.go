@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -411,6 +412,122 @@ func TestHandleTaskProbeErrorAutoReconnectOffKeepsError(t *testing.T) {
 	if len(recorder.outputs) != 1 {
 		t.Fatalf("recorder outputs = %d, want 1 (no reconnect when AutoReconnect off)", len(recorder.outputs))
 	}
+}
+
+// TestHandleTaskPreflightRiskControlEntersCooldown (异常 P2, codex v2 Important #4):
+// preflight CheckLive 命中风控 → 不乐观放行,设置频道冷却并快速失败,recorder 不被调用。
+func TestHandleTaskPreflightRiskControlEntersCooldown(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = true
+	manager.cfg.LiveRecord.MaxReconnect = 3
+	manager.cfg.LiveRecord.ReconnectDelay = 1
+	// CheckLive 总返回 HTTP 风控(preflight 即命中)。
+	manager.client = &riskControlClient{}
+	recorder := &alwaysFailingRecorder{}
+	manager.audio = recorder
+	stubFFmpegConcat(t)
+
+	running := mustCreateRunningTask(t, pool)
+	err := manager.HandleTask(context.Background(), running, noopReporter{})
+	if err == nil {
+		t.Fatal("HandleTask err = nil, want ErrHTTPRiskControl")
+	}
+	if !errors.Is(err, ErrHTTPRiskControl) {
+		t.Fatalf("HandleTask err = %v, want ErrHTTPRiskControl", err)
+	}
+	if _, cooled := manager.cooldownRiskUntil("huize"); !cooled {
+		t.Error("expected huize in cooldown after preflight risk control")
+	}
+	// preflight 快速失败:recorder 未被调用(没起 ffmpeg)。
+	if len(recorder.outputs) != 0 {
+		t.Fatalf("recorder outputs = %d, want 0 (preflight fast-fail, no ffmpeg)", len(recorder.outputs))
+	}
+}
+
+// TestHandleTaskInitialSelectStreamRiskControlEntersCooldown (异常 P2, codex v3 P1):
+// preflight live=true 放行 + 首次 selectStream 命中 GetStream 风控 → 设置冷却 + 快速失败,
+// recorder 不被调用(没进重连循环)。
+func TestHandleTaskInitialSelectStreamRiskControlEntersCooldown(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = true
+	manager.cfg.LiveRecord.MaxReconnect = 3
+	manager.cfg.LiveRecord.ReconnectDelay = 1
+	// CheckLive 返回 live=true(preflight 放行);GetStream 返回 HTTP 风控。
+	manager.client = &preflightOKGetStreamRiskClient{}
+	recorder := &alwaysFailingRecorder{}
+	manager.audio = recorder
+	stubFFmpegConcat(t)
+
+	running := mustCreateRunningTask(t, pool)
+	err := manager.HandleTask(context.Background(), running, noopReporter{})
+	if err == nil {
+		t.Fatal("HandleTask err = nil, want ErrHTTPRiskControl")
+	}
+	if !errors.Is(err, ErrHTTPRiskControl) {
+		t.Fatalf("HandleTask err = %v, want ErrHTTPRiskControl", err)
+	}
+	if _, cooled := manager.cooldownRiskUntil("huize"); !cooled {
+		t.Error("expected huize in cooldown after initial selectStream risk control")
+	}
+	// 首次 selectStream 即快速失败:recorder 未被调用。
+	if len(recorder.outputs) != 0 {
+		t.Fatalf("recorder outputs = %d, want 0 (initial selectStream fast-fail)", len(recorder.outputs))
+	}
+}
+
+// TestDecideAfterRecordRiskControlEntersCooldown (异常 P2, codex v3 P1):
+// decideAfterRecord 的 CheckLive 探测命中风控 → 设置频道冷却(独立副作用,决策不变)。
+// 直接调 decideAfterRecord(同包私有方法),断言 decision=afterRecordProbeFailReconnect + 冷却已设。
+func TestDecideAfterRecordRiskControlEntersCooldown(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = true
+	// decideAfterRecord 内的 CheckLive 用 riskControlClient → 返回 ErrHTTPRiskControl。
+	manager.client = &riskControlClient{}
+
+	task := worker.Task{ID: "task_1", ChannelID: "huize", SessionID: "session_1"}
+	payload := taskPayload{RoomID: 123}
+	decision, carryErr := manager.decideAfterRecord(context.Background(), task, payload, errors.New("record failed"))
+	// 风控作为独立副作用:决策仍是 afterRecordProbeFailReconnect(default 分支),carryErr 是原 wantErr。
+	if decision != afterRecordProbeFailReconnect {
+		t.Errorf("decision = %v, want afterRecordProbeFailReconnect", decision)
+	}
+	if carryErr == nil || carryErr.Error() != "record failed" {
+		t.Errorf("carryErr = %v, want 'record failed' (决策不因冷却副作用改变)", carryErr)
+	}
+	if _, cooled := manager.cooldownRiskUntil("huize"); !cooled {
+		t.Error("expected huize in cooldown after decideAfterRecord risk control probe")
+	}
+}
+
+// riskControlClient:CheckLive 总返回 HTTP 风控(ErrHTTPRiskControl 包装错)。
+type riskControlClient struct{}
+
+func (riskControlClient) CheckLive(ctx context.Context, roomID int64, cookieHeader string) (LiveInfo, error) {
+	return LiveInfo{}, fmt.Errorf("%w: status=412", ErrHTTPRiskControl)
+}
+
+func (riskControlClient) GetStream(ctx context.Context, roomID int64, audioOnly bool, cookieHeader string) (StreamInfo, error) {
+	return StreamInfo{URL: "https://example.com/live.flv", AudioOnly: true}, nil
+}
+
+// preflightOKGetStreamRiskClient:CheckLive 返回 live=true(preflight 放行),
+// GetStream 返回 HTTP 风控(模拟 playurl 端点 412)。
+type preflightOKGetStreamRiskClient struct{}
+
+func (preflightOKGetStreamRiskClient) CheckLive(ctx context.Context, roomID int64, cookieHeader string) (LiveInfo, error) {
+	return LiveInfo{
+		RoomID:    roomID,
+		Live:      true,
+		Title:     "test",
+		StartedAt: time.Date(2026, 4, 27, 13, 0, 0, 0, time.Local),
+	}, nil
+}
+
+func (preflightOKGetStreamRiskClient) GetStream(ctx context.Context, roomID int64, audioOnly bool, cookieHeader string) (StreamInfo, error) {
+	return StreamInfo{}, fmt.Errorf("%w: status=412", ErrHTTPRiskControl)
 }
 
 // TestHandleTaskReconnectsOnCleanEOFWhileLive 是本次修复的核心回归：首次录制 ffmpeg 干净

@@ -79,10 +79,11 @@ type Manager struct {
 	health       map[string]*healthStats // 异常 #11:聚合健康检测状态(替代 fileSizes+failCount,新增 zeroSizeStreak+abortReason)
 	healthCancel context.CancelFunc
 
-	// 异常 #9:-352 频率风控的频道级冷却。last352Cooldown[id]=冷却到期时间,
-	// cooldownStep[id]=连续 -352 次数(阶梯 5/10/20m)。冷却期内 checkOne 跳过该频道的 CheckLive。
-	last352Cooldown map[string]time.Time
-	cooldownStep    map[string]int
+	// 异常 #9/P2:频道级风控冷却(原仅 -352,现扩展覆盖 HTTP 412/403/429)。
+	// lastRiskCooldown[id]=冷却到期时间, cooldownStep[id]=连续风控次数(阶梯 5/10/20m)。
+	// 冷却期内 checkOne/Check 跳过该频道的 CheckLive。(352 旧名历史遗留,改名 RiskControl 泛化)
+	lastRiskCooldown map[string]time.Time
+	cooldownStep     map[string]int
 }
 
 type liveRecordLogContextKey string
@@ -134,7 +135,7 @@ func NewManager(
 		cookieAccountStore: accounts,
 		active:             map[string]activeRecord{},
 		health:             map[string]*healthStats{},
-		last352Cooldown:    map[string]time.Time{},
+		lastRiskCooldown:   map[string]time.Time{},
 		cooldownStep:       map[string]int{},
 	}
 }
@@ -254,7 +255,7 @@ func (m *Manager) CheckAndStartAll(ctx context.Context) ([]Status, error) {
 			}
 		}
 		// 异常 #9 第2层:-352 频道级冷却。冷却期内跳过 CheckLive,避免每 30s 全量重打被风控的端点。
-		if until, cooled := m.cooldown352Until(item.ID); cooled {
+		if until, cooled := m.cooldownRiskUntil(item.ID); cooled {
 			return Status{
 				ChannelID: item.ID,
 				RoomID:    item.LiveRoomID,
@@ -272,11 +273,11 @@ func (m *Manager) CheckAndStartAll(ctx context.Context) ([]Status, error) {
 		checkCtx := context.WithValue(ctx, liveRecordChannelIDKey, item.ID)
 		info, err := m.client.CheckLive(checkCtx, item.LiveRoomID, m.cookieHeaderForChannel(ctx, item.ID))
 		if err != nil {
-			// 异常 #9 第2层:识别 -352 哨兵,触发阶梯冷却(5/10/20m)。
-			// 非 -352 错误(网络抖动等)走原 #8 WARN 路径,不触发冷却(避免误冷却瞬时抖动)。
-			if errors.Is(err, ErrRiskControl352) {
-				until := m.applyCooldown352(item.ID)
-				slog.Warn("live check: -352 risk control, channel enters cooldown",
+			// 异常 #9 第2层 / P2:识别风控(-352 业务码 或 HTTP 412/403/429),触发阶梯冷却(5/10/20m)。
+			// 非风控错误(网络抖动等)走原 #8 WARN 路径,不触发冷却(避免误冷却瞬时抖动)。
+			if isRiskControlError(err) {
+				until := m.applyCooldownRiskControl(item.ID)
+				slog.Warn("live check: risk control, channel enters cooldown",
 					"channel_id", item.ID, "room_id", item.LiveRoomID, "cooldown_until", until)
 				return Status{
 					ChannelID: item.ID,
@@ -294,7 +295,7 @@ func (m *Manager) CheckAndStartAll(ctx context.Context) ([]Status, error) {
 			}
 		}
 		// CheckLive 成功:重置该频道的冷却计数(避免跨成功探测累积)。
-		m.resetCooldown352(item.ID)
+		m.resetCooldownRiskControl(item.ID)
 		if !info.Live {
 			return Status{
 				ChannelID: item.ID,
@@ -368,16 +369,16 @@ func (m *Manager) CheckAndStartAll(ctx context.Context) ([]Status, error) {
 	return statuses, nil
 }
 
-// cooldown352Until 返回该频道的 -352 冷却到期时间。第二返回值 true 表示仍在冷却期(应跳过 CheckLive)。
-func (m *Manager) cooldown352Until(channelID string) (time.Time, bool) {
+// cooldownRiskUntil 返回该频道的 -352 冷却到期时间。第二返回值 true 表示仍在冷却期(应跳过 CheckLive)。
+func (m *Manager) cooldownRiskUntil(channelID string) (time.Time, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	until, ok := m.last352Cooldown[channelID]
+	until, ok := m.lastRiskCooldown[channelID]
 	return until, ok && time.Now().Before(until)
 }
 
-// applyCooldown352 给频道设阶梯冷却(首次 5m、二次 10m、三次+ 20m,封顶 20m),返回到期时间。
-func (m *Manager) applyCooldown352(channelID string) time.Time {
+// applyCooldownRiskControl 给频道设阶梯冷却(首次 5m、二次 10m、三次+ 20m,封顶 20m),返回到期时间。
+func (m *Manager) applyCooldownRiskControl(channelID string) time.Time {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	step := m.cooldownStep[channelID]
@@ -391,17 +392,38 @@ func (m *Manager) applyCooldown352(channelID string) time.Time {
 		d = 20 * time.Minute
 	}
 	until := time.Now().Add(d)
-	m.last352Cooldown[channelID] = until
+	m.lastRiskCooldown[channelID] = until
 	m.cooldownStep[channelID] = step + 1
 	return until
 }
 
-// resetCooldown352 清除频道的 -352 冷却和阶梯计数(CheckLive 成功后调用,避免跨成功探测累积)。
-func (m *Manager) resetCooldown352(channelID string) {
+// resetCooldownRiskControl 清除频道的 -352 冷却和阶梯计数(CheckLive 成功后调用,避免跨成功探测累积)。
+func (m *Manager) resetCooldownRiskControl(channelID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.last352Cooldown, channelID)
+	delete(m.lastRiskCooldown, channelID)
 	delete(m.cooldownStep, channelID)
+}
+
+// isRiskControlError 判断是否为风控类错误(异常 P2, codex v1 决策 G 反转)。
+// 业务码 -352(ErrRiskControl352)与 HTTP 层 412/403/429(ErrHTTPRiskControl)共用同一套频道级冷却。
+// 注意:ErrZeroByteStalled/ErrRecordingNotGrowing 是健康检测哨兵,**不**在此列(不触发冷却)。
+func isRiskControlError(err error) bool {
+	return errors.Is(err, ErrRiskControl352) || errors.Is(err, ErrHTTPRiskControl)
+}
+
+// handleSelectStreamRiskControl 处理重连循环内 selectStream 的风控错误(异常 P2, §4.3.3)。
+// 若 sErr 是风控类,设置频道冷却并返回 aborted=true(调用方据此 break reconnect 释放槽位,
+// 不耗 maxReconnect 预算)。否则返回 false,调用方走原 selectFail 路径。
+func (m *Manager) handleSelectStreamRiskControl(channelID string, roomID int64, sErr error) (aborted bool) {
+	if !isRiskControlError(sErr) {
+		return false
+	}
+	until := m.applyCooldownRiskControl(channelID)
+	slog.Warn("reconnect selectStream hit risk control, aborting reconnect and entering cooldown",
+		"channel_id", channelID, "room_id", roomID,
+		"error", sErr, "cooldown_until", until)
+	return true
 }
 
 func (m *Manager) Check(ctx context.Context, channelID string) (Status, error) {
@@ -414,7 +436,7 @@ func (m *Manager) Check(ctx context.Context, channelID string) (Status, error) {
 	}
 	// 异常 #9 第2层:Check(被 /api/live/status 30s 轮询)也尊重 -352 冷却,
 	// 否则 Home 页轮询绕过冷却继续打被风控的端点(codex 实际代码审核中等项)。
-	if until, cooled := m.cooldown352Until(channelID); cooled {
+	if until, cooled := m.cooldownRiskUntil(channelID); cooled {
 		return Status{
 			ChannelID: item.ID,
 			RoomID:    item.LiveRoomID,
@@ -424,10 +446,11 @@ func (m *Manager) Check(ctx context.Context, channelID string) (Status, error) {
 	checkCtx := context.WithValue(ctx, liveRecordChannelIDKey, channelID)
 	info, err := m.client.CheckLive(checkCtx, item.LiveRoomID, m.cookieHeaderForChannel(ctx, channelID))
 	if err != nil {
-		// -352 在 Check 路径也触发冷却(与 checkOne 一致),避免 /api/live/status 轮询单独累频。
-		if errors.Is(err, ErrRiskControl352) {
-			until := m.applyCooldown352(channelID)
-			slog.Warn("check: -352 risk control, channel enters cooldown",
+		// 异常 P2:风控(-352 / HTTP 412/403/429)在 Check 路径也触发冷却(与 checkOne 一致),
+		// 避免 /api/live/status 轮询单独累频。
+		if isRiskControlError(err) {
+			until := m.applyCooldownRiskControl(channelID)
+			slog.Warn("check: risk control, channel enters cooldown",
 				"channel_id", channelID, "room_id", item.LiveRoomID, "cooldown_until", until)
 			return Status{
 				ChannelID: channelID,
@@ -438,7 +461,7 @@ func (m *Manager) Check(ctx context.Context, channelID string) (Status, error) {
 		return Status{}, err
 	}
 	// 成功:重置冷却(与 checkOne 一致)。
-	m.resetCooldown352(channelID)
+	m.resetCooldownRiskControl(channelID)
 	status := Status{
 		ChannelID: item.ID,
 		RoomID:    item.LiveRoomID,
@@ -542,6 +565,13 @@ func (m *Manager) Start(ctx context.Context, channelID string) (Status, error) {
 	checkCtx := context.WithValue(ctx, liveRecordChannelIDKey, channelID)
 	info, err := m.client.CheckLive(checkCtx, item.LiveRoomID, m.cookieHeaderForChannel(ctx, channelID))
 	if err != nil {
+		// 异常 P2(codex v2 必改项):手动启动命中风控 → 设置频道冷却,避免 UI/用户反复点触发累频。
+		if isRiskControlError(err) {
+			until := m.applyCooldownRiskControl(channelID)
+			slog.Warn("start: risk control, channel enters cooldown",
+				"channel_id", channelID, "room_id", item.LiveRoomID, "cooldown_until", until)
+			return Status{}, fmt.Errorf("%w (cooldown until %s)", err, until.Format(time.RFC3339))
+		}
 		return Status{}, err
 	}
 	if !info.Live {
@@ -643,6 +673,15 @@ func (m *Manager) HandleTask(ctx context.Context, task worker.Task, reporter wor
 		if errors.Is(runCtx.Err(), context.Canceled) {
 			return runCtx.Err()
 		}
+		// 异常 P2(codex v2 必改项):preflight 命中风控不乐观放行(否则 selectStream 必败、占槽不冷却)。
+		// 设置频道冷却并快速失败。其它错误(网络抖动)仍沿用乐观放行。
+		if isRiskControlError(preflightErr) {
+			until := m.applyCooldownRiskControl(task.ChannelID)
+			slog.Warn("preflight live check hit risk control, skipping recording and entering cooldown",
+				"channel_id", task.ChannelID, "room_id", payload.RoomID,
+				"error", preflightErr, "cooldown_until", until)
+			return fmt.Errorf("%w: preflight (cooldown until %s)", preflightErr, until.Format(time.RFC3339))
+		}
 		slog.Warn("preflight live check failed, proceed optimistically",
 			"channel_id", task.ChannelID, "room_id", payload.RoomID, "error", preflightErr)
 		preflight = LiveInfo{} // 探测失败，无可复用的封面信息
@@ -655,6 +694,16 @@ func (m *Manager) HandleTask(ctx context.Context, task worker.Task, reporter wor
 	// 获取直播流：优先纯音频，根据配置决定回退策略
 	stream, err := m.selectStream(ctx, payload.RoomID, cookieHeader)
 	if err != nil {
+		// 异常 P2(codex v2 P1):首次 selectStream 命中风控(GetStream 被 412 挡),
+		// 设置频道冷却并快速失败,避免下次 tick 再次放行后又 GetStream 失败。
+		if isRiskControlError(err) {
+			until := m.applyCooldownRiskControl(task.ChannelID)
+			slog.Warn("initial selectStream hit risk control, entering cooldown",
+				"channel_id", task.ChannelID, "room_id", payload.RoomID,
+				"error", err, "cooldown_until", until)
+			return fmt.Errorf("%w: initial select stream (cooldown until %s)",
+				err, until.Format(time.RFC3339))
+		}
 		return err
 	}
 
@@ -803,6 +852,10 @@ reconnect:
 			}
 			stream, sErr := m.selectStream(runCtx, payload.RoomID, m.cookieHeaderForChannel(ctx, task.ChannelID))
 			if sErr != nil {
+				if m.handleSelectStreamRiskControl(task.ChannelID, payload.RoomID, sErr) {
+					err = sErr
+					break reconnect
+				}
 				// selectStream 也失败:转 selectFail 路径(用 maxReconnect 预算)。
 				slog.Warn("reconnect stream selection failed after cdn error", "error", sErr)
 				selectFailedPending = true
@@ -834,6 +887,10 @@ reconnect:
 			}
 			stream, sErr := m.selectStream(runCtx, payload.RoomID, m.cookieHeaderForChannel(ctx, task.ChannelID))
 			if sErr != nil {
+				if m.handleSelectStreamRiskControl(task.ChannelID, payload.RoomID, sErr) {
+					err = sErr
+					break reconnect
+				}
 				slog.Warn("reconnect stream selection failed", "error", sErr)
 				attemptsUsed++
 				selectFailedPending = true
@@ -916,6 +973,10 @@ reconnect:
 		// Re-select stream（用 runCtx 让取消能传播到拉流请求）。
 		stream, sErr := m.selectStream(runCtx, payload.RoomID, m.cookieHeaderForChannel(ctx, task.ChannelID))
 		if sErr != nil {
+			if m.handleSelectStreamRiskControl(task.ChannelID, payload.RoomID, sErr) {
+				err = sErr
+				break reconnect
+			}
 			slog.Warn("reconnect stream selection failed", "error", sErr)
 			// 异常 #1:设置 selectFailedPending,下一轮走 selectFail 路径(不调 decideAfterRecord)。
 			attemptsUsed++
@@ -1025,6 +1086,16 @@ func (m *Manager) decideAfterRecord(ctx context.Context, task worker.Task, paylo
 	}
 
 	liveInfo, liveErr := m.client.CheckLive(ctx, payload.RoomID, m.cookieHeaderForChannel(ctx, task.ChannelID))
+
+	// 异常 P2(codex v3 P1,第 6 个 CheckLive 调用点):探测命中风控时设置频道冷却,
+	// 作为独立副作用 —— 不改变下方决策(default 分支仍走 afterRecordProbeFailReconnect 的
+	// probe-error budget)。冷却的效用体现在录制结束后下次 scheduler tick:该频道冷却中 → 跳过 CheckLive。
+	if liveErr != nil && isRiskControlError(liveErr) {
+		until := m.applyCooldownRiskControl(task.ChannelID)
+		slog.Warn("decideAfterRecord live probe hit risk control, channel enters cooldown",
+			"channel_id", task.ChannelID, "room_id", payload.RoomID,
+			"probe_error", liveErr, "cooldown_until", until)
+	}
 
 	// 探测期间被取消（Stop / worker 取消恰好发生在探测期间）：直接返回 ctx 错误，
 	// 让调用方走取消收尾。helper 契约要求 FinishError 的 carryErr 必非 nil。
