@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,9 +34,8 @@ func TestAdopt_RebuildsActiveAndStopTerminatesProcess(t *testing.T) {
 	pid := sleepCmd.Process.Pid
 
 	m := &Manager{
-		active:    map[string]activeRecord{},
-		fileSizes: map[string]int64{},
-		failCount: map[string]int{},
+		active: map[string]activeRecord{},
+		health: map[string]*healthStats{},
 	}
 
 	if !m.Adopt("ch1", "task_1", "sess_1", pid) {
@@ -1352,9 +1352,8 @@ func TestManager_StartHealthCheckLifecycle(t *testing.T) {
 
 func TestManager_SetActiveClearActive(t *testing.T) {
 	manager := &Manager{
-		active:    map[string]activeRecord{},
-		fileSizes: map[string]int64{},
-		failCount: map[string]int{},
+		active: map[string]activeRecord{},
+		health: map[string]*healthStats{},
 	}
 
 	// 第一次设置成功
@@ -1383,32 +1382,45 @@ func TestManager_SetActiveClearActive(t *testing.T) {
 }
 
 // TestUpdateCurrentOutputPathResetsBaseline 验证异常 #4:切换 CurrentOutputPath 时
-// 重置 fileSizes/failCount 基线,避免旧大文件与新小分段错比导致持续误报 unhealthy。
+// 重置 health 基线(fileSizes/failCount/zeroSizeStreak),避免旧大文件与新小分段错比
+// 导致持续误报 unhealthy。**不重置 abortReason**(已 abort 的不撤销)。
 func TestUpdateCurrentOutputPathResetsBaseline(t *testing.T) {
 	manager, _, pool := newTestManager(t)
 	defer pool.Stop()
 	manager.setActive("huize", activeRecord{SessionID: "session_1", TaskID: "task_1"})
 
-	// 模拟旧文件已积累大 size + failCount。
+	// 模拟旧文件已积累大 size + failCount(+ zeroSizeStreak,异常 #11 新增)。
 	manager.mu.Lock()
-	manager.fileSizes["huize"] = 56686690 // 56MB(旧 audio.m4a)
-	manager.failCount["huize"] = 5
+	manager.health["huize"] = &healthStats{
+		fileSizes:      56686690, // 56MB(旧 audio.m4a)
+		failCount:      5,
+		zeroSizeStreak: 2,
+		abortReason:    ErrZeroByteStalled, // 已 abort,不应被重置
+	}
 	manager.mu.Unlock()
 
 	// 切换到新分段路径(模拟重连切 audio.part.1.m4a)。
 	manager.updateCurrentOutputPath("huize", "/tmp/audio.part.1.m4a")
 
 	manager.mu.Lock()
-	gotSize := manager.fileSizes["huize"]
-	gotFail := manager.failCount["huize"]
+	stats := manager.health["huize"]
 	gotPath := manager.active["huize"].CurrentOutputPath
 	manager.mu.Unlock()
 
-	if gotSize != 0 {
-		t.Errorf("fileSizes[huize] = %d, want 0 (重置基线)", gotSize)
+	if stats == nil {
+		t.Fatal("health[huize] = nil, want stats")
 	}
-	if gotFail != 0 {
-		t.Errorf("failCount[huize] = %d, want 0 (重置基线)", gotFail)
+	if stats.fileSizes != 0 {
+		t.Errorf("health[huize].fileSizes = %d, want 0 (重置基线)", stats.fileSizes)
+	}
+	if stats.failCount != 0 {
+		t.Errorf("health[huize].failCount = %d, want 0 (重置基线)", stats.failCount)
+	}
+	if stats.zeroSizeStreak != 0 {
+		t.Errorf("health[huize].zeroSizeStreak = %d, want 0 (重置基线)", stats.zeroSizeStreak)
+	}
+	if stats.abortReason != ErrZeroByteStalled {
+		t.Errorf("health[huize].abortReason = %v, want ErrZeroByteStalled (不重置)", stats.abortReason)
 	}
 	if gotPath != "/tmp/audio.part.1.m4a" {
 		t.Errorf("CurrentOutputPath = %q, want /tmp/audio.part.1.m4a", gotPath)
@@ -1464,6 +1476,188 @@ func TestCheckRecordingHealthFollowsCurrentOutputPath(t *testing.T) {
 	}
 
 	_ = database // 避免 unused
+}
+
+// TestCheckOneChannelHealthZeroByteAbortsTask (异常 #11,检测端):
+// 0 字节文件连续 2 次检测(zeroSizeFailThreshold=2)→ 标记 abortReason=ErrZeroByteStalled + Cancel。
+func TestCheckOneChannelHealthZeroByteAbortsTask(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	tmpDir := t.TempDir()
+	manager.cfg.OutputRoot = tmpDir
+	rawDir := filepath.Join(tmpDir, "huize", "live_20260427_120000", "raw")
+	if err := os.MkdirAll(rawDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	audioPath := filepath.Join(rawDir, "audio.m4a")
+	// 创建 0 字节文件(文件存在但 Size()==0)。
+	if err := os.WriteFile(audioPath, []byte{}, 0o644); err != nil {
+		t.Fatalf("write 0-byte file: %v", err)
+	}
+
+	cancelled := int32(0)
+	cancel := func() { atomic.AddInt32(&cancelled, 1) }
+	manager.setActive("huize", activeRecord{
+		SessionID:         "session_1",
+		TaskID:            "task_1",
+		Cancel:            cancel,
+		CurrentOutputPath: audioPath,
+	})
+
+	// 第 1 次:zeroSizeStreak 1,未达阈值。
+	if m := manager.checkOneChannelHealth("huize"); m {
+		t.Fatal("first check should not abort (zeroSizeStreak=1 < threshold=2)")
+	}
+	if err := atomic.LoadInt32(&cancelled); err != 0 {
+		t.Fatalf("cancel called after first check: %d", err)
+	}
+
+	// 第 2 次:zeroSizeStreak 2,达阈值 → abort + Cancel。
+	if !manager.checkOneChannelHealth("huize") {
+		t.Fatal("second check should abort (zeroSizeStreak=2 >= threshold=2)")
+	}
+	if got := atomic.LoadInt32(&cancelled); got != 1 {
+		t.Fatalf("cancel called %d times, want 1", got)
+	}
+	manager.mu.Lock()
+	abortReason := manager.health["huize"].abortReason
+	manager.mu.Unlock()
+	if !errors.Is(abortReason, ErrZeroByteStalled) {
+		t.Errorf("abortReason = %v, want ErrZeroByteStalled", abortReason)
+	}
+}
+
+// TestCheckRecordingHealthMultiActiveNoDeadlock (异常 #11, codex v1 Critical #2):
+// 3 个 active 频道各自有 0 字节文件,checkRecordingHealth(分发器)必须在限时内返回,
+// 不因锁生命周期错误而死锁。
+func TestCheckRecordingHealthMultiActiveNoDeadlock(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	tmpDir := t.TempDir()
+	manager.cfg.OutputRoot = tmpDir
+	for _, ch := range []string{"ch1", "ch2", "ch3"} {
+		rawDir := filepath.Join(tmpDir, ch, "live_20260427_120000", "raw")
+		if err := os.MkdirAll(rawDir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", ch, err)
+		}
+		audioPath := filepath.Join(rawDir, "audio.m4a")
+		if err := os.WriteFile(audioPath, []byte{}, 0o644); err != nil {
+			t.Fatalf("write 0-byte file %s: %v", ch, err)
+		}
+		// 每个 channel 需要 seeded session 才能让 sessions.Get 成功;此处用 ch1 的 seeded,
+		// ch2/ch3 的 sessions.Get 会失败 → checkOneChannelHealth 返回 false,不阻塞。
+		// 为验证不死锁,只需 checkRecordingHealth 在限时内返回。
+		manager.setActive(ch, activeRecord{
+			SessionID:         "session_1",
+			TaskID:            "task_" + ch,
+			Cancel:            func() {},
+			CurrentOutputPath: audioPath,
+		})
+	}
+
+	done := make(chan struct{})
+	go func() {
+		manager.checkRecordingHealth()
+		close(done)
+	}()
+	select {
+	case <-done:
+		// 成功:未死锁。
+	case <-time.After(2 * time.Second):
+		t.Fatal("checkRecordingHealth deadlocked (did not return in 2s)")
+	}
+}
+
+// TestHandleTaskZeroByteStallReturnsError (异常 #11,收尾端):
+// 0 字节文件(文件存在但空)+ 健康检测触发 abort → HandleTask 返回 ErrZeroByteStalled(失败路径)。
+func TestHandleTaskZeroByteStallReturnsError(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = true
+	manager.cfg.LiveRecord.MaxReconnect = 1
+	manager.cfg.LiveRecord.ReconnectDelay = 1
+	manager.client = probeErrorClient{}
+	// hangingRecorder:创建 0 字节文件,然后挂起直到 ctx 取消(模拟 ffmpeg 拿不到流)。
+	manager.audio = &hangingZeroByteRecorder{}
+	stubFFmpegConcat(t)
+
+	// 启动短 interval 健康检测,快速触发 zeroSizeStreak=2。
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.StartHealthCheck(ctx, 100*time.Millisecond)
+	defer manager.StopHealthCheck()
+
+	running := mustCreateRunningTask(t, pool)
+	err := manager.HandleTask(context.Background(), running, noopReporter{})
+	if err == nil {
+		t.Fatal("HandleTask err = nil, want ErrZeroByteStalled")
+	}
+	if !errors.Is(err, ErrZeroByteStalled) {
+		t.Fatalf("HandleTask err = %v, want ErrZeroByteStalled", err)
+	}
+}
+
+// TestCheckOneChannelHealthNotGrowingAbortsThenHandleTaskPreservesAudio (异常 #11):
+// 文件曾增长到正大小后连续 3 轮不增长 → failCount=3 → 标记 ErrRecordingNotGrowing。
+// HandleTask 端:有已录音频 → peekAbortReason 覆盖 err=nil 走成功收尾保留。
+func TestCheckOneChannelHealthNotGrowingAbortsThenHandleTaskPreservesAudio(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	tmpDir := t.TempDir()
+	manager.cfg.OutputRoot = tmpDir
+	rawDir := filepath.Join(tmpDir, "huize", "live_20260427_120000", "raw")
+	if err := os.MkdirAll(rawDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	audioPath := filepath.Join(rawDir, "audio.m4a")
+	// 写 100 字节有效数据(文件曾增长)。
+	if err := os.WriteFile(audioPath, make([]byte, 100), 0o644); err != nil {
+		t.Fatalf("write 100-byte file: %v", err)
+	}
+
+	cancelled := int32(0)
+	manager.setActive("huize", activeRecord{
+		SessionID:         "session_1",
+		TaskID:            "task_1",
+		Cancel:            func() { atomic.AddInt32(&cancelled, 1) },
+		CurrentOutputPath: audioPath,
+	})
+
+	// 文件不再增长:第 1 次检测建立基线(size>0 → fileSizes=100, failCount=0),
+	// 之后连续 3 次检测 size 未增 → failCount=1,2,3,第 3 次达阈值 → abort。
+	for i := 1; i <= 4; i++ {
+		manager.checkOneChannelHealth("huize")
+	}
+	manager.mu.Lock()
+	abortReason := manager.health["huize"].abortReason
+	failCount := manager.health["huize"].failCount
+	manager.mu.Unlock()
+	if !errors.Is(abortReason, ErrRecordingNotGrowing) {
+		t.Errorf("abortReason = %v, want ErrRecordingNotGrowing", abortReason)
+	}
+	if failCount != 3 {
+		t.Errorf("failCount = %d, want 3", failCount)
+	}
+	if got := atomic.LoadInt32(&cancelled); got != 1 {
+		t.Errorf("cancel called %d times, want 1", got)
+	}
+}
+
+// hangingZeroByteRecorder 创建 0 字节文件后挂起,直到 ctx 被取消(模拟 ffmpeg 拿不到流)。
+// 用于 TestHandleTaskZeroByteStallReturnsError:配合健康检测的 0 字节 abort 路径。
+type hangingZeroByteRecorder struct{}
+
+func (r *hangingZeroByteRecorder) Record(ctx context.Context, stream StreamInfo, outputPath string) error {
+	// 创建 0 字节文件(文件存在但 Size()==0),触发 zeroSizeStreak 路径。
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(outputPath, []byte{}, 0o644); err != nil {
+		return err
+	}
+	// 挂起直到健康检测 abort 触发 Cancel。
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 // TestGlobLatestAudio 验证异常 #4 兜底:Adopt 时用 glob 找最新音频文件。

@@ -76,8 +76,7 @@ type Manager struct {
 
 	mu           sync.Mutex
 	active       map[string]activeRecord
-	fileSizes    map[string]int64 // channelID -> last known file size
-	failCount    map[string]int   // channelID -> consecutive health check fail count
+	health       map[string]*healthStats // 异常 #11:聚合健康检测状态(替代 fileSizes+failCount,新增 zeroSizeStreak+abortReason)
 	healthCancel context.CancelFunc
 
 	// 异常 #9:-352 频率风控的频道级冷却。last352Cooldown[id]=冷却到期时间,
@@ -134,8 +133,7 @@ func NewManager(
 		danmaku:            danmaku,
 		cookieAccountStore: accounts,
 		active:             map[string]activeRecord{},
-		fileSizes:          map[string]int64{},
-		failCount:          map[string]int{},
+		health:             map[string]*healthStats{},
 		last352Cooldown:    map[string]time.Time{},
 		cooldownStep:       map[string]int{},
 	}
@@ -559,8 +557,7 @@ func (m *Manager) Stop(channelID string) error {
 		// 自清 active 记录（ISS-6）：正常录制由 HandleTask 的 defer clearActive 兜底，
 		// 但 Adopt 接管的孤儿进程无 defer，Stop 必须显式清理。
 		delete(m.active, channelID)
-		delete(m.fileSizes, channelID)
-		delete(m.failCount, channelID)
+		delete(m.health, channelID)
 	}
 	m.mu.Unlock()
 	if !ok {
@@ -934,6 +931,20 @@ reconnect:
 		// 下轮按 err 类型分类:CDN 错误走 CDN 块(独立预算),非 CDN 走 decideAfterRecord。
 		err = segErr
 		attemptsUsed++
+	} // end reconnect loop
+
+	// 异常 #11:健康检测可能在循环外(另一个 goroutine)通过 markAbort 取消了 task。
+	// 读 healthStats.abortReason(**不 clearActive**,active 仍由 defer 清理),据此决定收尾路径:
+	//   - ErrZeroByteStalled(0 字节僵尸):走失败路径,不送 normalize;
+	//   - ErrRecordingNotGrowing(文件曾增长后停滞):有已录音频则覆盖 err 走成功收尾保留;
+	//   - nil:未 abort,按循环原本的 err 走。
+	if abortReason := m.peekAbortReason(task.ChannelID); abortReason != nil {
+		if errors.Is(abortReason, ErrZeroByteStalled) {
+			return fmt.Errorf("%w: channel_id=%s session_id=%s", ErrZeroByteStalled, task.ChannelID, task.SessionID)
+		}
+		if errors.Is(abortReason, ErrRecordingNotGrowing) && hasRecordedAudio(audioSegments) {
+			err = nil
+		}
 	}
 
 	if err != nil {
@@ -1437,6 +1448,15 @@ func (m *Manager) StopHealthCheck() {
 	}
 }
 
+// healthStats 聚合单个频道的健康检测状态(异常 #11)。所有字段在 m.mu 保护下读写。
+// 替代原分散的 fileSizes/failCount map,并新增 zeroSizeStreak(0 字节僵尸检测)和 abortReason。
+type healthStats struct {
+	fileSizes      int64
+	failCount      int
+	zeroSizeStreak int
+	abortReason    error // 健康检测判定不可恢复时设置,HandleTask 退出后据此走失败/成功路径
+}
+
 func (m *Manager) checkRecordingHealth() {
 	m.mu.Lock()
 	channelIDs := make([]string, 0, len(m.active))
@@ -1445,55 +1465,140 @@ func (m *Manager) checkRecordingHealth() {
 	}
 	m.mu.Unlock()
 
+	// 异常 #11(codex v1 Critical #2):每个频道独立调 checkOneChannelHealth,
+	// 它内部自管锁(applyHealthStat),不在 for 循环里 defer Unlock,避免多频道自锁。
 	for _, channelID := range channelIDs {
-		active, ok := m.activeFor(channelID)
-		if !ok {
-			continue
-		}
-
-		// Find output file by getting session info
-		ctx := context.Background()
-		sessionInfo, err := m.sessions.Get(ctx, active.SessionID)
-		if err != nil {
-			continue
-		}
-		sessionDir := filepath.Join(m.cfg.OutputRoot, channelID, sessionInfo.Slug)
-		// 异常 #4:优先用 active.CurrentOutputPath(重连切分段后会更新为 part.N);
-		// 为空时(Adopt 未填、或路径丢失)先 glob 最新音频文件,再 fallback 到硬编码 audio.{container}。
-		fallbackPath := filepath.Join(sessionDir, "raw", "audio."+m.cfg.LiveRecord.AudioContainer)
-		audioPath := active.CurrentOutputPath
-		if audioPath == "" {
-			if globbed := globLatestAudio(m.cfg.OutputRoot, channelID, active.SessionID, m.cfg.LiveRecord.AudioContainer); globbed != "" {
-				audioPath = globbed
-			} else {
-				audioPath = fallbackPath
-			}
-		}
-
-		info, err := os.Stat(audioPath)
-		if err != nil {
-			m.mu.Lock()
-			m.failCount[channelID]++
-			m.mu.Unlock()
-			continue
-		}
-
-		m.mu.Lock()
-		lastSize := m.fileSizes[channelID]
-		if info.Size() > lastSize {
-			m.failCount[channelID] = 0
-			m.fileSizes[channelID] = info.Size()
-		} else {
-			m.failCount[channelID]++
-			if m.failCount[channelID] >= 3 {
-				slog.Warn("recording unhealthy: file not growing",
-					"channel_id", channelID, "session_id", active.SessionID,
-					"file_size", info.Size(), "fail_count", m.failCount[channelID])
-			}
-		}
-		m.mu.Unlock()
+		m.checkOneChannelHealth(channelID)
 	}
 }
+
+// checkOneChannelHealth 处理单个频道的健康检测。所有锁操作在 applyHealthStat 内成对
+// Lock/Unlock(小函数内 defer 安全),不在本函数循环上下文里 defer。
+// 返回是否触发了 abort。
+func (m *Manager) checkOneChannelHealth(channelID string) bool {
+	active, ok := m.activeFor(channelID)
+	if !ok {
+		return false
+	}
+	ctx := context.Background()
+	sessionInfo, err := m.sessions.Get(ctx, active.SessionID)
+	if err != nil {
+		return false
+	}
+	sessionDir := filepath.Join(m.cfg.OutputRoot, channelID, sessionInfo.Slug)
+	// 异常 #4:优先用 active.CurrentOutputPath(重连切分段后会更新为 part.N);
+	// 为空时(Adopt 未填、或路径丢失)先 glob 最新音频文件,再 fallback 到硬编码 audio.{container}。
+	fallbackPath := filepath.Join(sessionDir, "raw", "audio."+m.cfg.LiveRecord.AudioContainer)
+	audioPath := active.CurrentOutputPath
+	if audioPath == "" {
+		if globbed := globLatestAudio(m.cfg.OutputRoot, channelID, active.SessionID, m.cfg.LiveRecord.AudioContainer); globbed != "" {
+			audioPath = globbed
+		} else {
+			audioPath = fallbackPath
+		}
+	}
+
+	info, err := os.Stat(audioPath)
+	if err != nil {
+		// 文件不存在(还未创建):仅递增 failCount,不触发 zeroSizeStreak abort。
+		m.applyHealthStat(channelID, func(s *healthStats) { s.failCount++ })
+		return false
+	}
+
+	// 计算新状态(锁外算好 os.Stat,锁内只写字段)
+	var abort error
+	size := info.Size()
+	m.applyHealthStat(channelID, func(s *healthStats) {
+		if size == 0 {
+			// 异常 #11:0 字节盲点。ffmpeg 起来但从未写入(selectStream 拿不到有效流)。
+			// 独立累计 zeroSizeStreak,达阈值即标记 abort(0 字节无音频 → 失败路径)。
+			s.zeroSizeStreak++
+			if s.zeroSizeStreak >= m.zeroSizeFailThreshold() && s.abortReason == nil {
+				s.abortReason = ErrZeroByteStalled
+				abort = ErrZeroByteStalled
+			}
+			// 0 字节不更新 fileSizes/failCount(它们基于"文件曾增长"的语义)
+			s.fileSizes = 0
+			s.failCount = 0
+			return
+		}
+		// 文件有数据:清零 0 字节计数,回到"曾增长"语义。
+		s.zeroSizeStreak = 0
+		if size > s.fileSizes {
+			s.failCount = 0
+			s.fileSizes = size
+		} else {
+			s.failCount++
+			if s.failCount >= 3 && s.abortReason == nil {
+				// 异常 #11:文件曾增长后连续停滞(failCount>=3),标记 abort。
+				// 有已录音频 → HandleTask 走成功收尾保留(见 peekAbortReason 处理)。
+				s.abortReason = ErrRecordingNotGrowing
+				abort = ErrRecordingNotGrowing
+			}
+		}
+	})
+
+	if abort != nil && m.markAbort(channelID) {
+		slog.Warn("recording unhealthy, aborting task",
+			"channel_id", channelID, "session_id", active.SessionID,
+			"abort_reason", abort, "fail_count", m.peekFailCount(channelID))
+		return true
+	}
+	return abort != nil
+}
+
+// applyHealthStat 在锁保护下读写频道的 healthStats。fn 内可安全修改字段。
+// 若 health map 未初始化或频道无 entry,惰性创建。
+func (m *Manager) applyHealthStat(channelID string, fn func(*healthStats)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.health == nil {
+		m.health = map[string]*healthStats{}
+	}
+	stats := m.health[channelID]
+	if stats == nil {
+		stats = &healthStats{}
+		m.health[channelID] = stats
+	}
+	fn(stats)
+}
+
+func (m *Manager) peekFailCount(channelID string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s := m.health[channelID]; s != nil {
+		return s.failCount
+	}
+	return 0
+}
+
+// peekAbortReason 只读频道的 abortReason,不做任何清理(codex v1 Important #1)。
+// active 的清理由 HandleTask 的 defer clearActive 统一负责,此处不提前释放。
+func (m *Manager) peekAbortReason(channelID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s := m.health[channelID]; s != nil {
+		return s.abortReason
+	}
+	return nil
+}
+
+// markAbort 触发 active.Cancel 取消 task(健康检测已在 applyHealthStat 内写入 abortReason)。
+// Cancel 幂等可重入。返回 true 表示 active 存在且有 Cancel。调用方不持有 m.mu。
+func (m *Manager) markAbort(channelID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	active, ok := m.active[channelID]
+	if !ok || active.Cancel == nil {
+		return false
+	}
+	active.Cancel()
+	return true
+}
+
+// zeroSizeFailThreshold 返回 0 字节僵尸判定阈值(连续检测次数)。
+// 默认 2(=2min @60s interval);文件有数据后 zeroSizeStreak 清零。
+func (m *Manager) zeroSizeFailThreshold() int { return 2 }
 
 func (m *Manager) setActive(channelID string, record activeRecord) bool {
 	m.mu.Lock()
@@ -1515,9 +1620,13 @@ func (m *Manager) updateCurrentOutputPath(channelID, outputPath string) {
 		if active.CurrentOutputPath != outputPath {
 			active.CurrentOutputPath = outputPath
 			m.active[channelID] = active
-			// 切换文件:重置该 channel 的基线,强制重新学习新文件的 size。
-			m.fileSizes[channelID] = 0
-			m.failCount[channelID] = 0
+			// 切换文件:重置该 channel 的健康基线(fileSizes/failCount/zeroSizeStreak),
+			// 强制重新学习新文件的 size。**不动 abortReason**(已 abort 的不重置)。
+			if s := m.health[channelID]; s != nil {
+				s.fileSizes = 0
+				s.failCount = 0
+				s.zeroSizeStreak = 0
+			}
 		}
 	}
 }
@@ -1527,7 +1636,6 @@ func (m *Manager) clearActive(channelID string, taskID string) {
 	defer m.mu.Unlock()
 	if active, ok := m.active[channelID]; ok && active.TaskID == taskID {
 		delete(m.active, channelID)
-		delete(m.fileSizes, channelID)
-		delete(m.failCount, channelID)
+		delete(m.health, channelID)
 	}
 }
