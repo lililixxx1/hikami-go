@@ -301,6 +301,118 @@ func TestHandleTaskReconnectSurvivesProbeError(t *testing.T) {
 	}
 }
 
+// TestHandleTaskProbeErrorBudgetExhaustedNoAudioReturnsError (异常 #10,codex v1 Critical #1):
+// 探测总错 + 所有 recordAudio 失败(无有效音频)→ probeErrorBudget 耗尽时必须走**失败**路径,
+// 不能 err=nil 把空音频送下游 normalize。alwaysFailingRecorder 不写文件,故 audioSegments 为空。
+// MaxReconnect 故意给足(3),验证用的是 probeErrorBudget=1 而非 maxReconnect。
+func TestHandleTaskProbeErrorBudgetExhaustedNoAudioReturnsError(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = true
+	manager.cfg.LiveRecord.MaxReconnect = 3
+	manager.cfg.LiveRecord.ReconnectDelay = 1
+	manager.client = probeErrorClient{}
+	recorder := &alwaysFailingRecorder{}
+	manager.audio = recorder
+	stubFFmpegConcat(t)
+
+	running := mustCreateRunningTask(t, pool)
+	err := manager.HandleTask(context.Background(), running, noopReporter{})
+	if err == nil {
+		t.Fatalf("HandleTask err = nil, want non-nil (no valid audio must not finish success)")
+	}
+	// 预期:首段 + 1 次 probe-error 重连 = 2 次录制。若误用 maxReconnect(3),会变成 4 次。
+	if len(recorder.outputs) != 2 {
+		t.Fatalf("recorder outputs = %d, want 2 (initial + 1 probe-error retry)", len(recorder.outputs))
+	}
+}
+
+// TestHandleTaskProbeErrorBudgetExhaustedWithAudioFinishesSuccess (异常 #10):
+// 探测总错 + 有有效音频(interruptingOnceRecorder 首次写有效字节后失败)→ probeErrorBudget 耗尽时
+// 走**成功**收尾(保留已录音频)。与 NoAudio 测试成对:同样探测总错、同样预算耗尽,差别只在有无音频。
+func TestHandleTaskProbeErrorBudgetExhaustedWithAudioFinishesSuccess(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = true
+	manager.cfg.LiveRecord.MaxReconnect = 3
+	manager.cfg.LiveRecord.ReconnectDelay = 1
+	manager.client = probeErrorClient{}
+	recorder := &interruptingOnceRecorder{}
+	manager.audio = recorder
+	stubFFmpegConcat(t)
+
+	running := mustCreateRunningTask(t, pool)
+	if err := manager.HandleTask(context.Background(), running, noopReporter{}); err != nil {
+		t.Fatalf("HandleTask err = %v, want nil (has recorded audio → success)", err)
+	}
+	if len(recorder.outputs) != 2 {
+		t.Fatalf("recorder outputs = %d, want 2 (initial + 1 probe-error retry)", len(recorder.outputs))
+	}
+	// 成功收尾应产出 audio 文件(拼接后的)
+	rawDir := filepath.Join(manager.cfg.OutputRoot, "huize", "live_20260427_120000", "raw")
+	audioPath := filepath.Join(rawDir, "audio.m4a")
+	if _, err := os.Stat(audioPath); err != nil {
+		t.Fatalf("expected preserved audio at %s: %v", audioPath, err)
+	}
+}
+
+// TestHandleTaskProbeErrorOnceThenLiveStillReconnects (异常 #10, codex v2 P2):
+// probe 序列 [Live=true, err, Live=false] —— 第 1 次 preflight live=true 放行,
+// 首段失败 → 第 2 次 err(decideAfterRecord default 分支触发 afterRecordProbeFailReconnect,
+// budget 1→0)→ 重连段成功 → 第 3 次 Live=false(decideAfterRecord 明确下播,正常收尾)。
+// 验证 budget=1 容忍瞬时探测抖动,且重连段成功后能正常收尾。
+func TestHandleTaskProbeErrorOnceThenLiveStillReconnects(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = true
+	manager.cfg.LiveRecord.MaxReconnect = 3
+	manager.cfg.LiveRecord.ReconnectDelay = 1
+	// probe 序列:preflight Live=true → 首段后 err → 重连段后 Live=false
+	c := &statefulLiveClient{
+		tb:    t,
+		lives: []bool{true, false, false}, // 第 2 次走 errs[1]
+		errs:  []error{nil, errors.New("probe transient"), nil},
+	}
+	manager.client = c
+	defer c.assertFullyConsumed()
+	recorder := &interruptingOnceRecorder{}
+	manager.audio = recorder
+	stubFFmpegConcat(t)
+
+	running := mustCreateRunningTask(t, pool)
+	if err := manager.HandleTask(context.Background(), running, noopReporter{}); err != nil {
+		t.Fatalf("HandleTask err = %v, want nil", err)
+	}
+	if len(recorder.outputs) != 2 {
+		t.Fatalf("recorder outputs = %d, want 2 (initial + 1 probe-error reconnect)", len(recorder.outputs))
+	}
+}
+
+// TestHandleTaskProbeErrorAutoReconnectOffKeepsError (异常 #10, codex v1 测试缺口):
+// AutoReconnect=false 时,decideAfterRecord 早退(manager.go:980-985),不进 probe budget 逻辑。
+// wantErr != nil → FinishError 保留原错,recorder 只 1 次输出(不重连)。
+func TestHandleTaskProbeErrorAutoReconnectOffKeepsError(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = false
+	manager.cfg.LiveRecord.MaxReconnect = 3
+	manager.cfg.LiveRecord.ReconnectDelay = 1
+	manager.client = probeErrorClient{}
+	recorder := &alwaysFailingRecorder{}
+	manager.audio = recorder
+	stubFFmpegConcat(t)
+
+	running := mustCreateRunningTask(t, pool)
+	err := manager.HandleTask(context.Background(), running, noopReporter{})
+	if err == nil {
+		t.Fatalf("HandleTask err = nil, want non-nil (AutoReconnect off keeps original error)")
+	}
+	// AutoReconnect=false:首段失败即退出,不重连。
+	if len(recorder.outputs) != 1 {
+		t.Fatalf("recorder outputs = %d, want 1 (no reconnect when AutoReconnect off)", len(recorder.outputs))
+	}
+}
+
 // TestHandleTaskReconnectsOnCleanEOFWhileLive 是本次修复的核心回归：首次录制 ffmpeg 干净
 // 退出（返回 nil，模拟上游 EOF）+ 主播仍开播 → 必须触发重连；重连段录制后主播下播 → 正常收尾。
 // 21:52 漏录正是首段 clean EOF 被旧代码（for ... err != nil ... 守卫）直接放行导致。

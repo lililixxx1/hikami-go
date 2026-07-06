@@ -56,6 +56,10 @@ const (
 	afterRecordFinishError
 	// afterRecordReconnect：进入或继续重连。carryErr 是触发重连的错误（原 wantErr 或哨兵）。
 	afterRecordReconnect
+	// afterRecordProbeFailReconnect：探测失败型重连（异常 #10）。
+	// decideAfterRecord 的 default 分支（CheckLive 探测出错 + wantErr != nil）返回此决策，
+	// 由调用方用独立预算 probeErrorBudget 控制（耗尽则收尾），不与 maxReconnect（明确仍开播的重连）混用。
+	afterRecordProbeFailReconnect
 )
 
 type Manager struct {
@@ -764,6 +768,9 @@ func (m *Manager) HandleTask(ctx context.Context, task worker.Task, reporter wor
 	// 异常 #1:selectStream 失败时置位,下一轮跳过 decideAfterRecord(否则它会重新 CheckLive,
 	// 在流断边缘态的瞬时抖动下误判 live:false 而提前放弃)。
 	selectFailedPending := false
+	// 异常 #10:探测失败型重连独立预算。decideAfterRecord 探测出错时返回
+	// afterRecordProbeFailReconnect,耗尽此预算即收尾,避免"attempt anyway" 占槽。
+	probeErrorBudget := 1
 reconnect:
 	for {
 		// 取消优先：Stop / worker 取消发生时立即退出，不因 helper 内的 CheckLive 而延迟。
@@ -876,6 +883,28 @@ reconnect:
 			}
 			err = carryErr
 			_ = reporter.Progress(ctx, 15+attemptsUsed*5, fmt.Sprintf("reconnecting (attempt %d/%d)", attemptsUsed+1, maxReconnect))
+		case afterRecordProbeFailReconnect:
+			// 异常 #10:探测失败型重连用独立 probeErrorBudget。耗尽则收尾,
+			// **但收尾路径取决于是否已录到有效音频**(codex v1 Critical #1):
+			//   - 有有效分段(len(audioSegments)>0):走成功收尾,保留已录音频(err=nil);
+			//   - 无有效分段(所有 recordAudio 都失败,0 字节):走失败路径,不送 normalize
+			//     (避免空音频污染回顾;finalizeAudioSegments 对空 segments 返回 nil,
+			//      会把 succeeded 状态 + enqueue normalize 推下游 —— 实质性回归)。
+			if probeErrorBudget <= 0 {
+				if hasRecordedAudio(audioSegments) {
+					slog.Info("probe-error budget exhausted, finishing with recorded audio preserved",
+						"channel_id", task.ChannelID, "room_id", payload.RoomID, "segments", len(audioSegments))
+					err = nil
+				} else {
+					slog.Warn("probe-error budget exhausted with no valid audio, finishing with error",
+						"channel_id", task.ChannelID, "room_id", payload.RoomID, "carry_error", carryErr)
+					err = carryErr
+				}
+				break reconnect
+			}
+			probeErrorBudget--
+			err = carryErr
+			_ = reporter.Progress(ctx, 15, "reconnecting after inconclusive live probe")
 		}
 
 		// 可取消的等待：Stop / 取消发生在重连延迟期间时立即退出整个循环（labeled break），
@@ -1025,16 +1054,17 @@ func (m *Manager) decideAfterRecord(ctx context.Context, task worker.Task, paylo
 	default:
 		// liveErr != nil（探测出错）：
 		//   wantErr == nil → 保守收尾（不丢弃已录音频）；
-		//   wantErr != nil → 保守重连（现状语义）。
+		//   wantErr != nil → 异常 #10：不再"attempt anyway"，改走独立预算的
+		//     ProbeFailReconnect，耗尽则由调用方收尾（见 manager.go 重连循环 switch 分支）。
 		if wantErr == nil {
 			slog.Info("clean exit with inconclusive live probe, treating as ended",
 				"channel_id", task.ChannelID, "room_id", payload.RoomID, "probe_error", liveErr)
 			return afterRecordFinishSuccess, nil
 		}
-		slog.Warn("reconnect liveness probe failed, attempt anyway",
+		slog.Warn("reconnect liveness probe failed, retrying with probe-error budget",
 			"channel_id", task.ChannelID, "room_id", payload.RoomID,
 			"probe_error", liveErr, "stream_error", wantErr)
-		return afterRecordReconnect, wantErr
+		return afterRecordProbeFailReconnect, wantErr
 	}
 }
 
@@ -1057,6 +1087,11 @@ func audioFileExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir() && info.Size() > 0
 }
+
+// hasRecordedAudio 判断 audioSegments 中是否存在至少一个正大小分段（异常 #10）。
+// 用于 probeErrorBudget 耗尽时决定走成功收尾（保留已录音频）还是失败路径（不送 normalize）。
+// audioSegments 已在 addAudioSegment 里用 audioFileExists（Size()>0）过滤，这里只需判空。
+func hasRecordedAudio(segments []string) bool { return len(segments) > 0 }
 
 // isCDNTransientError 判定错误是否为 CDN 瞬时错误(异常 #2):B 站 CDN 节点切换瞬间,
 // selectStream 拿到的流地址在 Go http.Get 时返回 404,或连接被重置。这类错误值得用
