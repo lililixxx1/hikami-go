@@ -1,0 +1,46 @@
+# 直播状态 schema
+# 真相源:internal/live_record/types.go:30 Status(注意 started_at 是 time.Time,序列化为 date-time)
+
+LiveStatus:
+  type: object
+  description: |
+    直播状态。对应 `live_record.Status`。
+    注意:GET /api/live/{channel_id}/status 返回**直接对象**(非 `{items}` 包装)。
+  required: [channel_id, room_id, live, title, recording]
+  properties:
+    channel_id:
+      type: string
+    room_id:
+      type: integer
+      format: int64
+    live:
+      type: boolean
+      description: 当前是否在直播
+    title:
+      type: string
+      description: 直播间标题
+    started_at:
+      type: string
+      format: date-time
+      description: 开播时间(omitempty,未开播缺席)
+    recording:
+      type: boolean
+      description: 本服务是否正在录制该频道
+    session_id:
+      type: string
+      description: 录制场次 ID(omitempty,未录制缺席)
+    task_id:
+      type: string
+      description: 录制任务 ID(omitempty)
+    error:
+      type: string
+      description: 状态查询错误(omitempty)
+
+LiveStatusListResponse:
+  type: object
+  required: [items]
+  properties:
+    items:
+      type: array
+      items:
+        $ref: 'live.yaml#/LiveStatus'

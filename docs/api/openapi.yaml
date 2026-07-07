@@ -1374,3 +1374,213 @@ paths:
             application/json:
               schema:
                 $ref: 'components/schemas/common.yaml#/Error'
+
+  # ───────── 运行时统计域(T5)─────────
+  /api/live/check:
+    post:
+      tags: [运行时]
+      operationId: checkLive
+      summary: 检查所有频道直播状态并触发录制
+      description: |
+        CheckAndStartAll:遍历所有启用+auto_record 的频道,检查直播状态,
+        对在直播的频道启动录制。**返回 202**(触发后台录制)。
+      responses:
+        '202':
+          description: 已检查并触发录制
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/live.yaml#/LiveStatusListResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/live/status:
+    get:
+      tags: [运行时]
+      operationId: liveStatus
+      summary: 查询所有频道直播状态(不触发录制)
+      description: "CheckAll:只查询不录制。响应 {items: [LiveStatus]}。"
+      responses:
+        '200':
+          description: 直播状态列表
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/live.yaml#/LiveStatusListResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/live/{channel_id}/status:
+    parameters:
+      - $ref: '#/components/parameters/LiveChannelID'
+    get:
+      tags: [运行时]
+      operationId: liveChannelStatus
+      summary: 查询单频道直播状态
+      description: |
+        返回**直接对象**(非 `{items}` 包装)。`ctx.JSON(200, status)`。
+      responses:
+        '200':
+          description: 单频道直播状态
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/live.yaml#/LiveStatus'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 频道不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/live/{channel_id}/record/start:
+    parameters:
+      - $ref: '#/components/parameters/LiveChannelID'
+    post:
+      tags: [运行时]
+      operationId: startLiveRecord
+      summary: 手动启动单频道录制
+      description: |
+        手动启动指定频道录制(忽略 auto_record 开关)。
+        **返回 202** + LiveStatus。
+      responses:
+        '202':
+          description: 已启动录制
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/live.yaml#/LiveStatus'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 频道不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: |
+            状态冲突:已在录制(ErrAlreadyRecording)/未在直播(ErrNotLive)/
+            直播被禁用(ErrLiveDisabled)等。
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/live/{channel_id}/record/stop:
+    parameters:
+      - $ref: '#/components/parameters/LiveChannelID'
+    post:
+      tags: [运行时]
+      operationId: stopLiveRecord
+      summary: 手动停止单频道录制
+      description: |
+        停止指定频道录制。**返回 202 Accepted,无响应体**(`ctx.Status(202)`)。
+      responses:
+        '202':
+          description: 已停止(无响应体)
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 频道不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 未在录制(ErrNotRecording)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/cookies/status:
+    get:
+      tags: [运行时]
+      operationId: cookieStatus
+      summary: 查询所有频道的 cookie 状态
+      description: |
+        遍历所有频道,检查 publish/download cookie 文件的有效性。
+        响应 `{channels: [CookieStatus]}`。空列表返回 `[]`(非 null)。
+      responses:
+        '200':
+          description: cookie 状态列表
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/stats.yaml#/CookieStatusResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/stats/overview:
+    get:
+      tags: [运行时]
+      operationId: statsOverview
+      summary: 统计概览
+      description: |
+        返回场次统计 + 任务汇总 + ASR 成本估算。
+        响应 `{sessions, task_summary, asr_cost_estimate, asr_hours}`。
+      responses:
+        '200':
+          description: 统计概览
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/stats.yaml#/StatsOverviewResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/stats/cost:
+    get:
+      tags: [运行时]
+      operationId: statsCost
+      summary: 成本估算
+      description: |
+        ASR + AI 回顾成本粗估 + 月度明细。
+      responses:
+        '200':
+          description: 成本估算
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/stats.yaml#/StatsCostResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/stats/dashboard:
+    get:
+      tags: [运行时]
+      operationId: statsDashboard
+      summary: Dashboard 数据
+      description: |
+        返回 DashboardData:按月/按频道的场次+成本趋势 + 弹幕 Top + 回顾/发布计数。
+      responses:
+        '200':
+          description: Dashboard 数据
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/stats.yaml#/DashboardData'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/diagnostic/report:
+    get:
+      tags: [运行时]
+      operationId: diagnosticReport
+      summary: 诊断报告
+      description: |
+        返回运行时诊断信息:runtime 状态 + config 摘要 + 磁盘占用 +
+        cookie 告警 + 最近失败任务 + 任务汇总。
+        响应是动态 map,字段见 DiagnosticReport schema。
+      responses:
+        '200':
+          description: 诊断报告
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/stats.yaml#/DiagnosticReport'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
