@@ -1,6 +1,6 @@
 import { ref, onUnmounted } from 'vue'
 import mitt from 'mitt'
-import type { TaskProgressEvent } from '@/api/types'
+import type { TaskProgressEvent } from '@/api/types-derived'
 
 type Events = {
   task_progress: TaskProgressEvent

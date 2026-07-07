@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { RuntimeStatus } from '@/api/types'
+import type { RuntimeStatus } from '@/api/types-derived'
 import { getRuntimeStatus } from '@/api/health'
 
 export const useRuntimeStore = defineStore('runtime', () => {

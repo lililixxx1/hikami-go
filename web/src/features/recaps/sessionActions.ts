@@ -16,7 +16,7 @@
  * (它属首页直播卡,不进回顾页两入口),故也不是 lifecycle 的超集。
  * 「重新生成回顾」属非推进型动作,不进 UIActionName,在 RecapDrawer 内硬编码。
  */
-import type { Session, Task, Capabilities } from '@/api/types'
+import type { Session, Task, Capabilities } from '@/api/types-derived'
 import { getNextAction } from '@/utils/lifecycle'
 
 /** 回放类来源(回放下载 / 手动导入)的回顾不发布B站,用于隐藏 publish/edit/remove 动作 */

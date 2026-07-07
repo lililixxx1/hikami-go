@@ -7,7 +7,7 @@
 -->
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { Capabilities, ConfigStatus } from '@/api/types'
+import type { Capabilities, ConfigStatus } from '@/api/types-derived'
 
 type DotStatus = 'done' | 'partial' | 'pending'
 

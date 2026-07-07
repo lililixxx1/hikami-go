@@ -10,7 +10,7 @@
  */
 import { computed, type MaybeRefOrGetter } from 'vue'
 import { toValue } from 'vue'
-import type { Capabilities, ConfigStatus } from '@/api/types'
+import type { Capabilities, ConfigStatus } from '@/api/types-derived'
 
 type CapActionType = 'section' | 'hint'
 

@@ -9,7 +9,7 @@
 import { computed, ref } from 'vue'
 import type { ComputedRef, Ref } from 'vue'
 import { updateChannel, deleteChannel } from '@/api/channels'
-import type { UpsertChannelInput, RuntimeStatus } from '@/api/types'
+import type { UpsertChannelInput, RuntimeStatus } from '@/api/types-derived'
 
 // 主播操作所需的最小字段集合。所有字段可选,使:
 // 1) types.ts / types-derived.ts 的 Channel 满足此结构(完整对象)

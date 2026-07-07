@@ -5,7 +5,8 @@
  * 组件保留纯 UI 状态(selectedPresetName/defaultPreviewVisible)和常量(templateVariables)。
  */
 import { computed, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
+import { HConfirm } from '@/components/ui/HConfirm'
 import {
   exportChannelRecapTemplates,
   exportGlobalRecapTemplates,
@@ -18,7 +19,7 @@ import {
   upsertGlobalRecapTemplate,
   deleteChannelRecapTemplate,
 } from '@/api/recap-templates'
-import type { RecapTemplate, ResolvedRecapTemplate, TemplatePreset } from '@/api/types'
+import type { RecapTemplate, ResolvedRecapTemplate, TemplatePreset } from '@/api/types-derived'
 
 export interface UseRecapTemplateEditorOptions {
   scope: () => 'global' | 'channel'
@@ -82,7 +83,7 @@ export function useRecapTemplateEditor(options: UseRecapTemplateEditorOptions) {
         }
       }
     } catch (e: any) {
-      ElMessage.error('加载模板失败: ' + (e.message || e))
+      HMessage.error('加载模板失败: ' + (e.message || e))
     } finally {
       loading.value = false
     }
@@ -94,7 +95,7 @@ export function useRecapTemplateEditor(options: UseRecapTemplateEditorOptions) {
       const res = await listRecapPresets()
       presets.value = res.presets ?? []
     } catch (e: any) {
-      ElMessage.error('加载模板预设失败: ' + (e.message || e))
+      HMessage.error('加载模板预设失败: ' + (e.message || e))
     } finally {
       presetLoading.value = false
     }
@@ -106,15 +107,12 @@ export function useRecapTemplateEditor(options: UseRecapTemplateEditorOptions) {
     if (!preset) return
     const isBuiltinDefault = preset.name === '内置默认'
 
-    try {
-      await ElMessageBox.confirm(
-        isBuiltinDefault
-          ? '将清空当前自定义内容，恢复为内置默认（留空自动生效）'
-          : '将覆盖当前编辑内容，是否继续？',
-        '应用模板预设',
-        { confirmButtonText: '覆盖', cancelButtonText: '取消', type: 'warning' },
-      )
-    } catch {
+    if (!(await HConfirm(
+      isBuiltinDefault
+        ? '将清空当前自定义内容，恢复为内置默认（留空自动生效）'
+        : '将覆盖当前编辑内容，是否继续？',
+      { title: '应用模板预设', confirmText: '覆盖', cancelText: '取消', type: 'warning' },
+    ))) {
       // 组件负责清空 selectedPresetName(由 onPresetCancelled 回调通知)
       return false
     }
@@ -129,7 +127,7 @@ export function useRecapTemplateEditor(options: UseRecapTemplateEditorOptions) {
     if (scope() === 'channel') {
       useCustom.value = true
     }
-    ElMessage.success(isBuiltinDefault ? '已恢复为内置默认' : `已应用预设：${preset.name}`)
+    HMessage.success(isBuiltinDefault ? '已恢复为内置默认' : `已应用预设：${preset.name}`)
     return true
   }
 
@@ -155,48 +153,47 @@ export function useRecapTemplateEditor(options: UseRecapTemplateEditorOptions) {
           enabled: true,
         })
       }
-      ElMessage.success('模板已保存')
+      HMessage.success('模板已保存')
       loadData()
     } catch (e: any) {
-      ElMessage.error('保存失败: ' + (e.message || e))
+      HMessage.error('保存失败: ' + (e.message || e))
     } finally {
       saving.value = false
     }
   }
 
   async function resetToDefault() {
-    try {
-      await ElMessageBox.confirm('确定要重置为内置默认模板吗？当前自定义内容将丢失。', '重置确认', {
-        confirmButtonText: '确定',
-        cancelButtonText: '取消',
-        type: 'warning',
-      })
-      systemPrompt.value = ''
-      userFormat.value = ''
-      fanName.value = ''
-      extraVars.value = '{}'
-      // 保存空值表示使用内置默认
-      await save()
-    } catch {
+    if (!(await HConfirm('确定要重置为内置默认模板吗？当前自定义内容将丢失。', {
+      title: '重置确认',
+      confirmText: '确定',
+      cancelText: '取消',
+      type: 'warning',
+    }))) {
       // 取消
+      return
     }
+    systemPrompt.value = ''
+    userFormat.value = ''
+    fanName.value = ''
+    extraVars.value = '{}'
+    // 保存空值表示使用内置默认
+    await save()
   }
 
   async function removeChannelTemplate() {
     if (!channelId()) return
+    if (!(await HConfirm('确定要删除主播自定义模板吗？将回退到全局模板。', {
+      title: '删除确认',
+      confirmText: '确定',
+      cancelText: '取消',
+      type: 'warning',
+    }))) return
     try {
-      await ElMessageBox.confirm('确定要删除主播自定义模板吗？将回退到全局模板。', '删除确认', {
-        confirmButtonText: '确定',
-        cancelButtonText: '取消',
-        type: 'warning',
-      })
       await deleteChannelRecapTemplate(channelId())
-      ElMessage.success('已删除，回退到全局模板')
+      HMessage.success('已删除，回退到全局模板')
       loadData()
     } catch (e: any) {
-      if (e !== 'cancel') {
-        ElMessage.error('删除失败: ' + (e.message || e))
-      }
+      HMessage.error('删除失败: ' + (e.message || e))
     }
   }
 
@@ -222,13 +219,13 @@ export function useRecapTemplateEditor(options: UseRecapTemplateEditorOptions) {
         scope() === 'global'
           ? await importGlobalRecapTemplates(content)
           : await importChannelRecapTemplates(channelId(), content)
-      ElMessage.success(`成功导入 ${result.imported} 个模板`)
+      HMessage.success(`成功导入 ${result.imported} 个模板`)
       if (scope() === 'channel') {
         useCustom.value = true
       }
       await loadData()
     } catch (e: any) {
-      ElMessage.error('导入失败: ' + (e.message || e))
+      HMessage.error('导入失败: ' + (e.message || e))
     } finally {
       importing.value = false
     }

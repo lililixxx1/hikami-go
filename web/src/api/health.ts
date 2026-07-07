@@ -1,5 +1,5 @@
 import { get } from './client'
-import type { RuntimeStatus } from './types'
+import type { RuntimeStatus } from './types-derived'
 
 export function checkHealth(): Promise<{ status: string }> {
   return get('/api/healthz')

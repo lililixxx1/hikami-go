@@ -9,7 +9,7 @@ import type { CookieStatus as CookieStatusValue, AutoToggleField, RecapOverrideF
 import AutoSwitches from './AutoSwitches.vue'
 import CookieStatus from './CookieStatus.vue'
 import ChannelAdvancedConfig from './ChannelAdvancedConfig.vue'
-// 共存期复用现有 EP 组件(Phase 6 统一换为 H* 实现)
+// 复用术语表/模板编辑器(Phase 6 已迁移为 H* 实现)
 import GlossaryEditor from '@/components/channel/GlossaryEditor.vue'
 import RecapTemplateEditor from '@/components/channel/RecapTemplateEditor.vue'
 
@@ -161,7 +161,7 @@ function applyRecapOverrides() {
         />
       </section>
 
-      <!-- 术语表(懒加载 EP 组件) -->
+      <!-- 术语表 -->
       <section class="detail-section">
         <HCollapse v-model="glossaryOpen">
           <HCollapseItem name="glossary" title="术语表 / ASR 热词">
@@ -176,7 +176,7 @@ function applyRecapOverrides() {
         </HCollapse>
       </section>
 
-      <!-- 回顾模板(懒加载 EP 组件) -->
+      <!-- 回顾模板 -->
       <section class="detail-section">
         <HCollapse v-model="recapTemplateOpen">
           <HCollapseItem name="recap-template" title="回顾模板(主播级覆盖)">

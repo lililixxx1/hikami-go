@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
 import { useOnboardingWizard } from '@/features/onboarding/useOnboardingWizard'
+import { HCard, HButton, HInput, HPill } from '@/components/ui'
 
 // 业务逻辑全在 composable(step 状态机 + 三步 API);组件纯展示
 const {
@@ -18,12 +19,14 @@ const {
   dismiss,
 } = useOnboardingWizard()
 
+const steps = ['环境检查', '配置密钥', '添加主播', '开始使用']
+
 onMounted(init)
 </script>
 
 <template>
   <div v-if="needed" class="onboarding-overlay">
-    <el-card class="wizard-card" shadow="always">
+    <HCard class="wizard-card">
       <template #header>
         <div class="wizard-header">
           <h2>欢迎使用 Hikami-Go</h2>
@@ -31,65 +34,74 @@ onMounted(init)
         </div>
       </template>
 
-      <el-steps :active="step" finish-status="success" simple class="wizard-steps">
-        <el-step title="环境检查" />
-        <el-step title="配置密钥" />
-        <el-step title="添加主播" />
-        <el-step title="开始使用" />
-      </el-steps>
-
-      <div class="step-content">
-        <div v-if="step === 0">
-          <h3>环境检查</h3>
-          <div class="check-list">
-            <div v-for="(tool, name) in runtimeData?.tools" :key="name" class="check-item">
-              <el-tag :type="tool.available ? 'success' : (tool.required ? 'danger' : 'info')" size="small">
-                {{ tool.available ? 'OK' : '缺失' }}
-              </el-tag>
-              <span class="check-name">{{ tool.name }}</span>
-              <span v-if="tool.required" class="check-required">必需</span>
-              <span v-if="!tool.available && tool.install_hint" class="check-hint">{{ tool.install_hint }}</span>
-            </div>
+      <div class="wizard-body">
+        <!-- 简易步骤指示器(替代 el-steps) -->
+        <div class="wizard-steps">
+          <div
+            v-for="(label, idx) in steps"
+            :key="idx"
+            class="step-item"
+            :class="{ active: idx === step, done: idx < step }"
+          >
+            <span class="step-dot">{{ idx + 1 }}</span>
+            <span class="step-label">{{ label }}</span>
           </div>
         </div>
 
-        <div v-if="step === 1">
-          <h3>API 密钥配置</h3>
-          <el-form label-width="160px">
-            <el-form-item label="DashScope ASR 密钥">
-              <el-input v-model="dashScopeKey" placeholder="sk-..." show-password />
-              <div class="field-hint">用于语音转写（阿里云 DashScope）</div>
-            </el-form-item>
-            <el-form-item label="AI 回顾生成密钥">
-              <el-input v-model="aiKey" placeholder="sk-..." show-password />
-              <div class="field-hint">用于 AI 生成直播回顾</div>
-            </el-form-item>
-          </el-form>
-        </div>
+        <div class="step-content">
+          <div v-if="step === 0">
+            <h3>环境检查</h3>
+            <div class="check-list">
+              <div v-for="(tool, name) in runtimeData?.tools" :key="name" class="check-item">
+                <HPill :variant="tool.available ? 'success' : (tool.required ? 'danger' : 'neutral')">
+                  {{ tool.available ? 'OK' : '缺失' }}
+                </HPill>
+                <span class="check-name">{{ tool.name }}</span>
+                <span v-if="tool.required" class="check-required">必需</span>
+                <span v-if="!tool.available && tool.install_hint" class="check-hint">{{ tool.install_hint }}</span>
+              </div>
+            </div>
+          </div>
 
-        <div v-if="step === 2">
-          <h3>添加第一个主播</h3>
-          <el-form label-width="120px">
-            <el-form-item label="主播 ID 或 URL">
-              <el-input v-model="channelInput" placeholder="输入 B 站 UID、直播间 URL 或主页 URL" />
+          <div v-if="step === 1">
+            <h3>API 密钥配置</h3>
+            <div class="form-stack">
+              <div class="field">
+                <label class="field-label">DashScope ASR 密钥</label>
+                <HInput v-model="dashScopeKey" placeholder="sk-..." />
+                <div class="field-hint">用于语音转写（阿里云 DashScope）</div>
+              </div>
+              <div class="field">
+                <label class="field-label">AI 回顾生成密钥</label>
+                <HInput v-model="aiKey" placeholder="sk-..." />
+                <div class="field-hint">用于 AI 生成直播回顾</div>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="step === 2">
+            <h3>添加第一个主播</h3>
+            <div class="field">
+              <label class="field-label">主播 ID 或 URL</label>
+              <HInput v-model="channelInput" placeholder="输入 B 站 UID、直播间 URL 或主页 URL" />
               <div class="field-hint">支持格式：UID 数字、直播间接链接、空间主页链接</div>
-            </el-form-item>
-          </el-form>
+            </div>
+          </div>
+
+          <div v-if="step === 3">
+            <h3>配置完成！</h3>
+            <p>你已准备就绪。现在可以开始录制直播、生成回顾了。</p>
+          </div>
         </div>
 
-        <div v-if="step === 3">
-          <h3>配置完成！</h3>
-          <p>你已准备就绪。现在可以开始录制直播、生成回顾了。</p>
+        <div class="wizard-actions">
+          <HButton v-if="step > 0" variant="secondary" @click="prevStep">上一步</HButton>
+          <HButton v-if="step < 3" variant="primary" :loading="loading" @click="nextStep">下一步</HButton>
+          <HButton v-if="step === 3" variant="primary" @click="finish">开始使用</HButton>
+          <HButton variant="ghost" @click="dismiss">跳过引导</HButton>
         </div>
       </div>
-
-      <div class="wizard-actions">
-        <el-button v-if="step > 0" @click="prevStep">上一步</el-button>
-        <el-button v-if="step < 3" type="primary" @click="nextStep" :loading="loading">下一步</el-button>
-        <el-button v-if="step === 3" type="success" @click="finish">开始使用</el-button>
-        <el-button @click="dismiss" text>跳过引导</el-button>
-      </div>
-    </el-card>
+    </HCard>
   </div>
 </template>
 
@@ -115,18 +127,85 @@ onMounted(init)
   margin: 0 0 4px;
 }
 .wizard-header p {
-  color: #909399;
+  color: var(--text-secondary);
   margin: 0;
 }
+.wizard-body {
+  padding: 16px 0;
+}
 .wizard-steps {
-  margin: 16px 0;
+  display: flex;
+  gap: 4px;
+  margin-bottom: 20px;
+}
+.step-item {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 2px solid var(--border-light);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.step-item.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 500;
+}
+.step-item.done {
+  color: var(--success);
+  border-bottom-color: var(--success);
+}
+.step-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.step-item.active .step-dot {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.step-item.done .step-dot {
+  background: var(--success);
+  border-color: var(--success);
+  color: #fff;
 }
 .step-content {
   min-height: 200px;
-  padding: 16px 0;
+  padding: 8px 0;
 }
 .step-content h3 {
   margin: 0 0 12px;
+}
+.form-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.field-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  min-width: 120px;
+}
+.field-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin-top: 2px;
 }
 .check-list {
   display: flex;
@@ -143,23 +222,18 @@ onMounted(init)
   min-width: 60px;
 }
 .check-required {
-  color: #f56c6c;
+  color: var(--danger, #f56c6c);
   font-size: 12px;
 }
 .check-hint {
-  color: #909399;
+  color: var(--text-muted);
   font-size: 12px;
-}
-.field-hint {
-  color: #909399;
-  font-size: 12px;
-  margin-top: 4px;
 }
 .wizard-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
   padding-top: 16px;
-  border-top: 1px solid #ebeef5;
+  border-top: 1px solid var(--border-light);
 }
 </style>

@@ -11,7 +11,7 @@
 import { computed, ref, watch } from 'vue'
 import QRCode from 'qrcode'
 import { HCard, HButton, HPill, HInput, HEmpty } from '@/components/ui'
-import type { BiliCookieAccount, QRCodeSession, QRCodePollResult } from '@/api/types'
+import type { BiliCookieAccount, QRCodeSession, QRCodePollResult } from '@/api/types-derived'
 
 const props = defineProps<{
   accounts: BiliCookieAccount[]

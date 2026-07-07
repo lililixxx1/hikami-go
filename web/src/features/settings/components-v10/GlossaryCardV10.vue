@@ -12,12 +12,12 @@
 -->
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
 import { HCard, HButton, HInput, HCheckbox, HPill, HDialog, HEmpty } from '@/components/ui'
 import { useGlossaryEntries, isDuplicateError } from '@/features/channel/useGlossaryEntries'
 import { listGlobalCandidates, approveGlobalCandidate, rejectGlobalCandidate } from '@/api/glossary'
 import { getGlobalNote, updateGlobalNote } from '@/api/glossary'
-import type { GlossaryEntry, GlossaryCandidate } from '@/api/types'
+import type { GlossaryEntry, GlossaryCandidate } from '@/api/types-derived'
 
 const emit = defineEmits<{ saved: [] }>()
 
@@ -61,16 +61,16 @@ function showAddDialog() {
 }
 async function handleAdd() {
   const term = addForm.value.term.trim()
-  if (!term) { ElMessage.warning('请填写词条'); return }
+  if (!term) { HMessage.warning('请填写词条'); return }
   const canonical = addForm.value.canonical.trim() || term
   addSaving.value = true
   try {
     await addEntry(term, canonical, addForm.value.category.trim())
-    ElMessage.success('词条已添加')
+    HMessage.success('词条已添加')
     addDialogVisible.value = false
     emit('saved')
   } catch (error) {
-    if (isDuplicateError(error)) { ElMessage.warning('词条已存在'); return }
+    if (isDuplicateError(error)) { HMessage.warning('词条已存在'); return }
     throw error
   } finally {
     addSaving.value = false
@@ -114,7 +114,7 @@ function showImportDialog() {
   importDialogVisible.value = true
 }
 async function handleImport() {
-  if (!importContent.value.trim()) { ElMessage.warning('请输入 JSON 内容'); return }
+  if (!importContent.value.trim()) { HMessage.warning('请输入 JSON 内容'); return }
   importing.value = true
   try {
     await importEntries(importContent.value.trim(), 'json')
@@ -154,7 +154,7 @@ async function loadCandidates() {
 async function handleApprove(c: GlossaryCandidate) {
   try {
     await approveGlobalCandidate(c.id)
-    ElMessage.success(`「${c.term}」已加入术语表`)
+    HMessage.success(`「${c.term}」已加入术语表`)
     await Promise.all([fetchData(), loadCandidates()])
     emit('saved')
   } catch { /* error shown by interceptor */ }
@@ -162,7 +162,7 @@ async function handleApprove(c: GlossaryCandidate) {
 async function handleReject(c: GlossaryCandidate) {
   try {
     await rejectGlobalCandidate(c.id)
-    ElMessage.success('已拒绝候选词')
+    HMessage.success('已拒绝候选词')
     await loadCandidates()
   } catch { /* error shown by interceptor */ }
 }
@@ -190,7 +190,7 @@ async function saveNote() {
     const res = await updateGlobalNote(noteDraft.value)
     note.value = res.note
     noteEditing.value = false
-    ElMessage.success('备注已保存')
+    HMessage.success('备注已保存')
   } catch { /* error shown by interceptor */ }
 }
 

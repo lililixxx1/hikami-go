@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-// TODO Phase 6: replace with HDialog / H* toast. ElMessage/ElMessageBox 仍经 ep-theme-bridge 工作,本阶段保留以避免范围蔓延。
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
+import { HConfirm } from '@/components/ui/HConfirm'
 import { useTasksStore } from '@/stores/tasks'
 import { useSessionsStore } from '@/stores/sessions'
 import { useChannelsStore } from '@/stores/channels'
@@ -93,48 +93,42 @@ async function handleCheckLive() {
   try {
     await checkAllLive()
     await liveStatusStore.fetchAll()
-    ElMessage.success('检查完成')
+    HMessage.success('检查完成')
   } finally {
     checkingLive.value = false
   }
 }
 
 async function handleStartRecord(cid: string, name: string) {
-  try {
-    await ElMessageBox.confirm(`确定开始录制「${name}」的直播？`, '开始录制', {
-      confirmButtonText: '开始', cancelButtonText: '取消', type: 'info',
-    })
-  } catch { return }
+  if (!(await HConfirm(`确定开始录制「${name}」的直播？`, {
+    title: '开始录制', confirmText: '开始', cancelText: '取消', type: 'info',
+  }))) return
   try {
     await startRecord(cid)
-    ElMessage.success('录制已开始')
+    HMessage.success('录制已开始')
     await liveStatusStore.fetchAll()
   } catch { /* handled by API */ }
 }
 
 async function handleStopRecord(cid: string, name: string) {
-  try {
-    await ElMessageBox.confirm(`确定停止录制「${name}」？`, '停止录制', {
-      confirmButtonText: '停止', cancelButtonText: '取消', type: 'warning',
-    })
-  } catch { return }
+  if (!(await HConfirm(`确定停止录制「${name}」？`, {
+    title: '停止录制', confirmText: '停止', cancelText: '取消', type: 'warning',
+  }))) return
   try {
     await stopRecord(cid)
-    ElMessage.success('录制已停止')
+    HMessage.success('录制已停止')
     await liveStatusStore.fetchAll()
   } catch { /* handled by API */ }
 }
 
 async function handleCancelTask(taskId: string) {
-  try {
-    await ElMessageBox.confirm('确定取消该任务？', '取消任务', {
-      confirmButtonText: '取消任务', cancelButtonText: '返回', type: 'warning',
-    })
-  } catch { return }
+  if (!(await HConfirm('确定取消该任务？', {
+    title: '取消任务', confirmText: '取消任务', cancelText: '返回', type: 'warning',
+  }))) return
   cancellingTaskId.value = taskId
   try {
     await cancelTask(taskId)
-    ElMessage.success('任务已取消')
+    HMessage.success('任务已取消')
     await tasksStore.fetchTasks()
   } catch { /* handled */ } finally {
     cancellingTaskId.value = null

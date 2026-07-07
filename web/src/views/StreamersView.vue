@@ -4,12 +4,12 @@
 // 职责:加载数据(channels/sessions/runtime/recap models)、消费 ?id query 打开抽屉、
 // 把网格 + 详情抽屉 + 两个 EP 对话框组合起来。写操作全部委托给 useStreamerDetail composable,
 // 成功后重新拉取 channels store 并同步选中主播(避免本地乐观更新与后端漂移)。
-// EP 组件(ChannelIdentifyDialog / BiliQRCodeLoginDialog)Phase 6 统一换为 H* 实现。
+// 对话框(ChannelIdentifyDialog / BiliQRCodeLoginDialog)已迁移为 H* 实现(Phase 6)。
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-// TODO Phase 6:替换为 H* toast/dialog。ElMessage/ElMessageBox 现仍经 ep-theme-bridge 工作,本阶段保留。
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Search } from '@element-plus/icons-vue'
+import { HMessage } from '@/components/ui/message'
+import { HConfirm } from '@/components/ui/HConfirm'
+import { HButton, HInput } from '@/components/ui'
 import { useChannelsStore } from '@/stores/channels'
 import { useSessionsStore } from '@/stores/sessions'
 import { useRuntimeStore } from '@/stores/runtime'
@@ -155,14 +155,12 @@ async function onSaveCover(value: string) {
 async function onDelete() {
   const c = selectedChannel.value
   if (!c) return
-  try {
-    await ElMessageBox.confirm('确定删除该主播?相关场次数据不会被删除。', '删除主播', {
-      confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning',
-    })
-  } catch { return }
+  if (!(await HConfirm('确定删除该主播?相关场次数据不会被删除。', {
+    title: '删除主播', confirmText: '删除', cancelText: '取消', type: 'warning',
+  }))) return
   try {
     await handleDelete()
-    ElMessage.success('已删除')
+    HMessage.success('已删除')
     selectedChannelId.value = null
     await channelsStore.fetchChannels()
   } catch { /* handled */ }
@@ -183,7 +181,7 @@ watch(
       const channel = await channelsStore.getByIdAfterLoad(String(id))
       if (channel) {
         selectedChannelId.value = channel.id
-        ElMessage.info('已跳转至主播详情')
+        HMessage.info('已跳转至主播详情')
       }
     }
   },
@@ -208,12 +206,11 @@ onMounted(async () => {
     <div class="page-header">
       <h2>我的主播</h2>
       <div class="page-actions">
-        <el-input v-model="keyword" clearable placeholder="搜索主播" class="search-input">
-          <template #prefix><el-icon><Search /></el-icon></template>
-        </el-input>
-        <el-button type="primary" @click="showIdentifyDialog = true">
-          <el-icon><Plus /></el-icon> 添加主播
-        </el-button>
+        <HInput v-model="keyword" placeholder="搜索主播" class="search-input" />
+        <HButton variant="primary" @click="showIdentifyDialog = true">
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3v10M3 8h10" /></svg>
+          添加主播
+        </HButton>
       </div>
     </div>
 
@@ -246,7 +243,7 @@ onMounted(async () => {
       v-if="showQRDialog"
       v-model:visible="showQRDialog"
       :channel-id="qrChannelId"
-      @saved="() => { ElMessage.success('Cookie 已更新'); channelsStore.fetchChannels() }"
+      @saved="() => { HMessage.success('Cookie 已更新'); channelsStore.fetchChannels() }"
     />
   </div>
 </template>

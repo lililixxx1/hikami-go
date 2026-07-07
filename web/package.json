@@ -15,7 +15,6 @@
     "@types/dompurify": "^3.0.5",
     "axios": "^1.7.9",
     "dompurify": "^3.4.3",
-    "element-plus": "^2.9.1",
     "marked": "^18.0.3",
     "mitt": "^3.0.1",
     "pinia": "^2.3.0",

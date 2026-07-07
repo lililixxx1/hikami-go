@@ -1,8 +1,8 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import type { Channel, UpsertChannelInput } from '@/api/types'
+import type { Channel, UpsertChannelInput } from '@/api/types-derived'
 import { listChannels, createChannel, updateChannel, deleteChannel as apiDelete } from '@/api/channels'
-import { ElMessage } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
 
 export const useChannelsStore = defineStore('channels', () => {
   const items = ref<Channel[]>([])
@@ -49,7 +49,7 @@ export const useChannelsStore = defineStore('channels', () => {
     try {
       const channel = await createChannel(input)
       items.value.push(channel)
-      ElMessage.success('主播创建成功')
+      HMessage.success('主播创建成功')
       return channel
     } catch {
       return null
@@ -63,7 +63,7 @@ export const useChannelsStore = defineStore('channels', () => {
       if (index !== -1) {
         items.value[index] = channel
       }
-      ElMessage.success('主播更新成功')
+      HMessage.success('主播更新成功')
       return channel
     } catch {
       return null
@@ -74,7 +74,7 @@ export const useChannelsStore = defineStore('channels', () => {
     try {
       await apiDelete(id)
       items.value = items.value.filter((c) => c.id !== id)
-      ElMessage.success('主播删除成功')
+      HMessage.success('主播删除成功')
       return true
     } catch {
       return false

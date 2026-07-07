@@ -10,7 +10,7 @@ import {
   UI_ACTION_REASON,
   type UIActionName,
 } from './sessionActions'
-import type { Session, Task, Capabilities } from '@/api/types'
+import type { Session, Task, Capabilities } from '@/api/types-derived'
 
 // ---------- fixtures ----------
 

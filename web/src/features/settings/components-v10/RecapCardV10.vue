@@ -10,12 +10,12 @@
 -->
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
 import { HCard, HButton, HInput, HSelect, HSwitch, HCheckbox, HPill } from '@/components/ui'
 import { getRecapConfig, updateRecapConfig } from '@/api/settings'
 import { useRecapModels } from '@/composables/useRecapModels'
 import { useRuntimeStore } from '@/stores/runtime'
-import type { RecapConfig } from '@/api/types'
+import type { RecapConfig } from '@/api/types-derived'
 
 const emit = defineEmits<{ saved: [] }>()
 const runtimeStore = useRuntimeStore()
@@ -79,7 +79,7 @@ async function save() {
     config.value = await updateRecapConfig(payload)
     apiKey.value = ''
     clearKey.value = false
-    ElMessage.success('回顾 AI 设置已保存')
+    HMessage.success('回顾 AI 设置已保存')
     await runtimeStore.fetchRuntime(true)
     emit('saved')
   } finally {

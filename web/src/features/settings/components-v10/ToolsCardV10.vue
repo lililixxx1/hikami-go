@@ -7,7 +7,7 @@
 -->
 <script setup lang="ts">
 import { HCard } from '@/components/ui'
-import type { ToolStatus } from '@/api/types'
+import type { ToolStatus } from '@/api/types-derived'
 
 defineProps<{
   tools: ToolStatus[]

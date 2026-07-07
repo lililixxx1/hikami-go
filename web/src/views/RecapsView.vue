@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
+import { HConfirm } from '@/components/ui/HConfirm'
 import { useSessionsStore } from '@/stores/sessions'
 import { useChannelsStore } from '@/stores/channels'
 import { useRuntimeStore } from '@/stores/runtime'
@@ -54,7 +55,7 @@ import type {
   DiscoverPickItem,
   Session,
   Task,
-} from '@/api/types'
+} from '@/api/types-derived'
 
 const router = useRouter()
 const route = useRoute()
@@ -235,7 +236,7 @@ async function openRecap(s: DerivedSession) {
 function handleCopyRecap() {
   if (recapContent.value?.markdown) {
     navigator.clipboard.writeText(recapContent.value.markdown)
-    ElMessage.success('已复制到剪贴板')
+    HMessage.success('已复制到剪贴板')
   }
 }
 
@@ -244,15 +245,13 @@ function handleCopyRecap() {
 // 抽屉 emit 的 session 是派生类型(V10 组件内);executeAction 只用 id,无需窄化。
 async function handleDrawerAction(session: DerivedSession, action: PrimaryAction) {
   if (action.disabled || actionLoadingId.value) return
-  try {
-    await ElMessageBox.confirm(action.confirmText, '操作确认', {
-      confirmButtonText: '确认', cancelButtonText: '取消', type: 'info',
-    })
-  } catch { return }
+  if (!(await HConfirm(action.confirmText, {
+    title: '操作确认', confirmText: '确认', cancelText: '取消', type: 'info',
+  }))) return
   actionLoadingId.value = `${session.id}:${action.name}`
   try {
     await executeAction(session.id, action.name)
-    ElMessage.success(`${action.label}任务已提交`)
+    HMessage.success(`${action.label}任务已提交`)
     await Promise.all([sessionsStore.fetchSessions(), tasksStore.fetchTasks()])
   } finally {
     actionLoadingId.value = ''
@@ -264,7 +263,7 @@ async function handlePartialRecap(startSeconds: number, endSeconds: number) {
   partialLoading.value = true
   try {
     await generateRecapWithRange(selectedSession.value.id, startSeconds, endSeconds)
-    ElMessage.success('时间段回顾任务已提交')
+    HMessage.success('时间段回顾任务已提交')
     await Promise.all([sessionsStore.fetchSessions(), tasksStore.fetchTasks()])
   } finally {
     partialLoading.value = false
@@ -281,7 +280,7 @@ async function handleAddSuggestedTerm(term: string) {
     const next = new Set(addedSuggestedTerms.value)
     next.add(normalized)
     addedSuggestedTerms.value = next
-    ElMessage.success('词条已添加')
+    HMessage.success('词条已添加')
   } finally {
     addingSuggestedTerm.value = ''
   }
@@ -299,15 +298,13 @@ async function executeAction(sid: string, name: PrimaryActionName) {
 // SessionTableV10 emit 的 session 是派生类型;executeAction 只用 id,无需窄化。
 async function handleRowAction(session: DerivedSession, action: PrimaryAction) {
   if (action.disabled || actionLoadingId.value) return
-  try {
-    await ElMessageBox.confirm(action.confirmText, '操作确认', {
-      confirmButtonText: '确认', cancelButtonText: '取消', type: 'info',
-    })
-  } catch { return }
+  if (!(await HConfirm(action.confirmText, {
+    title: '操作确认', confirmText: '确认', cancelText: '取消', type: 'info',
+  }))) return
   actionLoadingId.value = `${session.id}:${action.name}`
   try {
     await executeAction(session.id, action.name)
-    ElMessage.success(`${action.label}任务已提交`)
+    HMessage.success(`${action.label}任务已提交`)
     await Promise.all([sessionsStore.fetchSessions(), tasksStore.fetchTasks()])
   } finally {
     actionLoadingId.value = ''
@@ -317,15 +314,13 @@ async function handleRowAction(session: DerivedSession, action: PrimaryAction) {
 // 从 WebDAV 取回本场文件：上传清理策略删除本地目录后，需先取回才能发布/生成回顾。
 async function handleFetch(session: DerivedSession) {
   if (actionLoadingId.value) return
-  try {
-    await ElMessageBox.confirm('确定要从归档取回本场文件？', '操作确认', {
-      confirmButtonText: '确认', cancelButtonText: '取消', type: 'info',
-    })
-  } catch { return }
+  if (!(await HConfirm('确定要从归档取回本场文件？', {
+    title: '操作确认', confirmText: '确认', cancelText: '取消', type: 'info',
+  }))) return
   actionLoadingId.value = `${session.id}:fetch`
   try {
     await fetchSession(session.id)
-    ElMessage.success('取回任务已提交')
+    HMessage.success('取回任务已提交')
     await Promise.all([sessionsStore.fetchSessions(), tasksStore.fetchTasks()])
   } finally {
     actionLoadingId.value = ''
@@ -338,17 +333,14 @@ async function handleFetch(session: DerivedSession) {
 async function handleRegenerate() {
   const session = selectedSession.value
   if (!session || actionLoadingId.value) return
-  try {
-    await ElMessageBox.confirm(
-      '将重新生成本场回顾（覆盖当前回顾内容，不改动B站专栏）。生成是异步任务，完成后请重新打开查看。是否继续？',
-      '重新生成回顾',
-      { confirmButtonText: '确认生成', cancelButtonText: '取消', type: 'info' },
-    )
-  } catch { return }
+  if (!(await HConfirm(
+    '将重新生成本场回顾（覆盖当前回顾内容，不改动B站专栏）。生成是异步任务，完成后请重新打开查看。是否继续？',
+    { title: '重新生成回顾', confirmText: '确认生成', cancelText: '取消', type: 'info' },
+  ))) return
   actionLoadingId.value = `${session.id}:regenerate`
   try {
     await regenerateRecap(session.id)
-    ElMessage.success('重新生成任务已提交，完成后请重新打开查看')
+    HMessage.success('重新生成任务已提交，完成后请重新打开查看')
     await Promise.all([sessionsStore.fetchSessions(), tasksStore.fetchTasks()])
   } finally {
     actionLoadingId.value = ''
@@ -359,15 +351,13 @@ async function handleRegenerate() {
 //  - 用户确认后、调 retryTask 前用 decideRetry 二次校验(防弹窗期间 WS 改了任务状态)
 async function handleRetry(session: DerivedSession) {
   if (actionLoadingId.value) return
-  try {
-    await ElMessageBox.confirm('确定重试该失败任务？', '操作确认', {
-      confirmButtonText: '确认', cancelButtonText: '取消', type: 'info',
-    })
-  } catch { return }
+  if (!(await HConfirm('确定重试该失败任务？', {
+    title: '操作确认', confirmText: '确认', cancelText: '取消', type: 'info',
+  }))) return
 
   // 二次校验:弹窗期间 WS 可能已把任务推进/清理。decideRetry 消费 loose 类型,窄化转换。
   if (decideRetry(session as unknown as Session, sessionTask(session)) !== 'retryable') {
-    ElMessage.info('任务状态已变化，无需重试')
+    HMessage.info('任务状态已变化，无需重试')
     return
   }
 
@@ -375,7 +365,7 @@ async function handleRetry(session: DerivedSession) {
   actionLoadingId.value = `${session.id}:retry`
   try {
     await retryTask(taskId)
-    ElMessage.success('重试任务已提交')
+    HMessage.success('重试任务已提交')
     await tasksStore.fetchTasks()
     await sessionsStore.fetchSessions()
   } catch {
@@ -398,11 +388,11 @@ async function openDiscover() {
     const validNew = result.items.filter((i) => !i.error && !i.exists && i.channel_id && i.source_id).length
     const errorCount = result.items.filter((i) => i.error).length
     if (validNew > 0) {
-      ElMessage.info(`预览到 ${validNew} 条新回放，请勾选后下载`)
+      HMessage.info(`预览到 ${validNew} 条新回放，请勾选后下载`)
     } else if (errorCount > 0) {
-      ElMessage.warning(`部分主播发现失败（${errorCount} 条错误），其余回放均已处理`)
+      HMessage.warning(`部分主播发现失败（${errorCount} 条错误），其余回放均已处理`)
     } else {
-      ElMessage.info('未发现新回放（全部已处理）')
+      HMessage.info('未发现新回放（全部已处理）')
     }
   } catch {
     // previewDiscoverSessions 失败由 client.ts 拦截器统一 toast;items 为空,抽屉展示空态
@@ -411,21 +401,19 @@ async function openDiscover() {
 
 async function handleDiscoverExecute(picks: DerivedDiscoverPickItem[]) {
   if (picks.length === 0) {
-    ElMessage.warning('请先勾选要下载的回放')
+    HMessage.warning('请先勾选要下载的回放')
     return
   }
-  try {
-    await ElMessageBox.confirm(`确定下载选中的 ${picks.length} 个回放？将自动开始下载。`, '下载确认', {
-      confirmButtonText: '下载', cancelButtonText: '取消', type: 'warning',
-    })
-  } catch { return }
+  if (!(await HConfirm(`确定下载选中的 ${picks.length} 个回放？将自动开始下载。`, {
+    title: '下载确认', confirmText: '下载', cancelText: '取消', type: 'warning',
+  }))) return
   discoverExecuting.value = true
   try {
     // executeDiscoverSessions 消费旧 types.ts 的 DiscoverPickItem(全必填);派生类型窄化转换。
     const result = await executeDiscoverSessions(picks as unknown as DiscoverPickItem[])
     const created = result.items.filter((i) => i.created && !i.error).length
-    if (created > 0) ElMessage.success(`已开始下载 ${created} 个新回放`)
-    else ElMessage.info('选中项均已处理，无新下载')
+    if (created > 0) HMessage.success(`已开始下载 ${created} 个新回放`)
+    else HMessage.info('选中项均已处理，无新下载')
     await onDiscoverExecuted()
     discoverDrawerVisible.value = false
   } finally {
@@ -434,17 +422,15 @@ async function handleDiscoverExecute(picks: DerivedDiscoverPickItem[]) {
 }
 
 async function handleDiscoverAll() {
-  try {
-    await ElMessageBox.confirm('将立即下载所有新回放（不经过勾选），确定继续？', '全部下载', {
-      confirmButtonText: '全部下载', cancelButtonText: '取消', type: 'warning',
-    })
-  } catch { return }
+  if (!(await HConfirm('将立即下载所有新回放（不经过勾选），确定继续？', {
+    title: '全部下载', confirmText: '全部下载', cancelText: '取消', type: 'warning',
+  }))) return
   discoverExecuting.value = true
   try {
     const result = await discoverSessions()
     const created = result.items.filter((i) => i.created && !i.error).length
-    if (created > 0) ElMessage.success(`已开始下载 ${created} 个新回放`)
-    else ElMessage.info('未发现新回放')
+    if (created > 0) HMessage.success(`已开始下载 ${created} 个新回放`)
+    else HMessage.info('未发现新回放')
     await onDiscoverExecuted()
     discoverDrawerVisible.value = false
   } finally {
@@ -465,14 +451,12 @@ function handleImportSubmitted() {
 
 async function handleClearFailed() {
   const count = failedCount.value
-  if (count === 0) { ElMessage.info('没有失败场次'); return }
-  try {
-    await ElMessageBox.confirm(`确定清空 ${count} 个失败场次？`, '清空', {
-      confirmButtonText: '清空', cancelButtonText: '取消', type: 'warning',
-    })
-  } catch { return }
+  if (count === 0) { HMessage.info('没有失败场次'); return }
+  if (!(await HConfirm(`确定清空 ${count} 个失败场次？`, {
+    title: '清空', confirmText: '清空', cancelText: '取消', type: 'warning',
+  }))) return
   const result = await deleteFailedSessions()
-  ElMessage.success(`已删除 ${result.deleted} 个`)
+  HMessage.success(`已删除 ${result.deleted} 个`)
   await sessionsStore.fetchSessions()
 }
 

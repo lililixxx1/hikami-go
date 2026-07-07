@@ -1,5 +1,5 @@
 import { get, post, put, del } from './client'
-import type { Channel, UpsertChannelInput, IdentifyInput, IdentifyResult, IdentifySaveResult, ListResponse } from './types'
+import type { Channel, UpsertChannelInput, IdentifyInput, IdentifyResult, IdentifySaveResult, ListResponse } from './types-derived'
 
 export function listChannels(): Promise<ListResponse<Channel>> {
   return get('/api/channels')

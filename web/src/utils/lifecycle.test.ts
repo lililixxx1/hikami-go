@@ -6,7 +6,7 @@ import {
   LIFECYCLE_STEPS,
   type SessionActionName,
 } from './lifecycle'
-import type { Capabilities } from '@/api/types'
+import type { Capabilities } from '@/api/types-derived'
 
 const allCapabilities: Capabilities = {
   replay_download: true,

@@ -1,4 +1,4 @@
-export * from './types'
+export * from './types-derived'
 export * from './health'
 export * from './channels'
 export * from './live'

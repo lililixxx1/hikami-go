@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { getFriendlySessionStatus, statusGroupMap } from './friendlyStatus'
-import type { Session } from '@/api/types'
+import type { Session } from '@/api/types-derived'
 
 function makeSession(status: string): Session {
   return {

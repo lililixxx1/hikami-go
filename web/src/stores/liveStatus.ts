@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { LiveStatus } from '@/api/types'
+import type { LiveStatus } from '@/api/types-derived'
 import { getAllLiveStatus } from '@/api/live'
 
 export const useLiveStatusStore = defineStore('liveStatus', () => {

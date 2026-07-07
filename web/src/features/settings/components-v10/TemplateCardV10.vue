@@ -10,7 +10,7 @@
 -->
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
 import { HCard, HButton, HTextarea, HSelect, HDialog, HInput, HPill } from '@/components/ui'
 import { useRecapTemplateEditor } from '@/features/channel/useRecapTemplateEditor'
 
@@ -96,7 +96,7 @@ async function handleImportFile(event: Event) {
 
 async function handleImportText() {
   if (!importContent.value.trim()) {
-    ElMessage.warning('请粘贴模板 JSON 内容')
+    HMessage.warning('请粘贴模板 JSON 内容')
     return
   }
   try {

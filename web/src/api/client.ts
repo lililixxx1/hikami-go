@@ -1,5 +1,6 @@
 import axios from 'axios'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
+import { HPrompt } from '@/components/ui/HConfirm'
 import { useAdminToken } from '@/composables/useAdminToken'
 
 const client = axios.create({
@@ -23,11 +24,12 @@ function promptAdminToken(): Promise<string> {
   if (tokenPrompt) return tokenPrompt
   tokenPrompt = (async () => {
     try {
-      const { value } = await ElMessageBox.prompt('请输入管理员令牌（admin token）', '需要管理员认证', {
-        confirmButtonText: '确定',
-        cancelButtonText: '取消',
+      const value = await HPrompt('请输入管理员令牌（admin token）', {
+        title: '需要管理员认证',
+        confirmText: '确定',
+        cancelText: '取消',
         inputType: 'password',
-        inputPlaceholder: 'admin token',
+        placeholder: 'admin token',
       })
       return (value || '').trim()
     } finally {
@@ -60,16 +62,16 @@ client.interceptors.response.use(
       } catch {
         // 用户取消输入
       }
-      ElMessage.error('未提供有效管理员令牌，请前往设置页配置')
+      HMessage.error('未提供有效管理员令牌，请前往设置页配置')
       return Promise.reject(error)
     }
 
     if (error.response) {
       const { data, status: s } = error.response
       const message = data?.error || data?.reason || `请求失败 (${s})`
-      ElMessage.error(message)
+      HMessage.error(message)
     } else {
-      ElMessage.error('网络错误，请检查连接')
+      HMessage.error('网络错误，请检查连接')
     }
     return Promise.reject(error)
   },

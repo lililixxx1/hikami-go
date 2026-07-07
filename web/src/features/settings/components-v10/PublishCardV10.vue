@@ -13,11 +13,11 @@
 -->
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
 import { HCard, HButton, HInput, HSelect, HSwitch } from '@/components/ui'
 import { getPublishConfig, updatePublishConfig, searchBiliTopics, listBiliSeries } from '@/api/settings'
 import { useRuntimeStore } from '@/stores/runtime'
-import type { PublishConfig, BiliTopic, BiliSeries } from '@/api/types'
+import type { PublishConfig, BiliTopic, BiliSeries } from '@/api/types-derived'
 
 const props = defineProps<{ isExpert?: boolean }>()
 const emit = defineEmits<{ saved: [] }>()
@@ -73,7 +73,7 @@ async function save() {
   saving.value = true
   try {
     config.value = await updatePublishConfig(config.value)
-    ElMessage.success('发布设置已保存')
+    HMessage.success('发布设置已保存')
     await runtimeStore.fetchRuntime(true)
     emit('saved')
   } finally {

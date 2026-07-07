@@ -9,7 +9,7 @@
 | 框架 | Vue 3.5 |
 | 状态管理 | Pinia |
 | 路由 | Vue Router 4 |
-| UI 组件库 | Element Plus 2.9 |
+| UI 组件库 | V10 自建 H* 组件库(`src/components/ui/`,16 个 H* + HMessage/HConfirm/HToast) |
 | HTTP 客户端 | Axios |
 | Markdown 渲染 | marked |
 | 类型系统 | TypeScript |
@@ -79,8 +79,7 @@ web/src/
 │   │   ├── DiscoverResultDrawer.vue
 │   │   ├── ImportSessionDrawer.vue
 │   │   └── DownloadByURLDrawer.vue       # 按视频链接（BV 号等）触发下载的抽屉
-│   ├── task/      # 任务相关组件
-│   │   └── TaskProgressBar.vue
+│   ├── task/      # 任务相关组件（Phase 6 删除死代码 TaskProgressBar.vue）
 │   ├── layout/    # 布局组件
 │   │   └── AppLayout.vue                 # 应用布局框架（挂载刷新协调器）
 │   └── onboarding/
@@ -388,9 +387,11 @@ make web-build  # 生产构建（输出到 web/dist/）
 
 ## 测试状态
 
-已配置 Vitest 测试框架。现有 4 个测试文件，`vitest run` 运行时共 **97 个用例**（静态 `it` 声明 93 个；`sessionActions.test.ts` 内 `describe.each(['download','import'])` 将回放类用例 ×2 展开）：
+已配置 Vitest 测试框架。`vitest run` 运行时共 **149 个用例**，分布在 23 个测试文件中。Phase 6(V10 重写 + 移除 Element Plus)后新增 14 个 UI 组件单测(HButton/HCard/HCollapse/HDescriptions/HDialog/HDrawer/HEmpty/HInput/HPill/HProgress/HSelect/HSwitch/HTable/HTextarea),覆盖 H* 组件库核心交互。
 
-- `features/recaps/sessionActions.test.ts`（`vitest run` 48 个用例 / 静态 44 个 it）：覆盖 `getRowActions`/`getDrawerActions`（各状态下可见动作；published 无状态推进型动作，专栏删除能力已移除；回放类隐藏 publish）、`canFetchLocal`（local_available 守卫）、`decideRetry`/`isRetryable`/`retryHint`（重试决策）、`primaryActionType`（主按钮类型）、`UI_ACTION_REASON`（禁用原因，6 个 UIActionName）、`isReplaySource`（download/import 判定）。从 RecapsView 视图中抽出的纯函数，便于单元覆盖。其中回放类行/抽屉动作用例包在 `describe.each(['download','import'])` 中，按两种 source_type 各跑一遍。
+关键测试文件:
+
+- `features/recaps/sessionActions.test.ts`（`vitest run` 48 个用例）：覆盖 `getRowActions`/`getDrawerActions`（各状态下可见动作；published 无状态推进型动作；回放类隐藏 publish）、`canFetchLocal`（local_available 守卫）、`decideRetry`/`isRetryable`/`retryHint`（重试决策）、`primaryActionType`（主按钮类型）、`UI_ACTION_REASON`（禁用原因，6 个 UIActionName）、`isReplaySource`（download/import 判定）。从 RecapsView 视图中抽出的纯函数。其中回放类行/抽屉动作用例包在 `describe.each(['download','import'])` 中，按两种 source_type 各跑一遍。Phase 6 后 sessionActions 从 `@/api/types` 迁移到 `@/api/types-derived`,48 用例不变。
 
 - `utils/format.test.ts`（17 个 it 测试）：
   - formatDateTime: 空字符串返回"-"、ISO 日期格式化、无效日期回退
@@ -412,6 +413,7 @@ make web-build  # 生产构建（输出到 web/dist/）
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-07-08 | 重构 | **Phase 6 移除 Element Plus + 删除 types.ts**：剩余 EP 业务组件(GlossaryEditor/RecapTemplateEditor/ImportSessionDrawer/DownloadByURLDrawer/DiscoverResultDrawer/OnboardingWizard/ChannelIdentifyDialog/BiliQRCodeLoginDialog)全部迁移到 H* 原语;main.ts 删除 ElementPlus 注册 + ep-theme-bridge.css + `npm uninstall element-plus`;删除手写 `api/types.ts`(549 行),39 个 import 全部迁移到 `api/types-derived.ts`(从 generated.ts 派生,补齐 Capabilities/ConfigStatus/配置类型兼容性)。删除死代码 TaskProgressBar.vue。149 测试通过,type-check + build 通过,bundle 体积大幅下降(EP ~600KB gz 移除)。红线段补「不重写 H* 组件核心交互」。 |
 | 2026-07-05 | 功能 | **B站账号卡片区分登录态**（`a449d7e`）：`BiliAccountsCard.vue` 新增 `isLoggedIn(account)` 判断（`cookie_file !== ''`）。`cookie_file` 为空的账号（如从配置备份导入的元数据，无 cookie 文件）显示灰色 `type="info"`「未登录」标签 + 卡片加 `account-card--logged-out` class（`opacity: 0.6`）整体置灰，与已扫码登录的账号视觉区分，避免把导入的裸元数据误读为已登录账号。无新增测试（纯展示性 UI 改动） |
 | 2026-07-03 | 重构 | **移除专栏删除/编辑 + 新增重新生成回顾**：① 砍掉 `removeOpus`/`editOpus`（删B站专栏）——B站内容只能手动去 B站管理，本系统不删不改。`sessionActions.ts` 的 `UIActionName` 8→6（删 `edit_opus`/`remove_opus`）、删 `publishOpusAction`、`RowActions` 删 edit/remove 字段、`getRowActions` 删 published 分支（published 行现在无状态推进型动作，local 不可用时仅显示取回）。`SessionTable.vue` 删 published 编辑/删除按钮块 + emit。`api/sessions.ts` 删 `editOpus`/`removeOpus`。② 新增「重新生成回顾」：纯本地覆盖 md，不碰 B站。`RecapDrawer.vue` `.drawer-actions` 加硬编码「重新生成」按钮（`v-if recap_done/published`，非状态推进型不进 `getDrawerActions`），emit `regenerate` → `RecapsView.handleRegenerate` → `regenerateRecap(sid)`（`POST /api/sessions/:sid/recap/regenerate`）。配合后端 worker 任务实例级 `BypassFailState`（失败不降级 published/recap_done 主状态）。`sessionActions.test.ts` 删 edit/remove 用例（运行时 100→97）、published 用例改为断言无 primary。 |
 | 2026-07-03 | 重构 | **设置页折叠分组**（`af9df47` + `be509b6`）：`views/SettingsView.vue` 由 13 张平铺卡片重组为 4 个 `el-collapse` 折叠分组——① 总览（grp-overview，合并原「配置进度」+「系统状态」+「专家配置状态」三处重叠为单个总览卡，`overviewItems` computed 渲染 4 项能力）；② 流水线配置（grp-pipeline，6 张配置卡）；③ 账号与备份（grp-accounts）；④ 高级（grp-advanced，术语表/模板/专家工具表）。删除与子卡重复的"API 密钥"空壳卡（密钥改由 DashScope/ASRS3/Recap 各卡内联管理）。`scrollToSection` 适配跨分组跳转（先展开并等 ~320ms 过渡再滚动）。`BiliAccountsCard` 背景/圆角统一（`#fafafa`/8px），页面宽度 800→960。`be509b6` 修 `.column-row > .column-note { grid-column: 2 }`（专栏投稿 column-note 被 2 列 grid auto-placement 挤进 label 列导致竖排）。无新增/删除测试，Vitest 运行时用例 100 不变（`sessionActions.test.ts` 运行时 51，因 `describe.each` 展开；本轮仅核对计数口径，测试代码无改动）。目录树补登遗漏的 `DashScopeSettingsCard.vue`/`ASRS3SettingsCard.vue`（实为 9 `.vue`，此前文档仅列 7） |

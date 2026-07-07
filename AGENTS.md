@@ -162,10 +162,11 @@ graph LR
 - `api/` — 类型化 HTTP 客户端,**唯一**与后端通信处(新包装器不得含 UI 副作用)。
 - `stores/` — Pinia 实体缓存,`loaded`/`byId`/`ensureLoaded()`(inflight 去重)+ `getByIdAfterLoad(id)`。当前 5 个:`channels`、`sessions`、`tasks`、`liveStatus`、`runtime`(运行时状态/能力)。
 - `composables/` — 跨域复用 hooks(共 7 个):`useAdminToken`、`useExpertMode`、`usePolling`、`useWebSocket`、`useAppRefreshCoordinator`(WebSocket + 降级轮询 + 终态会话刷新的唯一拥有者)、`useRecapModels`(按厂商分组的推荐回顾模型下拉,全局/主播级复用)、`useDiscoverReplay`(发现回放抽屉可见性 + 执行后刷新,RecapsView/HomeView 共用)。
-- `features/` — 按业务域组织(本次重构核心):
-  - `features/recaps/sessionActions.ts` — 两个回顾页入口(行 vs 抽屉)的显式动作矩阵(`UIActionName` 8 个动作,区别于生命周期的 `SessionActionName`);`isReplaySource` 对回放类(download/import)隐藏 publish/edit/remove(归档 upload 保留);覆盖测试 `sessionActions.test.ts`。
-  - `features/recaps/components/`、`features/settings/components/`、`features/channel/`、`features/onboarding/` — 拆分后的子组件与自管理 hooks。`features/settings/components/` 下 9 张配置卡由 `SettingsView.vue` 编排为 4 个 `el-collapse` 折叠分组(总览/流水线配置/账号与备份/高级,`af9df47` 重构)。其中 `BiliAccountsCard.vue` 对 `cookie_file` 为空的账号(备份导入的元数据)显示灰色「未登录」标签 + 卡片置灰,避免误读为已扫码登录。
-- `components/` — 共享/展示组件;`components/shared/` **不得**自取 store。
+- `features/` — 按业务域组织(V10 重写核心):
+  - `features/recaps/sessionActions.ts` — 两个回顾页入口(行 vs 抽屉)的显式动作矩阵(`UIActionName` 8 个动作,区别于生命周期的 `SessionActionName`);`isReplaySource` 对回放类(download/import)隐藏 publish/edit/remove(归档 upload 保留);覆盖测试 `sessionActions.test.ts`(48 用例)。
+  - `features/recaps/components/`、`features/settings/components-v10/`、`features/channel/`、`features/onboarding/`、`features/streamers/`、`features/home/` — 拆分后的子组件与自管理 hooks。设置页由 `SettingsView.vue` 编排为 sidebar + content + 多卡(V10 重写,Phase 5)。
+- `components/ui/` — **V10 自建组件库**(Phase 6):16 个 H* 组件(HInput/HSelect/HButton/HCheckbox/HSwitch/HDialog/HDrawer/HTable/HCard/HPill/HProgress/HEmpty/HDescriptions/HCollapse/HTextarea/HToast)+ HMessage/HConfirm/HToast 命令式基础设施,`design-tokens.css` 锁定 token。已移除 Element Plus。14 个组件有单测保护。
+- `components/` — 其他共享/展示组件;`components/shared/` **不得**自取 store。
 - `views/` — 薄路由壳:数据加载分发、store 编排、动作处理;业务 UI 委托给 `features/`。
 
 ## 编码规范
@@ -224,6 +225,8 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
 | 各模块深度说明 | 根 `CLAUDE.md` + 各 `internal/<模块>/CLAUDE.md` |
 
 ## 变更记录
+
+- 2026-07-08(三):**Vue 3 前端 V10 全页面重写完成(Phase 0-6)**(branch `feat/remove-element-plus`)。基于 OpenAPI 契约(openapi-typescript 生成 `generated.ts`)重写全部 4 个视图(HomeView/RecapsView/StreamersView/SettingsView)+ 设计系统。**设计系统**:自建 V10 组件库 `web/src/components/ui/`(16 个 H* 组件 + HMessage/HConfirm/HToast 命令式基础设施)+ `design-tokens.css` 锁定 token,完全移除 Element Plus。**Phase 6(本轮,4 commits)**:① 迁移剩余 8 个 EP 业务组件(GlossaryEditor/RecapTemplateEditor/ImportSessionDrawer/DownloadByURLDrawer/DiscoverResultDrawer/OnboardingWizard/ChannelIdentifyDialog/BiliQRCodeLoginDialog)到 H* 原语(el-*→H*,@element-plus/icons-vue→inline SVG,el-upload→native file input),删除死代码 TaskProgressBar.vue;② main.ts 删除 ElementPlus 注册 + 删除 ep-theme-bridge.css + `npm uninstall element-plus`;③ 删除手写 `api/types.ts`(549 行),39 个 import 全部迁移到 `api/types-derived.ts`(从 generated.ts 派生;补齐 Capabilities.reason 必填、ConfigStatus.glossary_* 字段、配置类型 Response+Request 写字段合并、ResolvedRecapTemplate snake_case 等兼容性);④ 文档同步(FRONTEND_ARCHITECTURE 技术栈/红线、api-gap-analysis P0/P1 标 ✅、web/CLAUDE.md、本文件)。**验证**:149 测试通过(含 sessionActions 48 + 14 个 UI 组件单测)、type-check 通过、build 通过、bundle 体积大幅下降(EP ~600KB gz 移除)。**关键约束**:业务逻辑(API 调用/表单校验/emit 契约/composable)全部不变,纯 UI 原语替换;types-derived 保留与运行时数据形态一致的兼容定义(Capabilities/ConfigStatus/ResolvedRecapTemplate 等)。
 
 - 2026-07-07(一):**后端接口 OpenAPI 文档落地**(`docs/api/`,branch `feat/api-openapi-doc`)。手写 OpenAPI 3.0.3 YAML 规范,**121 个端点 + WebSocket 事件契约**,作为 Vue 3 前端全页面重写(V10 模板)的契约源。**对 spec §2.1 的执行期修正**:原计划 paths/ 按域拆分需 JSON Pointer 转义(`/`→`~1`),改为 **openapi.yaml 单文件 paths 内联 + 仅 schema 跨文件**(14 个 `components/schemas/*.yaml`)。产物:`openapi.yaml`(主文件,paths 内联)+ 14 个 schema + `index.html`(Swagger UI 5 CDN)+ `api-gap-analysis.md`(V10 模板 vs 后端 4 页逐元素对照)+ `README.md` + Makefile 3 target(`api-docs`/`api-lint`/`api-gen-types`)。11 个 task 分 3 批次(T0-T3 骨架+系统+频道+场次 / T4-T6 任务+运行时+配置 / T7-T11 术语+模板+B站+密钥+gap),打 tag `api-batch-1`/`api-batch-2`。**关键陷阱如实记录**:① `/ws` 路径无 `/api` 前缀;② `ResolvedTemplate` 字段名 **PascalCase**(SystemPrompt 等,源码无 json tag 历史遗留);③ `POST /api/sessions/import` 是 multipart/form-data;④ **`PUT /api/secrets/{key}` 传空串删除,无 DELETE 端点**;⑤ `auto_recap` 三态(`*bool`);⑥ 6 组 config 全 patch 语义(全字段指针,无 required);⑦ QR session 过期→**410**(非 404);⑧ 兼容端点 `/api/bili/accounts/*` 标 `deprecated: true`;⑨ 配置密钥只写(GET 永不返回明文,只有 `*_set` boolean);⑩ `TaskDetailResponse` 条件字段(friendly_error/auto_retry 仅 failed 出现)。redocly lint 全程通过(7 warnings,均 info-license 或未来用的未引用 component)。gap 分析核心结论:模板与 API 整体契合度高,P0 阻塞点是 **Session/Task 缺 channel_name 字段** + **listSessions 不支持 channel_id/source/search 过滤** + **模板无 WebSocket 连接代码**(进度列静态),前端重写需先补这三项。
 

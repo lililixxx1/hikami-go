@@ -8,7 +8,7 @@
  * 让组件渲染二维码。emit 也留在组件,composable 通过回调通知保存结果。
  */
 import { computed, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
 import {
   cancelQRCodeSession,
   createQRCodeSession,
@@ -24,7 +24,7 @@ import type {
   QRCodeLoginStatus,
   QRCodePollResult,
   QRCodeSession,
-} from '@/api/types'
+} from '@/api/types-derived'
 
 export type DialogState =
   | 'loading'
@@ -170,7 +170,7 @@ export function useBiliQRCodeLogin(options: UseBiliQRCodeLoginOptions) {
         const account = await saveQRCodeToAccount(session.value.session_id, nickname.value || undefined)
         session.value = null
         state.value = 'done'
-        ElMessage.success('账号已保存')
+        HMessage.success('账号已保存')
         onSavedAccount?.(account)
         onClose?.()
       } catch {
@@ -189,7 +189,7 @@ export function useBiliQRCodeLogin(options: UseBiliQRCodeLoginOptions) {
       const response = await saveQRCodeSession(session.value.session_id, channelId(), usage.value)
       session.value = null
       state.value = 'done'
-      ElMessage.success('Cookie 已保存')
+      HMessage.success('Cookie 已保存')
       onSaved?.(response.channel)
       onClose?.()
     } catch {

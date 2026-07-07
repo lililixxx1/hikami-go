@@ -23,7 +23,7 @@ import type { Session, Task, Capabilities, Channel } from '@/api/types-derived'
 // sessionActions.ts 消费的是旧手写 types.ts 的 Session/Task/Capabilities(全必填),与 generated
 // 派生类型(optional 字段)在 TS 层不完全兼容(Phase 6 才统一迁移)。状态机仅读取 status/id/
 // local_available 等字段,运行时安全;这里在调用边界窄化转换,避免修改 41 测试保护的 sessionActions.ts。
-import type { Session as LooseSession, Task as LooseTask, Capabilities as LooseCapabilities } from '@/api/types'
+import type { Session as LooseSession, Task as LooseTask, Capabilities as LooseCapabilities } from '@/api/types-derived'
 
 const props = defineProps<{
   sessions: Session[]

@@ -7,7 +7,8 @@
 
 ## 0. 技术栈
 
-Vue 3 (Composition API, `<script setup>`) + Element Plus + Pinia + vue-router 4 + Vite + TypeScript。
+Vue 3 (Composition API, `<script setup>`) + Pinia + vue-router 4 + Vite + TypeScript。
+**V10 自定义组件库**(`web/src/components/ui/`):16 个 H* 组件(HInput/HSelect/HButton/HCheckbox/HSwitch/HDialog/HDrawer/HTable/HCard/HPill/HProgress/HEmpty/HDescriptions/HCollapse/HTextarea/HToast)+ HMessage/HConfirm/HToast 命令式基础设施,`design-tokens.css` 锁定设计 token。已移除 Element Plus(Phase 6)。
 axios 单 client(`api/client.ts`)注入 X-Admin-Token,401 自动补登,错误 toast。
 WebSocket 仅 `task_progress`(后端不推 session/live 实时事件)。
 
@@ -171,13 +172,15 @@ web/src/
 
 ## 9. 红线(架构约束,后续开发须遵守)
 
-- ❌ 不换 Vue/Pinia/Element Plus
+- ❌ 不换 Vue/Pinia/vue-router
+- ❌ 不重引入 Element Plus 等 UI 框架(V10 已用自建 H* 组件库替代)
 - ❌ 不改后端 API 路径/方法/payload
 - ❌ 不改 4 主路由 + 9 旧路径重定向
 - ❌ 不改认证机制(X-Admin-Token、401 补登)
 - ❌ 不扩展 WS 成 session/live 实时通道(除非后端加事件)
 - ❌ 不把业务状态塞进单一全局 store
 - ❌ 不重写 `utils/lifecycle.ts` 决策核心(只包装)
+- ❌ 不重写 H* 组件核心交互(已单测保护)
 - ❌ 不改 `api/client.ts` 的 401 补登/错误 toast(全局横切)
 - ❌ 新 wrapper 不加 UI 副作用(emit/弹窗)
 - ❌ `components/shared` 不自取 store

@@ -7,7 +7,7 @@
  * 注:onboarding 端点暂走 client 直连(pre-existing,无封装 wrapper),不在本阶段新建 api 层。
  */
 import { ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
 import { useRouter } from 'vue-router'
 import { get, post, put } from '@/api/client'
 
@@ -51,7 +51,7 @@ export function useOnboardingWizard() {
           await put('/api/secrets/AI_API_KEY', { value: aiKey.value })
         }
         if (dashScopeKey.value || aiKey.value) {
-          ElMessage.success('API 密钥已保存')
+          HMessage.success('API 密钥已保存')
         }
       } catch { /* error handled by client */ }
       loading.value = false
@@ -65,7 +65,7 @@ export function useOnboardingWizard() {
           auto_record: true,
         })
         if (identifyResult?.channel) {
-          ElMessage.success(`主播 "${identifyResult.channel.name}" 已添加`)
+          HMessage.success(`主播 "${identifyResult.channel.name}" 已添加`)
         }
       } catch { /* error handled by client */ }
       loading.value = false

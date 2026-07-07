@@ -10,7 +10,7 @@
 import { computed, ref, watch } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { ElMessage } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
 import { HButton, HTextarea } from '@/components/ui'
 import { getFriendlySessionStatus } from '@/utils/friendlyStatus'
 import { formatDateTime } from '@/utils/format'
@@ -21,7 +21,7 @@ import {
 import type { Session, RecapContent, Capabilities, Channel } from '@/api/types-derived'
 // sessionActions.ts 消费旧手写 types.ts 的 Session/Capabilities(全必填),与 generated 派生类型在
 // TS 层不完全兼容(Phase 6 统一迁移)。状态机仅读 status/local_available,运行时安全;调用边界窄化。
-import type { Session as LooseSession, Capabilities as LooseCapabilities } from '@/api/types'
+import type { Session as LooseSession, Capabilities as LooseCapabilities } from '@/api/types-derived'
 
 const props = defineProps<{
   visible: boolean
@@ -89,7 +89,7 @@ function handlePartial(): void {
   const start = toSeconds(rangeStart.value)
   const end = toSeconds(rangeEnd.value)
   if (start === null || end === null || end <= start) {
-    ElMessage.warning('请输入有效的开始/结束时间(HH:MM:SS)')
+    HMessage.warning('请输入有效的开始/结束时间(HH:MM:SS)')
     return
   }
   emit('partial-range', start, end)
@@ -112,7 +112,7 @@ async function saveEdit(): Promise<void> {
     // 直接调 PUT recap/content(就近复用),保存后退出编辑态。
     const { updateRecapContent } = await import('@/api/sessions')
     await updateRecapContent(props.session.id, draft.value)
-    ElMessage.success('回顾内容已保存')
+    HMessage.success('回顾内容已保存')
     editing.value = false
   } finally {
     saving.value = false
