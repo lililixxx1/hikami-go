@@ -1,0 +1,74 @@
+# 发现(discover)域 schema
+# 真相源:internal/discover/discover.go:81 Result / :97 ExecuteItem
+
+# 单个发现结果(DiscoverAll / PreviewAll / Execute 共用)
+DiscoverResult:
+  type: object
+  description: |
+    发现结果项。三种场景的字段差异:
+    - **DiscoverAll**(POST /api/sessions/discover):created/task_id 已建场次和入队
+    - **PreviewAll**(POST /api/sessions/discover/preview):**不建场次**,exists 标注是否已建过 download
+    - **Execute**(POST /api/sessions/discover/execute):复用预览结果,created/task_id 建场次入队
+  required:
+    - channel_id
+    - source_id
+    - title
+    - created
+    - exists
+  properties:
+    channel_id:
+      type: string
+    session_id:
+      type: string
+      description: 建立的 download 场次 ID(omitempty,未建场次时缺席)
+    source_id:
+      type: string
+      description: 回放源 ID(BV 号等)
+    title:
+      type: string
+    source_url:
+      type: string
+      description: 回放 URL(omitempty)
+    created:
+      type: boolean
+      description: 本次是否新建了场次(幂等去重:已存在则 false)
+    task_id:
+      type: string
+      description: 入队的下载任务 ID(omitempty)
+    error:
+      type: string
+      description: 频道级错误(omitempty,该频道发现失败时填)
+    exists:
+      type: boolean
+      description: |
+        该 source 是否已建过 download 场次。
+        **仅 PreviewAll 填充**(用于前端预览阶段标记「已处理」)。
+        DiscoverAll/Execute 不填(零值 false)。
+
+# 两步式发现 Execute 请求体
+DiscoverExecuteRequest:
+  type: object
+  required: [items]
+  properties:
+    items:
+      type: array
+      items:
+        $ref: 'discover.yaml#/DiscoverExecuteItem'
+      description: 前端从预览结果勾选的 entry 列表
+
+# Execute 单项(前端勾选后回传)
+DiscoverExecuteItem:
+  type: object
+  description: |
+    前端从预览结果勾选后回传给 Execute 的单项。
+    **不重跑 yt-dlp**——直接用预览阶段已拿到的 entry 信息建场次+入队。
+  required: [channel_id, source_id, title, source_url]
+  properties:
+    channel_id:
+      type: string
+    source_id:
+      type: string
+    title:
+      type: string
+    source_url:
+      type: string

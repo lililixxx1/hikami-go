@@ -1,0 +1,239 @@
+# 运行时状态 schema
+# 真相源:internal/runtime/probe.go(Status/ToolStatus/Capabilities/ConfigStatus/CookieWarning/DiskInfo)
+#        internal/handler/server.go:482 runtimeStatusResponse(在 Status 上追加两个默认账号字段)
+
+RuntimeStatus:
+  type: object
+  description: |
+    运行时能力探测响应。GET /api/health/runtime 返回。
+    基线来自 runtime.Probe,handler 层追加 has_default_download/has_default_publish(实时查 DB)。
+  required:
+    - checked_at
+    - tools
+    - capabilities
+    - config_status
+    - has_default_download
+    - has_default_publish
+  properties:
+    checked_at:
+      type: string
+      format: date-time
+      description: 探测时间
+    tools:
+      type: object
+      additionalProperties:
+        $ref: 'runtime.yaml#/ToolStatus'
+      description: |
+        工具名 → 状态。固定 4 个 key:ffmpeg/ffprobe/yt-dlp/rclone;
+        recap provider 为 claude_cli/codex_cli 时追加 claude 或 codex。
+    capabilities:
+      $ref: 'runtime.yaml#/Capabilities'
+    config_status:
+      $ref: 'runtime.yaml#/ConfigStatus'
+    cookie_warnings:
+      type: array
+      items:
+        $ref: 'runtime.yaml#/CookieWarning'
+      description: 主播 cookie 过期/即将过期告警(omitempty,无告警时缺席)
+    disk_usage:
+      type: array
+      items:
+        $ref: 'runtime.yaml#/DiskInfo'
+      description: 输出目录所在分区的磁盘占用(omitempty)
+    has_default_download:
+      type: boolean
+      description: 是否存在默认下载账号(handler 层追加,实时查 DB)
+    has_default_publish:
+      type: boolean
+      description: 是否存在默认发布账号(handler 层追加,实时查 DB)
+
+ToolStatus:
+  type: object
+  required: [name, required, available, managed]
+  properties:
+    name:
+      type: string
+      example: ffmpeg
+    path:
+      type: string
+      description: 可执行文件绝对路径(omitempty,不可用时缺席)
+    required:
+      type: boolean
+      description: 是否必需(ffmpeg/ffprobe 必需,yt-dlp/rclone 可选)
+    available:
+      type: boolean
+      description: 是否可用(LookPath 成功)
+    error:
+      type: string
+      description: 不可用原因(omitempty)
+    install_hint:
+      type: string
+      description: 安装提示命令(omitempty,随 OS 变)
+    source:
+      type: string
+      description: |
+        解析来源(omitempty)。仅 ffmpeg/ffprobe 填:
+        空或 "system" = 系统 PATH;"embedded"/"bundled" = 内嵌;
+    managed:
+      type: boolean
+      description: 是否由内嵌管理(仅 ffmpeg/ffprobe 有意义)
+
+Capabilities:
+  type: object
+  description: |
+    能力开关。前端据此显示可用/不可用按钮(回顾/上传/发布 等)。
+    各字段在 Probe 时综合工具+配置+密钥计算。
+  required:
+    - replay_download
+    - asr_submit
+    - recap_generate
+    - webdav_upload
+    - publish_opus
+  properties:
+    replay_download:
+      type: boolean
+      description: 回放下载可用(yt-dlp available)
+    asr_submit:
+      type: boolean
+      description: |
+        ASR 提交可用。需 dashscope key 已设 + (ASR temp 原生 | ASR S3 | rclone 兜底)。
+    asr_model:
+      type: string
+      description: 规范化后的 ASR 模型名(omitempty)
+    asr_request_mode:
+      type: string
+      description: ASR 请求模式(omitempty,transcription/session)
+    recap_generate:
+      type: boolean
+      description: |
+        回顾生成可用。需 recap.enabled + recap api key 已设 + provider 可用
+        (claude_cli/codex_cli 看命令可用;openai_compatible/anthropic 看密钥)。
+    webdav_upload:
+      type: boolean
+      description: WebDAV 上传可用(原生配置 或 rclone 兜底)
+    publish_opus:
+      type: boolean
+      description: 发布专栏可用(publish.enabled)
+    reason:
+      type: string
+      description: |
+        不可用原因汇总(omitempty,分号分隔)。
+        能力守卫 409 响应的 reason 字段也用这些片段。
+
+ConfigStatus:
+  type: object
+  description: 配置项就绪状态(前端显示绿/红勾)
+  required:
+    - dashscope_key_set
+    - dashscope_key_env
+    - asr_temp_configured
+    - asr_s3_configured
+    - recap_provider
+    - recap_key_set
+    - recap_key_env
+    - recap_model
+    - webdav_configured
+    - publish_enabled
+  properties:
+    dashscope_key_set:
+      type: boolean
+      description: DashScope API key 是否已设(env 或 config)
+    dashscope_key_env:
+      type: string
+      description: 实际生效的 env 名(走 EffectiveAPIKeyEnv 兜底,空回落 DASHSCOPE_API_KEY)
+    asr_temp_configured:
+      type: boolean
+    asr_s3_configured:
+      type: boolean
+    asr_s3_endpoint:
+      type: string
+      description: ASR S3 endpoint(omitempty)
+    recap_provider:
+      type: string
+      description: 实际生效的回顾 provider(走 EffectiveProvider,空回落 deepseek)
+    recap_key_set:
+      type: boolean
+    recap_key_env:
+      type: string
+      description: 实际生效的回顾 key env 名(走 EffectiveAPIKeyEnv 兜底)
+    recap_model:
+      type: string
+      description: 实际生效的回顾模型(走 EffectiveModel)
+    webdav_configured:
+      type: boolean
+      description: WebDAV 原生配置 或 rclone 配置任一为 true
+    publish_enabled:
+      type: boolean
+
+CookieWarning:
+  type: object
+  description: 主播 cookie 告警
+  required: [channel_id, channel_name, cookie_type, days_left, is_expired]
+  properties:
+    channel_id:
+      type: string
+    channel_name:
+      type: string
+    cookie_type:
+      type: string
+      enum: [publish, download]
+      description: cookie 用途
+    expires_at:
+      type: string
+      description: |
+        过期时间(omitempty,字符串非 date-time)。
+        ⚠️ 后端原始输出为非标准格式,前端需用 new Date() 容错解析。
+    days_left:
+      type: integer
+      description: 剩余天数(负数=已过期多少天)
+    is_expired:
+      type: boolean
+
+DiskInfo:
+  type: object
+  required: [path, total_gb, used_gb, free_gb, used_percent]
+  properties:
+    path:
+      type: string
+      description: 挂载点路径
+    total_gb:
+      type: number
+      format: double
+    used_gb:
+      type: number
+      format: double
+    free_gb:
+      type: number
+      format: double
+    used_percent:
+      type: number
+      format: double
+
+OnboardingStatus:
+  type: object
+  description: |
+    GET /api/onboarding/status 响应。前端据此决定是否显示新手引导浮层。
+  required: [needed, has_tools, has_keys, has_channels]
+  properties:
+    needed:
+      type: boolean
+      description: |
+        是否需要引导。= !dismissed && (!has_tools || !has_keys || !has_channels)
+    has_tools:
+      type: boolean
+      description: 所有 required 工具(ffmpeg/ffprobe)是否可用
+    has_keys:
+      type: boolean
+      description: dashscope 或 recap 任一密钥已设
+    has_channels:
+      type: boolean
+      description: 已添加至少 1 个频道
+
+OnboardingDismissResponse:
+  type: object
+  required: [message]
+  properties:
+    message:
+      type: string
+      example: 引导已跳过
+      description: 操作结果消息

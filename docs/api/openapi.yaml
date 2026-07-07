@@ -1,0 +1,3490 @@
+openapi: 3.0.3
+info:
+  title: Hikami-Go API
+  version: 1.0.0
+  description: |
+    B 站直播回顾自动生成服务的后端 HTTP API。
+
+    本规范描述后端现状(internal/handler/server.go 的 ~80 个 HTTP 端点 + WebSocket 事件契约),
+    作为 Vue 3 前端全页面重写的契约源。本规范不包含 HTML 模板与后端接口的差异,后者见 `api-gap-analysis.md`。
+
+    **真相源约定**:所有字段以 `internal/handler/server.go` 及各业务包 Go struct 的 `json:"..."` tag
+    为唯一真相。`web/src/api/types.ts` 仅作交叉验证(有漂移)。
+
+    **路径参数风格**:OpenAPI 用 `{id}`,对应 Gin 的 `:id`。
+
+    **nullable 约定**:
+    - `*T` 带 `omitempty` → 字段缺席(不写 nullable,不进 required)
+    - `*T` 无 omitempty(如 gin.H 里的 nil 指针)→ 字段必出现,值可为 null(写 `nullable: true`)
+  contact:
+    name: Hikami-Go
+servers:
+  - url: http://127.0.0.1:6334
+    description: 默认本机监听(internal/config web.listen 默认值)
+security:
+  - AdminToken: []
+components:
+  securitySchemes:
+    AdminToken:
+      type: apiKey
+      in: header
+      name: X-Admin-Token
+      description: |
+        管理员令牌。`admin_token` 为空时(loopback)中间件放行;绑非 loopback 时强制。
+        兼容 `Authorization: Bearer <token>`。缺失/错误 → 401 `{error: "missing or invalid admin token"}`。
+  parameters:
+    ChannelID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: 频道 ID
+    SessionID:
+      name: sid
+      in: path
+      required: true
+      schema:
+        type: string
+      description: 场次 ID
+    TaskID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: 任务 ID
+    LiveChannelID:
+      name: channel_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: 频道 ID
+    AccountID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+      description: 账号 ID
+    QRSessionID:
+      name: session_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: QR 登录会话 ID
+    SecretKey:
+      name: key
+      in: path
+      required: true
+      schema:
+        type: string
+      description: 密钥 env 名(限 KnownKeys 白名单)
+    GlossaryEntryID:
+      name: eid
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+      description: 词条 ID
+    GlossaryCandidateID:
+      name: cid
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+      description: 候选词 ID
+  responses:
+    CapabilityUnavailable:
+      description: |
+        能力守卫失败:对应 Capability 不可用。
+        响应 `{error: "<cap> capability unavailable", reason: "<原因汇总>"}`。
+      content:
+        application/json:
+          schema:
+            $ref: 'components/schemas/common.yaml#/Error'
+    Unauthorized:
+      description: 未授权(admin token 缺失或错误)
+      content:
+        application/json:
+          schema:
+            $ref: 'components/schemas/common.yaml#/Error'
+    NotFound:
+      description: 资源不存在
+      content:
+        application/json:
+          schema:
+            $ref: 'components/schemas/common.yaml#/Error'
+    BadRequest:
+      description: 请求体非法或必填字段缺失
+      content:
+        application/json:
+          schema:
+            $ref: 'components/schemas/common.yaml#/Error'
+tags:
+  - name: 系统
+    description: healthz / runtime 状态 / onboarding
+  - name: 频道
+    description: 主播频道 CRUD + identify + copy-config
+  - name: 场次
+    description: 录播/回放/导入场次 + discover 发现 + 回顾生成 + 发布/归档 + glossary
+  - name: 任务
+    description: 异步任务查询与重试/取消
+  - name: 运行时
+    description: 直播状态 / cookies / 统计 / 诊断
+  - name: 配置
+    description: 6 组配置段 + 模型列表 + 导入导出
+  - name: 术语表
+    description: 全局 / 主播级 glossary 词条 + 候选审批
+  - name: 回顾模板
+    description: 全局 / 主播级回顾模板 + 预设
+  - name: B站账号
+    description: QR 扫码登录 + cookie 账号管理 + 兼容别名
+  - name: 密钥
+    description: 环境变量级密钥查询/更新
+  - name: WebSocket
+    description: 任务进度推送事件
+paths:
+  # ───────── 系统域(T1)─────────
+  /api/healthz:
+    get:
+      tags: [系统]
+      operationId: getHealthz
+      summary: 健康检查
+      description: |
+        liveness 探针。**无需 admin token**(路由注册在 adminTokenMiddleware 之外,server.go:278)。
+      security: []
+      responses:
+        '200':
+          description: 服务存活
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /api/health/runtime:
+    get:
+      tags: [系统]
+      operationId: getRuntimeStatus
+      summary: 运行时能力探测
+      description: |
+        返回工具可用性、能力开关、配置就绪状态、cookie 告警、磁盘占用,
+        以及默认下载/发布账号是否存在。
+        前端首页能力卡据此渲染。
+      responses:
+        '200':
+          description: 探测结果
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/runtime.yaml#/RuntimeStatus'
+        '401':
+          description: 未授权
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/onboarding/status:
+    get:
+      tags: [系统]
+      operationId: getOnboardingStatus
+      summary: 新手引导状态
+      description: |
+        判断是否需要显示新手引导(未跳过 && (工具不全 || 密钥未设 || 无频道))。
+      responses:
+        '200':
+          description: 引导状态
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/runtime.yaml#/OnboardingStatus'
+        '401':
+          description: 未授权
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/onboarding/dismiss:
+    post:
+      tags: [系统]
+      operationId: dismissOnboarding
+      summary: 跳过新手引导
+      description: |
+        在 secrets 表写入 `_onboarding_dismissed=true`,之后 onboarding/status 返回 needed=false。
+        无请求体。
+      responses:
+        '200':
+          description: 已跳过
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/runtime.yaml#/OnboardingDismissResponse'
+        '401':
+          description: 未授权
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  # ───────── WebSocket(文档锚点,非 REST)─────────
+  /ws:
+    get:
+      tags: [WebSocket]
+      operationId: websocketTaskProgress
+      summary: 任务进度推送(WebSocket 升级端点)
+      description: |
+        gorilla/websocket Upgrade 端点。
+
+        **路径是 `/ws`(无 `/api` 前缀)**,见 server.go:275。
+        **无需 admin token**。
+
+        OpenAPI 3.0 不原生支持 WebSocket,本条目仅作文档锚点。
+        实际协议:
+        - 客户端发起 HTTP GET(带 `Upgrade: websocket` 头)
+        - 服务端返回 `101 Switching Protocols` 升级为 WebSocket
+        - 服务端**只 WriteJSON 推送** `task_progress` 事件,**不读**客户端消息(单向推送)
+        - 事件 schema 见 `components/schemas/websocket.yaml#/TaskProgressEvent`
+
+        前端连接示例:`new WebSocket('ws://127.0.0.1:6334/ws')`(注意无 token、无 /api)。
+      security: []
+      responses:
+        '101':
+          description: Switching Protocols(WebSocket 握手成功)
+        '401':
+          description: 未授权(实际本端点不校验,仅作文档占位)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  # ───────── 频道域(T2)─────────
+  /api/channels:
+    get:
+      tags: [频道]
+      operationId: listChannels
+      summary: 列出所有频道
+      description: "返回全部频道(无分页)。响应 {items: [Channel]}。"
+      responses:
+        '200':
+          description: 频道列表
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/channel.yaml#/ChannelsListResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    post:
+      tags: [频道]
+      operationId: createChannel
+      summary: 创建频道
+      description: |
+        新建频道。请求体 UpsertChannelInput。
+        **注意 `auto_recap` 三态**:字段缺席=默认 false;传 true/false 显式设置。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/channel.yaml#/UpsertChannelInput'
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/channel.yaml#/Channel'
+        '400':
+          description: 请求体非法(JSON 解析失败)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/channels/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    put:
+      tags: [频道]
+      operationId: updateChannel
+      summary: 更新频道
+      description: |
+        全量更新(presence-aware:未传的字段保持原值)。
+        `auto_recap`/`download_account_id` 三态语义见 schema。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/channel.yaml#/UpsertChannelInput'
+      responses:
+        '200':
+          description: 更新后的频道
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/channel.yaml#/Channel'
+        '400':
+          description: 请求体非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    delete:
+      tags: [频道]
+      operationId: deleteChannel
+      summary: 删除频道
+      description: |
+        删除频道。若有关联场次(`channel.ErrInUse`)→ 409 + `{error, session_count}`。
+      responses:
+        '200':
+          description: "已删除(后端返回 {message: ok} 或类似)"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '409':
+          description: 频道有关联场次,不能删除
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/ErrorWithSessionCount'
+
+  /api/channels/identify:
+    post:
+      tags: [频道]
+      operationId: identifyChannel
+      summary: 识别主播(不保存)
+      description: |
+        根据 input 字符串(房间号/URL/UID)查询 B 站 API 获取频道信息,**不写库**。
+        识别失败(网络错误、B站 -352 风控等)→ 500/502。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/channel.yaml#/IdentifyInput'
+      responses:
+        '200':
+          description: 识别结果(未保存)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/channel.yaml#/IdentifyResult'
+        '400':
+          description: 请求体非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/channels/identify/save:
+    post:
+      tags: [频道]
+      operationId: saveIdentifiedChannel
+      summary: 识别并保存主播
+      description: |
+        识别后直接写库(已存在则更新,不存在则创建)。
+        created=true → **201**;created=false → **200**。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/channel.yaml#/IdentifyInput'
+      responses:
+        '200':
+          description: 已更新(created=false)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/channel.yaml#/IdentifySaveResult'
+        '201':
+          description: 已创建(created=true)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/channel.yaml#/IdentifySaveResult'
+        '400':
+          description: 请求体非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/channels/{id}/copy-config:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    post:
+      tags: [频道]
+      operationId: copyChannelConfig
+      summary: 复制频道配置到另一频道
+      description: |
+        把源频道(路径参数 `id`)的术语表/模板/发布配置/自动化/回顾模型
+        复制到目标频道(请求体 target_channel_id)。
+        target_channel_id 必填,空串→400。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/channel.yaml#/CopyConfigRequest'
+      responses:
+        '200':
+          description: 复制结果(字段按请求的 copy_* 选择性出现)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/channel.yaml#/CopyConfigResponse'
+        '400':
+          description: target_channel_id 缺失或请求体非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  # ───────── 场次域(T3)─────────
+  /api/sessions:
+    get:
+      tags: [场次]
+      operationId: listSessions
+      summary: 列出全部场次
+      description: "返回全部场次(无分页)。响应 {items: [Session]}。"
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+          description: 按状态过滤(可选,未传则返回全部)
+      responses:
+        '200':
+          description: 场次列表
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/session.yaml#/SessionsListResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/sessions/{sid}:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    get:
+      tags: [场次]
+      operationId: getSession
+      summary: 获取场次详情
+      description: "返回 session + 关联文件列表。响应 {session, files}。"
+      responses:
+        '200':
+          description: 场次详情
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/session.yaml#/SessionDetailResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+    delete:
+      tags: [场次]
+      operationId: deleteSession
+      summary: 删除场次
+      description: |
+        删除场次及其关联任务(`DeleteBySession`),并从 sessions 表删除。
+        **成功返回 204 No Content**(无响应体)。
+      responses:
+        '204':
+          description: 已删除(无响应体)
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/sessions/failed:
+    delete:
+      tags: [场次]
+      operationId: deleteFailedSessions
+      summary: 删除所有失败场次
+      description: |
+        先删除失败场次关联的所有任务(不限状态),再删除 sessions。
+        返回 `{deleted: N}`。
+      responses:
+        '200':
+          description: 已删除的失败场次数
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/DeletedCountResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/sessions/download:
+    post:
+      tags: [场次]
+      operationId: downloadSession
+      summary: 下载已发现的回放场次
+      description: |
+        对已 discover 出的 download 场次入队下载任务。
+        返回 202 + Task(下载任务)。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/session.yaml#/DownloadSessionRequest'
+      responses:
+        '202':
+          description: 下载任务已入队
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '400':
+          description: session_id 缺失
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/sessions/download-by-url:
+    post:
+      tags: [场次]
+      operationId: downloadSessionByURL
+      summary: 按 URL 创建下载场次
+      description: |
+        接收视频链接(B 站 BV 号等)+ 主播 ID,创建 download 场次并入队。
+        **前置能力守卫**:Capabilities.ReplayDownload 不可用 → 409 + reason。
+        返回 202 + Task。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/session.yaml#/DownloadByURLRequest'
+      responses:
+        '202':
+          description: 下载任务已入队
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '400':
+          description: channel_id 或 url 缺失
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '409':
+          $ref: '#/components/responses/CapabilityUnavailable'
+
+  /api/sessions/import:
+    post:
+      tags: [场次]
+      operationId: importSession
+      summary: 导入本地媒体文件
+      description: |
+        **multipart/form-data**(非 JSON)。
+        创建 import 场次并入队 normalize 任务。
+        media_file 必填;channel_id + title 必填;started_at/ended_at 可选(RFC3339);
+        danmaku_file 可选;source_url 可选。
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [media_file, channel_id, title]
+              properties:
+                media_file:
+                  type: string
+                  format: binary
+                  description: 媒体文件(必填)
+                channel_id:
+                  type: string
+                  description: 归属主播 ID(必填)
+                title:
+                  type: string
+                  description: 场次标题(必填)
+                started_at:
+                  type: string
+                  description: 开播时间(可选,RFC3339)
+                ended_at:
+                  type: string
+                  description: 结束时间(可选,RFC3339)
+                source_url:
+                  type: string
+                  description: 源 URL(可选)
+                danmaku_file:
+                  type: string
+                  format: binary
+                  description: 弹幕文件(可选)
+      responses:
+        '202':
+          description: normalize 任务已入队
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '400':
+          description: media_file 缺失,或 channel_id/title 缺失,或时间格式非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/sessions/discover:
+    post:
+      tags: [场次]
+      operationId: discoverSessions
+      summary: 发现所有频道的新回放(一步式)
+      description: |
+        遍历所有启用且配了 ReplaySourceURL 的主播,跑 yt-dlp 列出回放,
+        **直接建 download 场次 + 入队下载**(一步式)。
+        返回 202 + `{items: [DiscoverResult]}`。
+      responses:
+        '202':
+          description: 发现完成,已建场次和入队
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: 'components/schemas/discover.yaml#/DiscoverResult'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/sessions/discover/preview:
+    post:
+      tags: [场次]
+      operationId: discoverPreviewAll
+      summary: 预览所有频道的新回放(两步式 · 第一步)
+      description: |
+        遍历所有频道预览回放(**不建场次、不入队**)。
+        每条 Result 带 `exists` 标记(是否已建过 download 场次),前端据此标记「已处理」。
+        复用 DiscoverChannel 的 discover_limit 语义(按频道 limit 截断新项)。
+        返回 200 + `{items: [DiscoverResult]}`。
+      responses:
+        '200':
+          description: 预览结果(未建场次)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: 'components/schemas/discover.yaml#/DiscoverResult'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/sessions/discover/execute:
+    post:
+      tags: [场次]
+      operationId: discoverExecute
+      summary: 执行勾选的回放下载(两步式 · 第二步)
+      description: |
+        按前端勾选的 entry 列表建 download 场次 + 入队下载任务。
+        **不重跑 yt-dlp**——复用预览阶段已拿到的 entry 信息。
+        返回 202 + `{items: [DiscoverResult]}`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/discover.yaml#/DiscoverExecuteRequest'
+      responses:
+        '202':
+          description: 已按勾选项建场次入队
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: 'components/schemas/discover.yaml#/DiscoverResult'
+        '400':
+          description: 请求体非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/sessions/{sid}/asr/submit:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    post:
+      tags: [场次]
+      operationId: submitASR
+      summary: 提交 ASR 转写任务
+      description: |
+        为场次创建 ASR 转写任务。
+        **能力守卫**:Capabilities.ASRSubmit 不可用 → 409 + reason。
+        返回 202 + Task。
+      responses:
+        '202':
+          description: ASR 任务已入队
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: |
+            能力不可用(ASR)或场次状态不允许(recap.ErrSessionNotReady /
+            recap.ErrTranscriptMissing 等会映射为 409)。
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/sessions/{sid}/recap/generate:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    post:
+      tags: [场次]
+      operationId: generateRecap
+      summary: 生成整场回顾
+      description: |
+        为场次创建回顾生成任务。
+        **双层守卫**:
+        1. 能力守卫:Capabilities.RecapGenerate 不可用 → 409 + reason(能力原因)
+        2. 业务守卫:recap.ErrSessionNotReady / ErrTranscriptMissing / ErrRecapUnavailable
+           → 409 + reason(业务原因)
+        返回 202 + Task。
+      responses:
+        '202':
+          description: 回顾任务已入队
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 能力守卫(RecapGenerate)或业务守卫(场次未就绪/转写缺失)失败
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/sessions/{sid}/recap/regenerate:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    post:
+      tags: [场次]
+      operationId: regenerateRecap
+      summary: 重新生成回顾(覆盖本地 md,不碰 B站)
+      description: |
+        重新生成整场回顾(覆盖本地 md,不碰 B 站专栏)。
+        仅 recap_done/published 状态允许。
+        任务带 **BypassFailState=true**:失败时仅写 last_error,**不降级** published/recap_done 主状态。
+        **双层守卫**同 generateRecap(能力 + 业务)。
+        返回 202 + Task。
+      responses:
+        '202':
+          description: 重新生成任务已入队
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 能力守卫或业务守卫失败
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/sessions/{sid}/recap-partial:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    post:
+      tags: [场次]
+      operationId: generateRecapPartial
+      summary: 按时间区间生成回顾(局部)
+      description: |
+        按 [start_time, end_time] 区间生成回顾(秒)。
+        **双层守卫**同 generateRecap。返回 202 + Task。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/session.yaml#/RecapPartialRequest'
+      responses:
+        '202':
+          description: 局部回顾任务已入队
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '400':
+          description: 时间区间非法(end_time 必须 > start_time,均 ≥0)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 能力守卫或业务守卫失败
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/sessions/{sid}/recap-with-range:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    post:
+      tags: [场次]
+      operationId: generateRecapWithRange
+      summary: 按时间区间生成回顾(recap-with-range 别名)
+      description: |
+        与 recap-partial 完全相同(内部 `s.generateRecapPartial(ctx)` 转发)。
+        保留两个路径是为了前端兼容。请求体/响应/守卫完全一致。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/session.yaml#/RecapPartialRequest'
+      responses:
+        '202':
+          description: 局部回顾任务已入队
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '400':
+          description: 时间区间非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 能力守卫或业务守卫失败
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/sessions/{sid}/recap:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    get:
+      tags: [场次]
+      operationId: getRecapContent
+      summary: 获取回顾内容
+      description: |
+        读取场次生成的回顾 markdown / prompt / raw_response / suggested_terms。
+        `available=false` 时其余字段为空串。
+      responses:
+        '200':
+          description: 回顾内容
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/session.yaml#/RecapContent'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/sessions/{sid}/recap/content:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    put:
+      tags: [场次]
+      operationId: updateRecapContent
+      summary: 手动编辑回顾内容
+      description: |
+        覆盖本地回顾 markdown 文件。
+        前置:`sess.LocalAvailable` 必须为 true(本地文件存在),否则
+        recap.ErrTranscriptMissing → 409。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/session.yaml#/UpdateRecapContentRequest'
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/session.yaml#/MessageResponse'
+        '400':
+          description: content 为空或请求体非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 本地文件已移除(需先 fetch)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/sessions/{sid}/upload:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    post:
+      tags: [场次]
+      operationId: uploadSession
+      summary: 上传场次到 WebDAV
+      description: |
+        创建 WebDAV 上传任务。
+        **能力守卫**:Capabilities.WebDAVUpload 不可用 → 409 + reason。
+        返回 202 + Task。
+      responses:
+        '202':
+          description: 上传任务已入队
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 能力不可用(WebDAVUpload)或场次状态不允许
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/sessions/{sid}/fetch:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    post:
+      tags: [场次]
+      operationId: fetchSession
+      summary: 从 WebDAV 拉取场次文件到本地
+      description: |
+        把已归档到 WebDAV 的场次文件拉回本地(LocalAvailable → true)。
+        **能力守卫**:Capabilities.WebDAVUpload 不可用 → 409 + reason。
+        返回 202 + `{session: Session}`(注意:此端点不返回 Task)。
+      responses:
+        '202':
+          description: 已拉取
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session]
+                properties:
+                  session:
+                    $ref: 'components/schemas/session.yaml#/Session'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 能力不可用或归档文件缺失
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/sessions/{sid}/publish:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    post:
+      tags: [场次]
+      operationId: publishSession
+      summary: 发布场次到 B 站专栏
+      description: |
+        创建发布任务。
+        **能力守卫**:Capabilities.PublishOpus 不可用 → 409 + reason。
+        业务错误:CookieMissing/Expired → 409/403;ContentRejected → 422;
+        RateLimited → 429;BilibiliAPI → 502。
+        返回 202 + Task。
+      responses:
+        '202':
+          description: 发布任务已入队
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 能力不可用或场次/cookie 状态不允许
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/sessions/{sid}/archive:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    post:
+      tags: [场次]
+      operationId: archiveSession
+      summary: 手动归档已发布场次到 WebDAV
+      description: |
+        自动归档失败时的手动重试入口。
+        **能力守卫**:Capabilities.WebDAVUpload 不可用 → 409 + reason(归档与上传同一 WebDAV 后端)。
+        返回 202 + Task。
+      responses:
+        '202':
+          description: 归档任务已入队
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 能力不可用或场次状态不允许归档
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/sessions/{sid}/glossary/discover:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    post:
+      tags: [场次]
+      operationId: discoverSessionGlossary
+      summary: 发现场次术语候选
+      description: |
+        读取场次 transcript,跑术语发现器生成候选词(异步,不返回候选列表)。
+        前置:LocalAvailable + transcript.txt 存在,否则 recap.ErrTranscriptMissing → 409。
+        返回 `{ok: true}`。
+      responses:
+        '200':
+          description: 发现已触发
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/OkResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 本地文件已移除或 transcript 缺失
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '503':
+          description: 术语发现器未配置(glossaryDiscoverer == nil)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  # ───────── 任务域(T4)─────────
+  /api/tasks:
+    get:
+      tags: [任务]
+      operationId: listTasks
+      summary: 列出全部任务
+      description: "返回全部任务(无分页)。响应 {items: [Task]}。"
+      responses:
+        '200':
+          description: 任务列表
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/TasksListResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/tasks/batch-retry:
+    post:
+      tags: [任务]
+      operationId: batchRetryTasks
+      summary: 批量重试任务
+      description: |
+        对一组 task_ids 批量重试。task_ids 必须非空(空数组→400)。
+        返回 `{retried: N, tasks: [Task]}`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/task.yaml#/BatchRetryRequest'
+      responses:
+        '200':
+          description: 批量重试结果
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/BatchRetryResponse'
+        '400':
+          description: task_ids 缺失或为空
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/tasks/failed:
+    delete:
+      tags: [任务]
+      operationId: deleteFailedTasks
+      summary: 删除所有失败任务
+      description: |
+        按状态 DeleteByStatus(failed)批量删除。
+        返回 `{deleted: N}`。
+      responses:
+        '200':
+          description: 已删除的失败任务数
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/DeletedCountResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/tasks/{id}:
+    parameters:
+      - $ref: '#/components/parameters/TaskID'
+    get:
+      tags: [任务]
+      operationId: getTask
+      summary: 获取任务详情(含条件字段)
+      description: |
+        返回 TaskDetailResponse:`{task, friendly_error?, auto_retry?}`。
+        - `friendly_error` 仅 `status==failed && error!=""` 出现
+        - `auto_retry` 仅 `status==failed` 且 `ShouldAutoRetry=true` 出现
+      responses:
+        '200':
+          description: 任务详情
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/TaskDetailResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 任务不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+    delete:
+      tags: [任务]
+      operationId: deleteTask
+      summary: 删除任务
+      description: |
+        删除单个任务。**成功返回 204 No Content**(无响应体)。
+      responses:
+        '204':
+          description: 已删除(无响应体)
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 任务不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/tasks/{id}/retry:
+    parameters:
+      - $ref: '#/components/parameters/TaskID'
+    post:
+      tags: [任务]
+      operationId: retryTask
+      summary: 重试任务
+      description: |
+        重试单个任务(Attempt+1,重新入队)。
+        返回 202 + Task。
+      responses:
+        '202':
+          description: 已重试
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 任务不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 任务状态冲突(如非 failed 不能重试)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/tasks/{id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/TaskID'
+    post:
+      tags: [任务]
+      operationId: cancelTask
+      summary: 取消任务
+      description: |
+        取消运行中/待执行的任务(标记 cancelled)。
+        **返回 200**(非 202) + Task。
+      responses:
+        '200':
+          description: 已取消
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 任务不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 任务状态冲突(如已终态不能取消)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  # ───────── 运行时统计域(T5)─────────
+  /api/live/check:
+    post:
+      tags: [运行时]
+      operationId: checkLive
+      summary: 检查所有频道直播状态并触发录制
+      description: |
+        CheckAndStartAll:遍历所有启用+auto_record 的频道,检查直播状态,
+        对在直播的频道启动录制。**返回 202**(触发后台录制)。
+      responses:
+        '202':
+          description: 已检查并触发录制
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/live.yaml#/LiveStatusListResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/live/status:
+    get:
+      tags: [运行时]
+      operationId: liveStatus
+      summary: 查询所有频道直播状态(不触发录制)
+      description: "CheckAll:只查询不录制。响应 {items: [LiveStatus]}。"
+      responses:
+        '200':
+          description: 直播状态列表
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/live.yaml#/LiveStatusListResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/live/{channel_id}/status:
+    parameters:
+      - $ref: '#/components/parameters/LiveChannelID'
+    get:
+      tags: [运行时]
+      operationId: liveChannelStatus
+      summary: 查询单频道直播状态
+      description: |
+        返回**直接对象**(非 `{items}` 包装)。`ctx.JSON(200, status)`。
+      responses:
+        '200':
+          description: 单频道直播状态
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/live.yaml#/LiveStatus'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 频道不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/live/{channel_id}/record/start:
+    parameters:
+      - $ref: '#/components/parameters/LiveChannelID'
+    post:
+      tags: [运行时]
+      operationId: startLiveRecord
+      summary: 手动启动单频道录制
+      description: |
+        手动启动指定频道录制(忽略 auto_record 开关)。
+        **返回 202** + LiveStatus。
+      responses:
+        '202':
+          description: 已启动录制
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/live.yaml#/LiveStatus'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 频道不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: |
+            状态冲突:已在录制(ErrAlreadyRecording)/未在直播(ErrNotLive)/
+            直播被禁用(ErrLiveDisabled)等。
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/live/{channel_id}/record/stop:
+    parameters:
+      - $ref: '#/components/parameters/LiveChannelID'
+    post:
+      tags: [运行时]
+      operationId: stopLiveRecord
+      summary: 手动停止单频道录制
+      description: |
+        停止指定频道录制。**返回 202 Accepted,无响应体**(`ctx.Status(202)`)。
+      responses:
+        '202':
+          description: 已停止(无响应体)
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 频道不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 未在录制(ErrNotRecording)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/cookies/status:
+    get:
+      tags: [运行时]
+      operationId: cookieStatus
+      summary: 查询所有频道的 cookie 状态
+      description: |
+        遍历所有频道,检查 publish/download cookie 文件的有效性。
+        响应 `{channels: [CookieStatus]}`。空列表返回 `[]`(非 null)。
+      responses:
+        '200':
+          description: cookie 状态列表
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/stats.yaml#/CookieStatusResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/stats/overview:
+    get:
+      tags: [运行时]
+      operationId: statsOverview
+      summary: 统计概览
+      description: |
+        返回场次统计 + 任务汇总 + ASR 成本估算。
+        响应 `{sessions, task_summary, asr_cost_estimate, asr_hours}`。
+      responses:
+        '200':
+          description: 统计概览
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/stats.yaml#/StatsOverviewResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/stats/cost:
+    get:
+      tags: [运行时]
+      operationId: statsCost
+      summary: 成本估算
+      description: |
+        ASR + AI 回顾成本粗估 + 月度明细。
+      responses:
+        '200':
+          description: 成本估算
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/stats.yaml#/StatsCostResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/stats/dashboard:
+    get:
+      tags: [运行时]
+      operationId: statsDashboard
+      summary: Dashboard 数据
+      description: |
+        返回 DashboardData:按月/按频道的场次+成本趋势 + 弹幕 Top + 回顾/发布计数。
+      responses:
+        '200':
+          description: Dashboard 数据
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/stats.yaml#/DashboardData'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/diagnostic/report:
+    get:
+      tags: [运行时]
+      operationId: diagnosticReport
+      summary: 诊断报告
+      description: |
+        返回运行时诊断信息:runtime 状态 + config 摘要 + 磁盘占用 +
+        cookie 告警 + 最近失败任务 + 任务汇总。
+        响应是动态 map,字段见 DiagnosticReport schema。
+      responses:
+        '200':
+          description: 诊断报告
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/stats.yaml#/DiagnosticReport'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  # ───────── 配置域(T6)─────────
+  /api/config/publish:
+    get:
+      tags: [配置]
+      operationId: getPublishConfig
+      summary: 获取发布配置
+      responses:
+        '200':
+          description: 发布配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/PublishConfigResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    put:
+      tags: [配置]
+      operationId: updatePublishConfig
+      summary: 更新发布配置(patch 语义)
+      description: |
+        全字段可选(presence-aware):传哪个改哪个,未传保持原值。
+        传了但值非法(如 mode 非 draft/publish)→ 400。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/config-sections.yaml#/PublishConfigRequest'
+      responses:
+        '200':
+          description: 更新后的发布配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/PublishConfigResponse'
+        '400':
+          description: 字段值非法(如 private_pub 非 1/2,timer_pub_time 超区间)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/config/recap:
+    get:
+      tags: [配置]
+      operationId: getRecapConfig
+      summary: 获取回顾 AI 配置
+      responses:
+        '200':
+          description: 回顾配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/RecapConfigResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    put:
+      tags: [配置]
+      operationId: updateRecapConfig
+      summary: 更新回顾 AI 配置(密钥三态)
+      description: |
+        全字段可选。密钥三态:
+        - 不传 api_key/clear_key → 保持
+        - 传 api_key → 设置
+        - 传 clear_key=true → 清空
+        provider 传了必须在白名单(openai_compatible/anthropic/claude_cli/codex_cli/local)。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/config-sections.yaml#/RecapConfigRequest'
+      responses:
+        '200':
+          description: 更新后的回顾配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/RecapConfigResponse'
+        '400':
+          description: 字段值非法(provider 非白名单/max_tokens<0 等)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/config/recap/models:
+    get:
+      tags: [配置]
+      operationId: getRecapModels
+      summary: 推荐回顾模型列表(只读)
+      description: "返回按厂商分组的推荐模型快捷选项。响应 {models: [RecapModelOption]}。"
+      responses:
+        '200':
+          description: 推荐模型列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [models]
+                properties:
+                  models:
+                    type: array
+                    items:
+                      $ref: 'components/schemas/config-sections.yaml#/RecapModelOption'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/config/dashscope:
+    get:
+      tags: [配置]
+      operationId: getDashScopeConfig
+      summary: 获取 DashScope(ASR)配置
+      responses:
+        '200':
+          description: DashScope 配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/DashScopeConfigResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    put:
+      tags: [配置]
+      operationId: updateDashScopeConfig
+      summary: 更新 DashScope 配置(密钥三态)
+      description: |
+        全字段可选。asr_url/tasks_url 传了必须合法 http(s) url + host。
+        密钥三态同 recap。env 改名会原子迁移 secret。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/config-sections.yaml#/DashScopeConfigRequest'
+      responses:
+        '200':
+          description: 更新后的 DashScope 配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/DashScopeConfigResponse'
+        '400':
+          description: 字段值非法(url 格式/speaker_count<0/env 名非法)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/config/asr-s3:
+    get:
+      tags: [配置]
+      operationId: getASRS3Config
+      summary: 获取 ASR S3 配置
+      responses:
+        '200':
+          description: ASR S3 配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/ASRS3ConfigResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    put:
+      tags: [配置]
+      operationId: updateASRS3Config
+      summary: 更新 ASR S3 配置(密钥三态)
+      description: |
+        全字段可选。endpoint 传了必须合法 http(s) + host,禁 .. 和反斜杠。
+        ⚠️ 注意:更新此处的 access_key_secret 走 secrets,与
+        `PUT /api/secrets/{ASRS3EffectiveAccessKeyEnv}` 互斥(后者被特殊拒绝,见密钥域)。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/config-sections.yaml#/ASRS3ConfigRequest'
+      responses:
+        '200':
+          description: 更新后的 ASR S3 配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/ASRS3ConfigResponse'
+        '400':
+          description: 字段值非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/config/webdav:
+    get:
+      tags: [配置]
+      operationId: getWebDAVConfig
+      summary: 获取 WebDAV 配置
+      responses:
+        '200':
+          description: WebDAV 配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/WebDAVConfigResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    put:
+      tags: [配置]
+      operationId: updateWebDAVConfig
+      summary: 更新 WebDAV 配置(密钥三态)
+      description: |
+        全字段可选。url/base_path/remote 有格式校验。
+        ⚠️ password 走 secrets,与 `PUT /api/secrets/{WebDAVEffectivePasswordEnv}` 互斥。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/config-sections.yaml#/WebDAVConfigRequest'
+      responses:
+        '200':
+          description: 更新后的 WebDAV 配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/WebDAVConfigResponse'
+        '400':
+          description: 字段值非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/config/archive:
+    get:
+      tags: [配置]
+      operationId: getArchiveConfig
+      summary: 获取归档配置
+      responses:
+        '200':
+          description: 归档配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/ArchiveConfigResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    put:
+      tags: [配置]
+      operationId: updateArchiveConfig
+      summary: 更新归档配置
+      description: 全字段可选。cleanup_policy 传了必须在 [none,temp,generated,all]。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/config-sections.yaml#/ArchiveConfigRequest'
+      responses:
+        '200':
+          description: 更新后的归档配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/ArchiveConfigResponse'
+        '400':
+          description: cleanup_policy 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/config/export:
+    get:
+      tags: [配置]
+      operationId: exportConfig
+      summary: 导出全部配置(含明文密钥)
+      description: |
+        导出 ConfigExportBundle:6 段全局配置 + secrets(明文)+ channels +
+        glossary + templates + bili_accounts。
+        ⚠️ **响应包含明文密钥**,仅用于备份/迁移,不要外传。
+      responses:
+        '200':
+          description: 配置备份 bundle
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/ConfigExportBundle'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/config/import:
+    post:
+      tags: [配置]
+      operationId: importConfig
+      summary: 导入配置(merge 或 overwrite)
+      description: |
+        请求体是 ConfigExportBundle(export 的产物)。
+        **两阶段事务化**:
+        - 阶段一:6 段 + secrets 绑进同一 WithTx 事务(commit 成功后才改内存 cfg + env)
+        - 阶段二(仅 overwrite):清 glossary/templates/cookies
+        overwrite 的 WebDAV/ASRS3 tombstone:清了 secrets 但 bundle 无对应 env → managed=true。
+      parameters:
+        - name: strategy
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [merge, overwrite]
+            default: merge
+          description: "merge=合并(已存在的不覆盖);overwrite=全覆盖(清 glossary/templates/cookies)"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/config-sections.yaml#/ConfigExportBundle'
+      responses:
+        '200':
+          description: 导入结果
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/ConfigImportResult'
+        '400':
+          description: strategy 非法,或 version 非 "1",或段内字段非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '500':
+          description: 持久化失败(事务回滚,内存 cfg 与 env 不变)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  # ───────── 术语表域(T7)─────────
+  # 全局 glossary
+  /api/glossary/entries:
+    get:
+      tags: [术语表]
+      operationId: listGlobalGlossary
+      summary: 列出全局术语表
+      description: "返回全局词条。响应 {items: [GlossaryEntry]}。空时返回 []。"
+      responses:
+        '200':
+          description: 全局词条列表
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/glossary.yaml#/GlossaryEntriesResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    post:
+      tags: [术语表]
+      operationId: upsertGlobalGlossary
+      summary: 新增/更新全局词条
+      description: "term + canonical 存在则更新,否则新增。返回 {ok: true}。"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/UpsertGlossaryEntryRequest'
+      responses:
+        '200':
+          description: 已新增/更新
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/OkResponse'
+        '400':
+          description: term/canonical 缺失
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/glossary/entries/batch-delete:
+    post:
+      tags: [术语表]
+      operationId: batchDeleteGlobalGlossary
+      summary: 批量删除全局词条
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/BatchIdsRequest'
+      responses:
+        '200':
+          description: 已删除计数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted]
+                properties:
+                  deleted:
+                    type: integer
+        '400':
+          description: ids 缺失
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/glossary/entries/batch-toggle:
+    post:
+      tags: [术语表]
+      operationId: batchToggleGlobalGlossary
+      summary: 批量启用/禁用全局词条
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/BatchToggleRequest'
+      responses:
+        '200':
+          description: 已更新计数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [updated]
+                properties:
+                  updated:
+                    type: integer
+        '400':
+          description: ids/enabled 缺失
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/glossary/entries/{eid}:
+    parameters:
+      - $ref: '#/components/parameters/GlossaryEntryID'
+    delete:
+      tags: [术语表]
+      operationId: deleteGlobalGlossary
+      summary: 删除全局词条
+      description: "**成功返回 204**(无响应体)。"
+      responses:
+        '204':
+          description: 已删除(无响应体)
+        '400':
+          description: eid 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 词条不存在(ErrNotFound → 404 `{error:not found, reason:...}`)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/glossary/entries/{eid}/toggle:
+    parameters:
+      - $ref: '#/components/parameters/GlossaryEntryID'
+    post:
+      tags: [术语表]
+      operationId: toggleGlobalGlossary
+      summary: 切换单条全局词条启用状态
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: 已切换
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/OkResponse'
+        '400':
+          description: enabled 缺失或 eid 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/glossary/note:
+    get:
+      tags: [术语表]
+      operationId: getGlobalGlossaryNote
+      summary: 获取全局术语表备注
+      responses:
+        '200':
+          description: 备注内容
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/glossary.yaml#/GlossaryNoteResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    put:
+      tags: [术语表]
+      operationId: updateGlobalGlossaryNote
+      summary: 更新全局术语表备注
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/GlossaryNoteRequest'
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/OkResponse'
+        '400':
+          description: 请求体非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/glossary/candidates:
+    get:
+      tags: [术语表]
+      operationId: listGlobalGlossaryCandidates
+      summary: 列出全局候选词
+      description: |
+        按 status 过滤。status 取值:
+        - `pending`(默认)/`approved`/`rejected`/`all`(跳过过滤)
+        - 非法 status → ErrInvalidCandidate → **400**
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending, approved, rejected, all]
+            default: pending
+      responses:
+        '200':
+          description: 候选词列表
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/glossary.yaml#/GlossaryCandidatesResponse'
+        '400':
+          description: status 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/glossary/candidates/{cid}/approve:
+    parameters:
+      - $ref: '#/components/parameters/GlossaryCandidateID'
+    post:
+      tags: [术语表]
+      operationId: approveGlobalGlossaryCandidate
+      summary: 审批通过全局候选词
+      description: |
+        状态机:已 rejected 的候选不能 approve(`approved candidate cannot be approved` /
+        `rejected candidate cannot be approved`)→ ErrInvalidCandidate → **400**。
+        请求体全可选(容 EOF:无请求体也允许)。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/ApproveCandidateRequest'
+      responses:
+        '200':
+          description: 已通过
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/OkResponse'
+        '400':
+          description: cid 非法或状态机冲突(已 rejected/approved)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '404':
+          description: 候选不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/glossary/candidates/{cid}/reject:
+    parameters:
+      - $ref: '#/components/parameters/GlossaryCandidateID'
+    post:
+      tags: [术语表]
+      operationId: rejectGlobalGlossaryCandidate
+      summary: 拒绝全局候选词
+      description: |
+        状态机:已 approved 的候选不能 reject → ErrInvalidCandidate → **400**。
+        无请求体。
+      responses:
+        '200':
+          description: 已拒绝
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/OkResponse'
+        '400':
+          description: cid 非法或状态机冲突(已 approved)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '404':
+          description: 候选不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/glossary/import/markdown:
+    post:
+      tags: [术语表]
+      operationId: importGlobalGlossaryMarkdown
+      summary: 从 markdown 导入全局词条
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/ImportMarkdownRequest'
+      responses:
+        '200':
+          description: 已导入计数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [imported]
+                properties:
+                  imported:
+                    type: integer
+        '400':
+          description: content 缺失
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/glossary/import/json:
+    post:
+      tags: [术语表]
+      operationId: importGlobalGlossaryJSON
+      summary: 从 JSON 导入全局词条
+      description: |
+        请求体是 **raw JSON**(GlossaryExport 结构),非 application/json wrapper。
+        后端 io.ReadAll(ctx.Request.Body) 直接读。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/GlossaryExport'
+      responses:
+        '200':
+          description: 已导入计数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [imported]
+                properties:
+                  imported:
+                    type: integer
+        '400':
+          description: 读取失败或 JSON 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/glossary/export/json:
+    get:
+      tags: [术语表]
+      operationId: exportGlobalGlossaryJSON
+      summary: 导出全局术语表为 JSON
+      description: |
+        响应带 `Content-Disposition: attachment; filename="glossary.json"`。
+        返回 GlossaryExport 结构。
+      responses:
+        '200':
+          description: JSON 导出
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              description: attachment; filename="glossary.json"
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/glossary.yaml#/GlossaryExport'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  # 主播级 glossary
+  /api/channels/{id}/glossary/entries:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    get:
+      tags: [术语表]
+      operationId: listChannelGlossary
+      summary: 列出主播级术语表(合并视图)
+      description: |
+        返回主播级 + 全局合并的词条,**每个带 source 字段**(global/channel)。
+        响应 `{items: [GlossaryMergedEntry]}`。空时返回 []。
+      responses:
+        '200':
+          description: 合并词条列表
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/glossary.yaml#/GlossaryMergedEntriesResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    post:
+      tags: [术语表]
+      operationId: upsertChannelGlossary
+      summary: 新增/更新主播级词条
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/UpsertGlossaryEntryRequest'
+      responses:
+        '200':
+          description: 已新增/更新
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/OkResponse'
+        '400':
+          description: term/canonical 缺失
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/channels/{id}/glossary/entries/batch-delete:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    post:
+      tags: [术语表]
+      operationId: batchDeleteChannelGlossary
+      summary: 批量删除主播级词条
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/BatchIdsRequest'
+      responses:
+        '200':
+          description: 已删除计数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted]
+                properties:
+                  deleted:
+                    type: integer
+        '400':
+          description: ids 缺失
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/channels/{id}/glossary/entries/batch-toggle:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    post:
+      tags: [术语表]
+      operationId: batchToggleChannelGlossary
+      summary: 批量启用/禁用主播级词条
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/BatchToggleRequest'
+      responses:
+        '200':
+          description: 已更新计数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [updated]
+                properties:
+                  updated:
+                    type: integer
+        '400':
+          description: ids/enabled 缺失
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/channels/{id}/glossary/entries/{eid}:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+      - $ref: '#/components/parameters/GlossaryEntryID'
+    delete:
+      tags: [术语表]
+      operationId: deleteChannelGlossary
+      summary: 删除主播级词条
+      description: "**成功返回 204**(无响应体)。"
+      responses:
+        '204':
+          description: 已删除(无响应体)
+        '400':
+          description: eid 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '404':
+          description: 词条不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/channels/{id}/glossary/entries/{eid}/toggle:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+      - $ref: '#/components/parameters/GlossaryEntryID'
+    post:
+      tags: [术语表]
+      operationId: toggleChannelGlossary
+      summary: 切换单条主播级词条启用状态
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: 已切换
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/OkResponse'
+        '400':
+          description: enabled 缺失或 eid 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/channels/{id}/glossary/note:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    get:
+      tags: [术语表]
+      operationId: getChannelGlossaryNote
+      summary: 获取主播级术语表备注
+      responses:
+        '200':
+          description: 备注内容
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/glossary.yaml#/GlossaryNoteResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    put:
+      tags: [术语表]
+      operationId: updateChannelGlossaryNote
+      summary: 更新主播级术语表备注
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/GlossaryNoteRequest'
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/OkResponse'
+        '400':
+          description: 请求体非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/channels/{id}/glossary/candidates:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    get:
+      tags: [术语表]
+      operationId: listChannelGlossaryCandidates
+      summary: 列出主播级候选词
+      description: |
+        按 status 过滤(同全局)。非法 status → 400。
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending, approved, rejected, all]
+            default: pending
+      responses:
+        '200':
+          description: 候选词列表
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/glossary.yaml#/GlossaryCandidatesResponse'
+        '400':
+          description: status 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/channels/{id}/glossary/candidates/batch-approve:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    post:
+      tags: [术语表]
+      operationId: batchApproveChannelGlossaryCandidates
+      summary: 批量审批通过主播级候选词
+      description: |
+        **仅主播级有 batch-approve**(全局只有单条 approve)。
+        返回 `{approved: N}`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/BatchIdsRequest'
+      responses:
+        '200':
+          description: 已通过计数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [approved]
+                properties:
+                  approved:
+                    type: integer
+        '400':
+          description: ids 缺失或为空
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/channels/{id}/glossary/candidates/batch-reject:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    post:
+      tags: [术语表]
+      operationId: batchRejectChannelGlossaryCandidates
+      summary: 批量拒绝主播级候选词
+      description: |
+        **仅主播级有 batch-reject**。返回 `{rejected: N}`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/BatchIdsRequest'
+      responses:
+        '200':
+          description: 已拒绝计数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rejected]
+                properties:
+                  rejected:
+                    type: integer
+        '400':
+          description: ids 缺失或为空
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/channels/{id}/glossary/import/markdown:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    post:
+      tags: [术语表]
+      operationId: importChannelGlossaryMarkdown
+      summary: 从 markdown 导入主播级词条
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/ImportMarkdownRequest'
+      responses:
+        '200':
+          description: 已导入计数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [imported]
+                properties:
+                  imported:
+                    type: integer
+        '400':
+          description: content 缺失
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/channels/{id}/glossary/import/json:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    post:
+      tags: [术语表]
+      operationId: importChannelGlossaryJSON
+      summary: 从 JSON 导入主播级词条
+      description: 请求体是 raw JSON(GlossaryExport 结构)。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/GlossaryExport'
+      responses:
+        '200':
+          description: 已导入计数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [imported]
+                properties:
+                  imported:
+                    type: integer
+        '400':
+          description: 读取失败或 JSON 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/channels/{id}/glossary/export/json:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    get:
+      tags: [术语表]
+      operationId: exportChannelGlossaryJSON
+      summary: 导出主播级术语表为 JSON
+      description: "响应带 Content-Disposition: attachment。"
+      responses:
+        '200':
+          description: JSON 导出
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/glossary.yaml#/GlossaryExport'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  # 主播级回放预览(归 glossary 批次;实为回放发现单频道预览)
+  /api/channels/{id}/discover/preview:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    post:
+      tags: [频道]
+      operationId: discoverChannelPreview
+      summary: 预览单频道回放(不建场次)
+      description: |
+        单频道回放预览(PreviewChannel),**不建场次不入队**。
+        返回 `{items: [DiscoverResult]}`。
+      responses:
+        '200':
+          description: 预览结果
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: 'components/schemas/discover.yaml#/DiscoverResult'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 频道不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  # ───────── 回顾模板域(T8)─────────
+  /api/recap/templates:
+    get:
+      tags: [回顾模板]
+      operationId: listGlobalRecapTemplates
+      summary: 列出全局回顾模板
+      description: "返回全局全部模板。响应 {items: [RecapTemplate]}。空时返回 []。"
+      responses:
+        '200':
+          description: 全局模板列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: 'components/schemas/templates.yaml#/RecapTemplate'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    put:
+      tags: [回顾模板]
+      operationId: upsertGlobalRecapTemplate
+      summary: 新增/更新全局回顾模板
+      description: |
+        全字段可选(name 空默认 "default";enabled 缺省默认 true)。
+        返回更新后的 RecapTemplate。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/templates.yaml#/UpsertRecapTemplateRequest'
+      responses:
+        '200':
+          description: 已新增/更新
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/templates.yaml#/RecapTemplate'
+        '400':
+          description: 请求体非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/recap/templates/export:
+    get:
+      tags: [回顾模板]
+      operationId: exportGlobalRecapTemplates
+      summary: 导出全局模板为 JSON
+      description: |
+        响应带 Content-Disposition: attachment; filename="recap-templates.json"。
+        返回 TemplateExport 结构。
+      responses:
+        '200':
+          description: JSON 导出
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              description: attachment; filename="recap-templates.json"
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/templates.yaml#/TemplateExport'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/recap/templates/import:
+    post:
+      tags: [回顾模板]
+      operationId: importGlobalRecapTemplates
+      summary: 从 JSON 导入全局模板
+      description: 请求体是 raw JSON(TemplateExport 结构)。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/templates.yaml#/TemplateExport'
+      responses:
+        '200':
+          description: 已导入计数
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/templates.yaml#/ImportedCountResponse'
+        '400':
+          description: 读取失败或 JSON 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/recap/presets:
+    get:
+      tags: [回顾模板]
+      operationId: listRecapPresets
+      summary: 内置模板预设列表
+      description: "返回内置预设库。响应 {presets: [TemplatePreset]}。"
+      responses:
+        '200':
+          description: 预设列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [presets]
+                properties:
+                  presets:
+                    type: array
+                    items:
+                      $ref: 'components/schemas/templates.yaml#/TemplatePreset'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/channels/{id}/recap-template:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    get:
+      tags: [回顾模板]
+      operationId: getChannelRecapTemplate
+      summary: 获取主播级模板(含全局合并视图)
+      description: |
+        返回 `{global, channel, resolved}`:
+        - global/channel 是 `*Template`,**查不到时为 null(非缺席)**(gin.H 无 omitempty)
+        - resolved 是合并后的 ResolvedTemplate(**字段名 PascalCase**,见 schema)
+      responses:
+        '200':
+          description: 主播级模板视图
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/templates.yaml#/ChannelRecapTemplateResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    put:
+      tags: [回顾模板]
+      operationId: upsertChannelRecapTemplate
+      summary: 新增/更新主播级模板
+      description: |
+        请求体与全局 PUT 相同(UpsertRecapTemplateRequest)。
+        返回更新后的 RecapTemplate。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/templates.yaml#/UpsertRecapTemplateRequest'
+      responses:
+        '200':
+          description: 已新增/更新
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/templates.yaml#/RecapTemplate'
+        '400':
+          description: 请求体非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+    delete:
+      tags: [回顾模板]
+      operationId: deleteChannelRecapTemplate
+      summary: 删除主播级模板
+      description: |
+        内部按 GetByChannel(id, "default") 查找。
+        **返回 `{ok: true}`(非 204)**。
+        错误码:
+        - 查不到 → recap.ErrTemplateNotFound → **404** `{error:not found, reason:...}`
+        - 内置模板 → recap.ErrTemplateBuiltIn → **403** `{error:cannot delete built-in template}`
+      responses:
+        '200':
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/OkResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '403':
+          description: 不能删除内置模板
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: cannot delete built-in template
+        '404':
+          description: 主播级模板不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/channels/{id}/recap-template/export:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    get:
+      tags: [回顾模板]
+      operationId: exportChannelRecapTemplates
+      summary: 导出主播级模板为 JSON
+      description: "响应带 Content-Disposition: attachment。"
+      responses:
+        '200':
+          description: JSON 导出
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/templates.yaml#/TemplateExport'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/channels/{id}/recap-template/import:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    post:
+      tags: [回顾模板]
+      operationId: importChannelRecapTemplates
+      summary: 从 JSON 导入主播级模板
+      description: 请求体是 raw JSON(TemplateExport 结构)。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/templates.yaml#/TemplateExport'
+      responses:
+        '200':
+          description: 已导入计数
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/templates.yaml#/ImportedCountResponse'
+        '400':
+          description: 读取失败或 JSON 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  # ───────── B站账号与 QR 登录域(T9)─────────
+  /api/bili/login/qrcode:
+    post:
+      tags: [B站账号]
+      operationId: createBiliQRCodeLogin
+      summary: 创建 QR 登录会话
+      description: |
+        向 B 站请求二维码,返回 session_id + 扫码 URL。
+        前端用 URL 生成二维码,然后用 session_id 轮询 poll。
+      responses:
+        '201':
+          description: 已创建 QR 登录会话
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/bili.yaml#/QRCodeGenerateResult'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '502':
+          description: B 站上游错误(ErrBiliLoginUpstream)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/bili/login/qrcode/{session_id}:
+    parameters:
+      - $ref: '#/components/parameters/QRSessionID'
+    get:
+      tags: [B站账号]
+      operationId: pollBiliQRCodeLogin
+      summary: 轮询 QR 登录状态
+      description: |
+        返回当前扫码状态(pending/scanned/succeeded/expired/failed)。
+        **session 过期 → 410 Gone**(ErrQRLoginSessionExpired,非 404)。
+        **session 未找到 → 404**(ErrQRLoginSessionNotFound)。
+      responses:
+        '200':
+          description: 当前状态
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/bili.yaml#/QRCodePollResult'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: session 未找到(ErrQRLoginSessionNotFound)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '410':
+          description: session 已过期(ErrQRLoginSessionExpired)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+    delete:
+      tags: [B站账号]
+      operationId: deleteBiliQRCodeLogin
+      summary: 删除 QR 登录会话
+      description: |
+        主动取消 QR 登录会话(如用户关闭弹窗)。
+        **成功返回 204**(无响应体)。session 不存在也返回 204(幂等)。
+      responses:
+        '204':
+          description: 已删除/不存在(无响应体)
+
+  /api/bili/login/qrcode/{session_id}/save:
+    parameters:
+      - $ref: '#/components/parameters/QRSessionID'
+    post:
+      tags: [B站账号]
+      operationId: saveBiliQRCodeLogin
+      summary: 保存 QR 登录 cookie 到频道
+      description: |
+        把扫码成功的 cookie 写入文件,并更新指定频道的 publish/download cookie_file。
+        **未扫码成功 → 409**(ErrQRLoginNotSucceeded)。
+        session 过期/未找到 → 410/404。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/bili.yaml#/QRCodeSaveRequest'
+      responses:
+        '200':
+          description: 已保存到频道
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/bili.yaml#/QRCodeSaveResponse'
+        '400':
+          description: channel_id 缺失或 usage 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: session 未找到
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 未扫码成功(ErrQRLoginNotSucceeded)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '410':
+          description: session 已过期
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/bili/login/qrcode/{session_id}/save-account:
+    parameters:
+      - $ref: '#/components/parameters/QRSessionID'
+    post:
+      tags: [B站账号]
+      operationId: saveBiliQRCodeToAccount
+      summary: 保存 QR 登录 cookie 为全局账号
+      description: |
+        把扫码成功的 cookie 保存为全局 cookie 账号。
+        - **同 UID 已存在 → 走 Update,返回 200**(非 201)
+        - 新建时若为第一个账号,**自动设为默认下载+发布**
+        - 两种路径都返回 **200**(非 201)
+        未扫码成功 → 409;uid 无法判定 → 400。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/bili.yaml#/QRCodeSaveAccountRequest'
+      responses:
+        '200':
+          description: 已保存(新建或更新同 200)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/bili.yaml#/BiliCookieAccount'
+        '400':
+          description: 无法从 cookie 判定 uid
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: session 未找到
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 未扫码成功
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '410':
+          description: session 已过期
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '503':
+          description: cookie account store 未配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/cookie-accounts:
+    get:
+      tags: [B站账号]
+      operationId: listCookieAccounts
+      summary: 列出全部 cookie 账号
+      description: |
+        **返回直接数组**(非 `{items}` 包装)。
+        store 为 nil 或空时返回 `[]`(非 null)。
+      responses:
+        '200':
+          description: 账号列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: 'components/schemas/bili.yaml#/BiliCookieAccount'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    post:
+      tags: [B站账号]
+      operationId: createCookieAccount
+      summary: 创建 cookie 账号
+      description: |
+        请求体直接是 CookieAccount 结构(非单独 request struct)。
+        cookie_file 必须在白名单目录(OutputRoot/.cookies/bilibili)下,
+        否则 ErrInvalidCookiePath → 400。
+        返回 201 + 账号(含生成的 id)。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/bili.yaml#/CreateCookieAccountRequest'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/bili.yaml#/BiliCookieAccount'
+        '400':
+          description: cookie_file 路径非法或请求体非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '503':
+          description: cookie account store 未配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/cookie-accounts/{id}:
+    parameters:
+      - $ref: '#/components/parameters/AccountID'
+    put:
+      tags: [B站账号]
+      operationId: updateCookieAccount
+      summary: 更新 cookie 账号(部分更新)
+      description: |
+        全指针 = 部分更新(presence-aware)。
+        is_default_download/publish 传 true 触发**排他操作**(把其他账号同字段清零)。
+        cookie_file 传了必须在白名单目录下。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/bili.yaml#/UpdateCookieAccountRequest'
+      responses:
+        '200':
+          description: 更新后的账号
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/bili.yaml#/BiliCookieAccount'
+        '400':
+          description: id 非法或 cookie_file 路径非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 账号不存在(ErrAccountNotFound)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+    delete:
+      tags: [B站账号]
+      operationId: deleteCookieAccount
+      summary: 删除 cookie 账号
+      description: "**成功返回 204**(无响应体)。"
+      responses:
+        '204':
+          description: 已删除(无响应体)
+        '400':
+          description: id 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '404':
+          description: 账号不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/cookie-accounts/{id}/default-download:
+    parameters:
+      - $ref: '#/components/parameters/AccountID'
+    post:
+      tags: [B站账号]
+      operationId: setDefaultDownloadCookieAccount
+      summary: 设为默认下载账号(排他)
+      description: |
+        把指定账号设为默认下载(**排他:把其他账号 is_default_download 清零**)。
+        返回更新后的账号。
+      responses:
+        '200':
+          description: 已设为默认
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/bili.yaml#/BiliCookieAccount'
+        '400':
+          description: id 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '404':
+          description: 账号不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/cookie-accounts/{id}/default-publish:
+    parameters:
+      - $ref: '#/components/parameters/AccountID'
+    post:
+      tags: [B站账号]
+      operationId: setDefaultPublishCookieAccount
+      summary: 设为默认发布账号(排他)
+      description: |
+        把指定账号设为默认发布(**排他:把其他账号 is_default_publish 清零**)。
+        返回更新后的账号。
+      responses:
+        '200':
+          description: 已设为默认
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/bili.yaml#/BiliCookieAccount'
+        '400':
+          description: id 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '404':
+          description: 账号不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  # 兼容别名端点(转发到 cookie-accounts handler)
+  /api/bili/accounts:
+    get:
+      tags: [B站账号]
+      operationId: listBiliAccounts
+      summary: 列出全部 B站账号(兼容别名)
+      description: |
+        **已废弃**。别名转发到 `GET /api/cookie-accounts`。
+        返回直接数组。新代码请用 cookie-accounts。
+      deprecated: true
+      responses:
+        '200':
+          description: 账号列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: 'components/schemas/bili.yaml#/BiliCookieAccount'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/bili/accounts/{id}:
+    parameters:
+      - $ref: '#/components/parameters/AccountID'
+    put:
+      tags: [B站账号]
+      operationId: updateBiliAccount
+      summary: 更新 B站账号(兼容别名)
+      description: |
+        **已废弃**。别名转发到 `PUT /api/cookie-accounts/{id}`。
+      deprecated: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/bili.yaml#/UpdateCookieAccountRequest'
+      responses:
+        '200':
+          description: 更新后的账号
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/bili.yaml#/BiliCookieAccount'
+        '404':
+          description: 账号不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+    delete:
+      tags: [B站账号]
+      operationId: deleteBiliAccount
+      summary: 删除 B站账号(兼容别名)
+      description: |
+        **已废弃**。别名转发到 `DELETE /api/cookie-accounts/{id}`。返回 204。
+      deprecated: true
+      responses:
+        '204':
+          description: 已删除(无响应体)
+        '404':
+          description: 账号不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  # ───────── 密钥域(T10)─────────
+  /api/secrets:
+    get:
+      tags: [密钥]
+      operationId: listSecrets
+      summary: 列出全部密钥(脱敏)
+      description: |
+        返回所有已知密钥的脱敏视图(顺序按 KnownKeys:
+        DashScope/Recap/ASRS3/WebDAV 的 Effective* env 名)。
+        **永不返回明文**,只有 masked_value + set + source + updated_at。
+      responses:
+        '200':
+          description: 密钥列表
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/secrets.yaml#/SecretsListResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/secrets/{key}:
+    parameters:
+      - $ref: '#/components/parameters/SecretKey'
+    put:
+      tags: [密钥]
+      operationId: updateSecret
+      summary: 设置/删除单个密钥
+      description: |
+        `{key}` 必须是 KnownKeys 白名单内的 env 名(DashScope/Recap 的 EffectiveAPIKeyEnv
+        + ASRS3/WebDAV 的 EffectiveAccessKeyEnv/PasswordEnv)。
+
+        **特殊拒绝**:key 等于 ASRS3.EffectiveAccessKeyEnv 或 WebDAV.EffectivePasswordEnv 时 → **400**,
+        错误消息 `"this secret is managed by its section config endpoint; update it via the corresponding settings card"`。
+        原因:这两个密钥有 config.yaml 明文兜底 + tombstone 语义,必须走
+        `PUT /api/config/asr-s3` / `PUT /api/config/webdav`(那里会写 tombstone 标志)。
+        DashScope/Recap 的 api_key 无明文字段,走本接口安全。
+
+        **value 语义**:
+        - 非空 → 设置(secrets.Set + os.Setenv + bumpConfigGen + refreshRuntimeStatus)
+        - 空串 → 删除(secrets.Delete + os.Unsetenv + 同副作用)
+
+        返回 SecretView(**注意:PUT 响应不填 updated_at**,仅 GET 列表填)。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/secrets.yaml#/UpdateSecretRequest'
+      responses:
+        '200':
+          description: 已设置/删除(脱敏视图)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/secrets.yaml#/SecretView'
+        '400':
+          description: |
+            1. key 不在白名单(`unknown secret key: ...`)
+            2. key 被分段配置托管(ASRS3/WebDAV 的密钥)
+            3. 请求体非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'

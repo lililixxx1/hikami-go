@@ -1,0 +1,259 @@
+# 统计/Dashboard schema
+# 真相源:internal/session/session.go:528 SessionStats / :539 DashboardData / :547 MonthCount...
+#         internal/handler/server.go:3822 handleStatsOverview / :3849 handleStatsDashboard
+#         :3907 handleCookieStatus(cookieStatus/cookieDetail)/ :3962 handleStatsCost
+
+SessionStats:
+  type: object
+  description: 场次统计聚合
+  required: [total_sessions, total_recaps, sessions_by_month, top_channels]
+  properties:
+    total_sessions:
+      type: integer
+    total_recaps:
+      type: integer
+      description: 到达 recap_done 及之后状态的场次数
+    sessions_by_month:
+      type: array
+      items:
+        $ref: 'stats.yaml#/MonthCount'
+    top_channels:
+      type: array
+      items:
+        $ref: 'stats.yaml#/ChannelRanking'
+
+MonthCount:
+  type: object
+  required: [month, count]
+  properties:
+    month:
+      type: string
+      example: "2026-07"
+    count:
+      type: integer
+
+ChannelRanking:
+  type: object
+  required: [channel_id, name, session_count, recap_count]
+  properties:
+    channel_id:
+      type: string
+    name:
+      type: string
+      description: 主播名
+    session_count:
+      type: integer
+    recap_count:
+      type: integer
+
+StatsOverviewResponse:
+  type: object
+  description: GET /api/stats/overview 响应
+  required: [sessions, task_summary, asr_cost_estimate, asr_hours]
+  properties:
+    sessions:
+      $ref: 'stats.yaml#/SessionStats'
+    task_summary:
+      type: object
+      additionalProperties:
+        type: integer
+      description: |
+        任务状态计数 map[string]int(如 {pending: N, running: M, failed: K})。
+        后端 map 类型,序列化为 JSON 对象。
+    asr_cost_estimate:
+      type: number
+      format: double
+      description: ASR 成本估算(¥,粗估 ~¥36/h × 总场次 × 2h)
+    asr_hours:
+      type: number
+      format: double
+      description: ASR 小时估算(总场次 × 2h)
+
+StatsCostResponse:
+  type: object
+  description: GET /api/stats/cost 响应
+  required:
+    - asr_cost_estimate
+    - asr_hours_estimate
+    - ai_cost_estimate
+    - total_cost_estimate
+    - monthly_breakdown
+  properties:
+    asr_cost_estimate:
+      type: number
+      format: double
+    asr_hours_estimate:
+      type: number
+      format: double
+    ai_cost_estimate:
+      type: number
+      format: double
+      description: AI 回顾成本估算(¥,~¥0.1/场)
+    total_cost_estimate:
+      type: number
+      format: double
+    monthly_breakdown:
+      type: array
+      items:
+        $ref: 'stats.yaml#/MonthCount'
+
+DashboardData:
+  type: object
+  description: GET /api/stats/dashboard 响应
+  required:
+    - sessions_by_month
+    - sessions_by_channel
+    - cost_trend
+    - danmaku_top
+    - recap_count
+    - publish_count
+  properties:
+    sessions_by_month:
+      type: array
+      items:
+        $ref: 'stats.yaml#/DashboardMonth'
+    sessions_by_channel:
+      type: array
+      items:
+        $ref: 'stats.yaml#/DashboardChannel'
+    cost_trend:
+      type: array
+      items:
+        $ref: 'stats.yaml#/DashboardCost'
+    danmaku_top:
+      type: array
+      items:
+        $ref: 'stats.yaml#/DashboardDanmaku'
+    recap_count:
+      type: integer
+    publish_count:
+      type: integer
+
+DashboardMonth:
+  type: object
+  required: [month, session_count, asr_hours]
+  properties:
+    month:
+      type: string
+    session_count:
+      type: integer
+    asr_hours:
+      type: number
+      format: double
+
+DashboardChannel:
+  type: object
+  required: [channel_id, channel_name, session_count, recap_count, publish_count]
+  properties:
+    channel_id:
+      type: string
+    channel_name:
+      type: string
+    session_count:
+      type: integer
+    recap_count:
+      type: integer
+    publish_count:
+      type: integer
+
+DashboardCost:
+  type: object
+  required: [month, asr_hours, asr_cost, ai_cost, total_cost]
+  properties:
+    month:
+      type: string
+    asr_hours:
+      type: number
+      format: double
+    asr_cost:
+      type: number
+      format: double
+    ai_cost:
+      type: number
+      format: double
+    total_cost:
+      type: number
+      format: double
+
+DashboardDanmaku:
+  type: object
+  required: [channel_id, channel_name, danmaku_count]
+  properties:
+    channel_id:
+      type: string
+    channel_name:
+      type: string
+    danmaku_count:
+      type: integer
+
+# Cookie 状态(GET /api/cookies/status)
+CookieStatusResponse:
+  type: object
+  required: [channels]
+  properties:
+    channels:
+      type: array
+      items:
+        $ref: 'stats.yaml#/CookieStatus'
+
+CookieStatus:
+  type: object
+  required: [channel_id, channel_name]
+  properties:
+    channel_id:
+      type: string
+    channel_name:
+      type: string
+    publish_cookie:
+      $ref: 'stats.yaml#/CookieDetail'
+    download_cookie:
+      $ref: 'stats.yaml#/CookieDetail'
+
+CookieDetail:
+  type: object
+  required: [file, status]
+  properties:
+    file:
+      type: string
+      description: cookie 文件路径
+    status:
+      type: string
+      enum: [valid, missing, expired]
+    expires_at:
+      type: string
+      description: 过期时间(omitempty,字符串)
+
+# Diagnostic report(map[string]interface{},字段不固定,仅列已知 key)
+DiagnosticReport:
+  type: object
+  description: |
+    GET /api/diagnostic/report 响应。map[string]interface{},字段如下:
+    timestamp(UTC RFC3339)、runtime(RuntimeStatus)、config({output_root,db_path,
+    web_enabled,web_listen,publish_mode})、disk_usage([DiskInfo])、
+    cookie_warnings([CookieWarning])、recent_errors([Task])、task_summary(map[string]int)。
+  additionalProperties: true
+  properties:
+    timestamp:
+      type: string
+      format: date-time
+    runtime:
+      $ref: 'runtime.yaml#/RuntimeStatus'
+    config:
+      type: object
+      additionalProperties: true
+    disk_usage:
+      type: array
+      items:
+        $ref: 'runtime.yaml#/DiskInfo'
+    cookie_warnings:
+      type: array
+      items:
+        $ref: 'runtime.yaml#/CookieWarning'
+    recent_errors:
+      type: array
+      items:
+        $ref: 'task.yaml#/Task'
+    task_summary:
+      type: object
+      additionalProperties:
+        type: integer

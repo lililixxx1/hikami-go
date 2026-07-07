@@ -1,0 +1,164 @@
+# 回顾模板域 schema
+# 真相源:
+#   internal/recap/template.go:37 Template / :51 TemplateExport / :57 ResolvedTemplate
+#   internal/recap/presets.go:4 TemplatePreset + BuiltinPresets
+#   internal/handler/server.go:3390 listGlobal / :3402 upsert / :3439 getChannel / :3494 delete ...
+
+RecapTemplate:
+  type: object
+  description: 回顾模板实体
+  required:
+    - id
+    - channel_id
+    - name
+    - system_prompt
+    - user_format
+    - fan_name
+    - extra_vars
+    - enabled
+    - is_default
+    - created_at
+    - updated_at
+  properties:
+    id:
+      type: integer
+      format: int64
+    channel_id:
+      type: string
+      description: 全局模板为空串 ""
+    name:
+      type: string
+      description: 模板名(default 为默认)
+    system_prompt:
+      type: string
+    user_format:
+      type: string
+    fan_name:
+      type: string
+      description: 粉丝称呼
+    extra_vars:
+      type: string
+      description: 额外变量(JSON 字符串)
+    enabled:
+      type: boolean
+    is_default:
+      type: boolean
+    created_at:
+      type: string
+    updated_at:
+      type: string
+
+UpsertRecapTemplateRequest:
+  type: object
+  description: |
+    新增/更新模板请求(全局 + 主播级共用)。
+    全字段可选(upsert 是 presence-aware):
+    - name 空串时默认 "default"
+    - enabled 缺省(nil)时默认 true
+    - **不带 is_default**(handler 不读此字段,由其他逻辑管理)
+  properties:
+    name:
+      type: string
+      description: 空串时默认 "default"
+    system_prompt:
+      type: string
+    user_format:
+      type: string
+    fan_name:
+      type: string
+    extra_vars:
+      type: string
+      description: JSON 字符串
+    enabled:
+      type: boolean
+      description: "*bool,缺省默认 true"
+
+# ⚠️ ResolvedTemplate 字段名是 PascalCase(源码无 json tag,template.go:57-63)
+ResolvedTemplate:
+  type: object
+  description: |
+    ⚠️ **字段名是 PascalCase**(`SystemPrompt`/`UserFormat`/`FanName`/`ExtraVars`)。
+    源码 `recap.ResolvedTemplate` 无 json tag(template.go:57-63),
+    Go 默认序列化用字段名(首字母大写)。
+    这是历史遗留,与项目其他 snake_case 不一致,但必须在 schema 里如实记录。
+    前端访问时需用 PascalCase key。
+  required: [SystemPrompt, UserFormat, FanName, ExtraVars]
+  properties:
+    SystemPrompt:
+      type: string
+      description: ⚠️ PascalCase(非 system_prompt)
+    UserFormat:
+      type: string
+    FanName:
+      type: string
+    ExtraVars:
+      type: object
+      additionalProperties:
+        type: string
+      description: |
+        map[string]string。
+        ⚠️ PascalCase key。注意:运行时若为 nil map,序列化为 `{}`(非 null)。
+
+ChannelRecapTemplateResponse:
+  type: object
+  description: |
+    GET /api/channels/{id}/recap-template 响应。
+    global/channel 是 `*Template`(gin.H 里无 omitempty 的 nil 指针)→ **值为 null**(非缺席)。
+    resolved 永远出现。
+  required: [global, channel, resolved]
+  properties:
+    global:
+      type: object
+      nullable: true
+      allOf:
+        - $ref: 'templates.yaml#/RecapTemplate'
+      description: 全局 default 模板;查不到为 **null**(非缺席)
+    channel:
+      type: object
+      nullable: true
+      allOf:
+        - $ref: 'templates.yaml#/RecapTemplate'
+      description: 主播级 default 模板;查不到为 **null**(非缺席)
+    resolved:
+      $ref: 'templates.yaml#/ResolvedTemplate'
+
+TemplateExport:
+  type: object
+  description: |
+    模板 JSON 导出/导入结构。
+    GET .../templates/export 和 GET .../recap-template/export 返回此结构(attachment)。
+    POST .../templates/import 和 POST .../recap-template/import 请求体是 raw JSON(此结构)。
+  required: [channel_id, templates, exported_at]
+  properties:
+    channel_id:
+      type: string
+      description: 全局导出为空串
+    templates:
+      type: array
+      items:
+        $ref: 'templates.yaml#/RecapTemplate'
+    exported_at:
+      type: string
+      format: date-time
+
+TemplatePreset:
+  type: object
+  description: 内置模板预设(GET /api/recap/presets 返回)
+  required: [name, description, system_prompt, user_format]
+  properties:
+    name:
+      type: string
+      example: 内置默认
+    description:
+      type: string
+    system_prompt:
+      type: string
+    user_format:
+      type: string
+
+ImportedCountResponse:
+  type: object
+  required: [imported]
+  properties:
+    imported:
+      type: integer

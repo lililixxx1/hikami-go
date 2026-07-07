@@ -1,0 +1,143 @@
+# 任务域 schema
+# 真相源:internal/worker/task.go:41 Task struct / :31 Status 常量
+
+Task:
+  type: object
+  description: |
+    异步任务实体。下载/转写/回顾/上传/发布/归档 都是异步任务,通过 worker 池执行。
+    端点 POST .../download|asr/submit|recap/*|upload|fetch|publish|archive 返回的 Task 对象。
+  required:
+    - id
+    - channel_id
+    - type
+    - status
+    - payload
+    - progress
+    - message
+    - attempt
+    - created_at
+    - updated_at
+  properties:
+    id:
+      type: string
+      description: 任务 ID(string 化的 UUID)
+    channel_id:
+      type: string
+    session_id:
+      type: string
+      description: 关联场次 ID(omitempty,部分任务类型不绑场次)
+    type:
+      type: string
+      description: |
+        任务类型。常见值:download / normalize / asr / recap / upload / fetch / archive / publish。
+    status:
+      type: string
+      enum: [pending, running, succeeded, failed, cancelled]
+    payload:
+      type: string
+      description: 任务负载 JSON 字符串(空时为 "{}")
+    progress:
+      type: integer
+      minimum: 0
+      maximum: 100
+    message:
+      type: string
+      description: 进度描述
+    error:
+      type: string
+      description: 失败时的错误消息(omitempty,仅 failed 出现)
+    attempt:
+      type: integer
+      description: 已尝试次数(从 1 开始)
+    started_at:
+      type: string
+      description: 开始执行时间(omitempty,本地时区 RFC3339)
+    finished_at:
+      type: string
+      description: 完成时间(omitempty,本地时区 RFC3339)
+    created_at:
+      type: string
+    updated_at:
+      type: string
+    bypass_fail_state:
+      type: boolean
+      description: |
+        失败时不降级 session 主状态(仅写 last_error)。
+        omitempty。用于"重新生成回顾"等非推进型任务(published/recap_done 下重跑 recap 失败不打回)。
+
+TasksListResponse:
+  type: object
+  required: [items]
+  properties:
+    items:
+      type: array
+      items:
+        $ref: 'task.yaml#/Task'
+
+FriendlyError:
+  type: object
+  description: |
+    友好错误信息。仅 status=failed && error!="" 时出现在 TaskDetailResponse.friendly_error。
+  required: [message, suggestion]
+  properties:
+    message:
+      type: string
+      description: 中文友好消息
+    suggestion:
+      type: string
+      description: 建议操作
+
+AutoRetryInfo:
+  type: object
+  description: |
+    自动重试信息。仅 status=failed 且 ShouldAutoRetry 返回 true 时出现。
+  required: [scheduled, attempt, max_attempts]
+  properties:
+    scheduled:
+      type: boolean
+      description: 是否会自动重试(几乎恒为 true,出现即代表会重试)
+    attempt:
+      type: integer
+      description: 当前已尝试次数
+    max_attempts:
+      type: integer
+      description: 最大重试次数(cfg.Worker.MaxRetryAttempts)
+
+TaskDetailResponse:
+  type: object
+  description: |
+    GET /api/tasks/{id} 响应。
+    - task 永远出现
+    - friendly_error 仅 status=failed && error!="" 出现
+    - auto_retry 仅 status=failed 且 ShouldAutoRetry=true 出现
+  required: [task]
+  properties:
+    task:
+      $ref: 'task.yaml#/Task'
+    friendly_error:
+      $ref: 'task.yaml#/FriendlyError'
+    auto_retry:
+      $ref: 'task.yaml#/AutoRetryInfo'
+
+BatchRetryRequest:
+  type: object
+  required: [task_ids]
+  properties:
+    task_ids:
+      type: array
+      items:
+        type: string
+      description: 要重试的任务 ID 列表(非空,空数组→400)
+
+BatchRetryResponse:
+  type: object
+  required: [retried, tasks]
+  properties:
+    retried:
+      type: integer
+      description: 实际重试的任务数
+    tasks:
+      type: array
+      items:
+        $ref: 'task.yaml#/Task'
+      description: 重试后的任务列表
