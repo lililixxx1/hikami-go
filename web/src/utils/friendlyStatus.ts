@@ -1,4 +1,13 @@
-import type { Session } from '@/api/types'
+/**
+ * 友好状态计算所需的最小结构。同时兼容:
+ *  - 旧手写类型 {@link Session}(started_at 等字段为 required)
+ *  - generated.ts 派生类型(started_at 等字段为 optional)
+ * 只读取 status 与 local_available,故用结构类型放宽,避免迁移期两种 Session 互相不可赋值。
+ */
+interface SessionLike {
+  status: string
+  local_available: boolean
+}
 
 export interface FriendlyStatus {
   label: string
@@ -25,7 +34,7 @@ export const statusGroupMap: Record<string, string[]> = {
   failed: ['failed'],
 }
 
-export function getFriendlySessionStatus(session: Session): FriendlyStatus {
+export function getFriendlySessionStatus(session: SessionLike): FriendlyStatus {
   if (session.status === 'failed') {
     return { label: '处理失败', color: 'danger', progress: 0, action: '重试' }
   }
