@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { House, User, Reading, Setting } from '@element-plus/icons-vue'
 import { useAppRefreshCoordinator } from '@/composables/useAppRefreshCoordinator'
 import { useTasksStore } from '@/stores/tasks'
 import { useRuntimeStore } from '@/stores/runtime'
 import { useExpertMode } from '@/composables/useExpertMode'
+import { HSwitch } from '@/components/ui'
 
 const route = useRoute()
 const router = useRouter()
@@ -17,10 +17,10 @@ const { expertMode } = useExpertMode()
 const { connected, connect, disconnect, refreshTasks } = useAppRefreshCoordinator()
 
 const navItems = [
-  { path: '/', label: '首页', icon: House },
-  { path: '/streamers', label: '我的主播', icon: User },
-  { path: '/recaps', label: '回顾', icon: Reading },
-  { path: '/settings', label: '设置', icon: Setting },
+  { path: '/', label: '首页' },
+  { path: '/streamers', label: '主播管理' },
+  { path: '/recaps', label: '回顾管理' },
+  { path: '/settings', label: '设置' },
 ]
 
 const activeNav = computed(() => {
@@ -50,36 +50,37 @@ onUnmounted(() => {
 </script>
 
 <template>
+  <a class="skip-link" href="#main-content">跳到主内容</a>
   <div class="app-shell">
-    <header class="top-bar">
-      <div class="top-bar-inner">
-        <div class="brand">Hikami-Go</div>
-        <nav class="tab-nav">
-          <button
-            v-for="item in navItems"
-            :key="item.path"
-            class="tab-item"
-            :class="{ active: activeNav === item.path }"
-            @click="handleNav(item.path)"
-          >
-            <el-icon :size="16"><component :is="item.icon" /></el-icon>
-            <span>{{ item.label }}</span>
-          </button>
-        </nav>
-        <div class="top-bar-right">
-          <span class="task-badge" :title="`${runningTaskCount} 个任务运行中`">
-            <span class="dot" :class="{ connected }" />
-          </span>
-          <el-switch
-            v-model="expertMode"
-            active-text="专家"
-            inactive-text=""
-            size="small"
-          />
-        </div>
+    <header class="topbar">
+      <div class="topbar-brand">
+        <div class="brand-icon">H</div>
+        Hikami-Go
+      </div>
+      <nav class="topbar-nav" aria-label="主导航">
+        <button
+          v-for="item in navItems"
+          :key="item.path"
+          type="button"
+          class="topbar-nav-item"
+          :class="{ active: activeNav === item.path }"
+          role="tab"
+          :aria-selected="activeNav === item.path"
+          @click="handleNav(item.path)"
+        >{{ item.label }}</button>
+      </nav>
+      <div class="topbar-spacer" />
+      <div class="topbar-status">
+        <span class="topbar-status-dot" :class="{ connected }" :title="connected ? 'WebSocket 已连接' : '离线(降级轮询)'" />
+        <span class="status-text">{{ connected ? '已连接' : '离线' }}</span>
+        <span v-if="runningTaskCount > 0" class="task-count" :title="`${runningTaskCount} 个任务运行中`">
+          {{ runningTaskCount }}
+        </span>
+        <HSwitch v-model="expertMode" />
+        <span class="expert-label">专家</span>
       </div>
     </header>
-    <main class="main-content">
+    <main id="main-content" class="main-content">
       <router-view />
     </main>
   </div>
@@ -92,93 +93,117 @@ onUnmounted(() => {
   flex-direction: column;
 }
 
-.top-bar {
-  height: 56px;
-  background: #fff;
-  border-bottom: 1px solid #e4e7ed;
+.topbar {
+  height: var(--topbar-h);
+  background: var(--canvas);
+  border-bottom: 1px solid var(--border-light);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 16px;
   flex-shrink: 0;
   z-index: 10;
 }
 
-.top-bar-inner {
+.topbar-brand {
   display: flex;
   align-items: center;
-  height: 100%;
-  max-width: 1400px;
-  margin: 0 auto;
-  padding: 0 24px;
-  gap: 24px;
-}
-
-.brand {
-  font-size: 20px;
-  font-weight: 700;
-  color: #303133;
-  letter-spacing: -0.5px;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
   flex-shrink: 0;
 }
 
-.tab-nav {
+.brand-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-md);
+  background: var(--accent);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.topbar-nav {
   display: flex;
   gap: 4px;
   flex: 1;
 }
 
-.tab-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 16px;
+.topbar-nav-item {
+  padding: 6px 12px;
   border: none;
   background: none;
-  border-radius: 8px;
-  color: #606266;
-  font-size: 14px;
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: 13.5px;
   font-weight: 500;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
+  font-family: var(--font);
 }
 
-.tab-item:hover {
-  background: #f5f7fa;
-  color: #303133;
+.topbar-nav-item:hover {
+  background: var(--surface-warm);
+  color: var(--text);
 }
 
-.tab-item.active {
-  background: #ecf5ff;
-  color: #409eff;
+.topbar-nav-item.active {
+  color: var(--accent);
+  background: var(--accent-bg);
 }
 
-.top-bar-right {
+.topbar-spacer { flex: 1; }
+
+.topbar-status {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   flex-shrink: 0;
+  font-size: 12.5px;
+  color: var(--text-muted);
 }
 
-.task-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  cursor: default;
-}
-
-.dot {
+.topbar-status-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #f56c6c;
+  background: var(--danger);
 }
 
-.dot.connected {
-  background: #67c23a;
+.topbar-status-dot.connected {
+  background: var(--success);
 }
+
+.status-text { color: var(--text-secondary); }
+
+.task-count {
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  min-width: 16px;
+  text-align: center;
+}
+
+.expert-label { font-size: 12.5px; color: var(--text-muted); }
 
 .main-content {
   flex: 1;
   overflow-y: auto;
-  background: #f5f7fa;
+  background: var(--surface);
+}
+
+@media (max-width: 768px) {
+  .topbar { padding: 0 12px; gap: 4px; overflow-x: auto; }
+  .topbar-nav-item { padding: 6px 10px; font-size: 12.5px; }
+  .topbar-brand { margin-right: 8px; font-size: 14px; }
+  .expert-label { display: none; }
 }
 </style>

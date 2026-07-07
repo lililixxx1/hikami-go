@@ -1,0 +1,21 @@
+/* web/src/styles/ep-theme-bridge.css */
+/* 过渡期把 Element Plus 的主题变量映射到 V10 design-tokens。
+   Phase 6 移除 element-plus 后此文件一并删除。
+   只覆盖颜色族，不覆盖间距/字号（EP 的 spacing 体系与 V10 不同，强行覆盖会破坏 EP 组件内部布局）。 */
+:root {
+  --el-color-primary: var(--accent);
+  --el-color-primary-light-3: color-mix(in srgb, var(--accent) 70%, white);
+  --el-color-primary-light-5: color-mix(in srgb, var(--accent) 50%, white);
+  --el-color-primary-light-7: color-mix(in srgb, var(--accent) 30%, white);
+  --el-color-primary-light-9: var(--accent-bg);
+  --el-color-primary-dark-2: var(--accent-hover);
+  --el-color-success: var(--success);
+  --el-color-warning: var(--warning);
+  --el-color-danger: var(--danger);
+  --el-border-color: var(--border);
+  --el-border-color-light: var(--border-light);
+  --el-text-color-primary: var(--text);
+  --el-text-color-regular: var(--text-secondary);
+  --el-bg-color: var(--canvas);
+  --el-fill-color-blank: var(--canvas);
+}
