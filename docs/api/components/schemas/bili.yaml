@@ -1,0 +1,160 @@
+# B站账号 + QR 登录域 schema
+# 真相源:
+#   internal/biliutil/login.go:75 QRCodeGenerateResult / :81 QRCodePollResult / :33 QRLoginStatus
+#   internal/biliutil/cookie_account.go:21 CookieAccount
+#   internal/handler/server.go:604 createBiliQRCodeLogin / :613 poll / :622 save / :675 saveToAccount /
+#     :779 list / :795 create / :825 update / :894 delete / :898 setDefault*
+
+QRCodeGenerateResult:
+  type: object
+  description: POST /api/bili/login/qrcode 响应(创建 QR 登录会话)
+  required: [session_id, url, expires_at]
+  properties:
+    session_id:
+      type: string
+      description: QR 登录会话 ID(后续 poll/save 用)
+    url:
+      type: string
+      description: 二维码扫码 URL(前端生成二维码)
+    expires_at:
+      type: string
+      format: date-time
+
+QRCodePollResult:
+  type: object
+  description: GET /api/bili/login/qrcode/{session_id} 响应(轮询登录状态)
+  required: [session_id, status, message, expires_at]
+  properties:
+    session_id:
+      type: string
+    status:
+      type: string
+      enum: [pending, scanned, expired, succeeded, failed]
+      description: |
+        - pending:等待扫码
+        - scanned:已扫码待确认
+        - expired:二维码过期(→ 后续操作 410)
+        - succeeded:登录成功
+        - failed:登录失败
+    message:
+      type: string
+    uid:
+      type: integer
+      format: int64
+      description: omitempty,仅 succeeded 时填充
+    expires_at:
+      type: string
+      format: date-time
+
+QRCodeSaveRequest:
+  type: object
+  description: POST .../qrcode/{session_id}/save 请求(保存 cookie 到频道)
+  required: [channel_id, usage]
+  properties:
+    channel_id:
+      type: string
+    usage:
+      type: string
+      enum: [download, publish]
+
+QRCodeSaveResponse:
+  type: object
+  description: POST .../save 响应
+  required: [channel, usage, cookie_file, uid, expires_at]
+  properties:
+    channel:
+      $ref: 'channel.yaml#/Channel'
+    usage:
+      type: string
+      enum: [download, publish]
+    cookie_file:
+      type: string
+    uid:
+      type: integer
+      format: int64
+    expires_at:
+      type: string
+      description: cookie 过期时间(字符串,非严格 date-time)
+
+QRCodeSaveAccountRequest:
+  type: object
+  description: POST .../save-account 请求(保存为全局账号)
+  properties:
+    nickname:
+      type: string
+      description: 可选昵称
+
+# CookieAccount(全局账号)
+BiliCookieAccount:
+  type: object
+  description: |
+    B 站 cookie 账号。
+    注意:GET /api/cookie-accounts 和 /api/bili/accounts 返回**直接数组**(非 {items} 包装)。
+  required:
+    - id
+    - uid
+    - nickname
+    - cookie_file
+    - is_default_download
+    - is_default_publish
+    - created_at
+    - updated_at
+  properties:
+    id:
+      type: integer
+      format: int64
+    uid:
+      type: integer
+      format: int64
+    nickname:
+      type: string
+    cookie_file:
+      type: string
+      description: cookie 文件路径(必须在 OutputRoot/.cookies/bilibili 下)
+    is_default_download:
+      type: boolean
+    is_default_publish:
+      type: boolean
+    created_at:
+      type: string
+    updated_at:
+      type: string
+
+CreateCookieAccountRequest:
+  type: object
+  description: |
+    POST /api/cookie-accounts 请求体。
+    **注意:body 直接是 CookieAccount 结构**(不是单独的 request struct),
+    但 id/created_at/updated_at 由后端生成(传了也忽略)。
+  required: [uid, nickname, cookie_file]
+  properties:
+    uid:
+      type: integer
+      format: int64
+    nickname:
+      type: string
+    cookie_file:
+      type: string
+      description: 必须在白名单目录(OutputRoot/.cookies/bilibili)下
+    is_default_download:
+      type: boolean
+      description: 传 true 会排他把其他账号同字段清零
+    is_default_publish:
+      type: boolean
+
+UpdateCookieAccountRequest:
+  type: object
+  description: |
+    PUT /api/cookie-accounts/{id} 请求体(全指针 = 部分更新)。
+    传哪个改哪个;is_default_* 传 true 触发排他操作。
+    cookie_file 传了必须在白名单目录下。
+  properties:
+    nickname:
+      type: string
+    cookie_file:
+      type: string
+      description: 必须在白名单目录下,否则 ErrInvalidCookiePath → 400
+    is_default_download:
+      type: boolean
+    is_default_publish:
+      type: boolean

@@ -3000,3 +3000,424 @@ paths:
             application/json:
               schema:
                 $ref: 'components/schemas/common.yaml#/Error'
+
+  # ───────── B站账号与 QR 登录域(T9)─────────
+  /api/bili/login/qrcode:
+    post:
+      tags: [B站账号]
+      operationId: createBiliQRCodeLogin
+      summary: 创建 QR 登录会话
+      description: |
+        向 B 站请求二维码,返回 session_id + 扫码 URL。
+        前端用 URL 生成二维码,然后用 session_id 轮询 poll。
+      responses:
+        '201':
+          description: 已创建 QR 登录会话
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/bili.yaml#/QRCodeGenerateResult'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '502':
+          description: B 站上游错误(ErrBiliLoginUpstream)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/bili/login/qrcode/{session_id}:
+    parameters:
+      - $ref: '#/components/parameters/QRSessionID'
+    get:
+      tags: [B站账号]
+      operationId: pollBiliQRCodeLogin
+      summary: 轮询 QR 登录状态
+      description: |
+        返回当前扫码状态(pending/scanned/succeeded/expired/failed)。
+        **session 过期 → 410 Gone**(ErrQRLoginSessionExpired,非 404)。
+        **session 未找到 → 404**(ErrQRLoginSessionNotFound)。
+      responses:
+        '200':
+          description: 当前状态
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/bili.yaml#/QRCodePollResult'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: session 未找到(ErrQRLoginSessionNotFound)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '410':
+          description: session 已过期(ErrQRLoginSessionExpired)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+    delete:
+      tags: [B站账号]
+      operationId: deleteBiliQRCodeLogin
+      summary: 删除 QR 登录会话
+      description: |
+        主动取消 QR 登录会话(如用户关闭弹窗)。
+        **成功返回 204**(无响应体)。session 不存在也返回 204(幂等)。
+      responses:
+        '204':
+          description: 已删除/不存在(无响应体)
+
+  /api/bili/login/qrcode/{session_id}/save:
+    parameters:
+      - $ref: '#/components/parameters/QRSessionID'
+    post:
+      tags: [B站账号]
+      operationId: saveBiliQRCodeLogin
+      summary: 保存 QR 登录 cookie 到频道
+      description: |
+        把扫码成功的 cookie 写入文件,并更新指定频道的 publish/download cookie_file。
+        **未扫码成功 → 409**(ErrQRLoginNotSucceeded)。
+        session 过期/未找到 → 410/404。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/bili.yaml#/QRCodeSaveRequest'
+      responses:
+        '200':
+          description: 已保存到频道
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/bili.yaml#/QRCodeSaveResponse'
+        '400':
+          description: channel_id 缺失或 usage 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: session 未找到
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 未扫码成功(ErrQRLoginNotSucceeded)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '410':
+          description: session 已过期
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/bili/login/qrcode/{session_id}/save-account:
+    parameters:
+      - $ref: '#/components/parameters/QRSessionID'
+    post:
+      tags: [B站账号]
+      operationId: saveBiliQRCodeToAccount
+      summary: 保存 QR 登录 cookie 为全局账号
+      description: |
+        把扫码成功的 cookie 保存为全局 cookie 账号。
+        - **同 UID 已存在 → 走 Update,返回 200**(非 201)
+        - 新建时若为第一个账号,**自动设为默认下载+发布**
+        - 两种路径都返回 **200**(非 201)
+        未扫码成功 → 409;uid 无法判定 → 400。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/bili.yaml#/QRCodeSaveAccountRequest'
+      responses:
+        '200':
+          description: 已保存(新建或更新同 200)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/bili.yaml#/BiliCookieAccount'
+        '400':
+          description: 无法从 cookie 判定 uid
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: session 未找到
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 未扫码成功
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '410':
+          description: session 已过期
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '503':
+          description: cookie account store 未配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/cookie-accounts:
+    get:
+      tags: [B站账号]
+      operationId: listCookieAccounts
+      summary: 列出全部 cookie 账号
+      description: |
+        **返回直接数组**(非 `{items}` 包装)。
+        store 为 nil 或空时返回 `[]`(非 null)。
+      responses:
+        '200':
+          description: 账号列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: 'components/schemas/bili.yaml#/BiliCookieAccount'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    post:
+      tags: [B站账号]
+      operationId: createCookieAccount
+      summary: 创建 cookie 账号
+      description: |
+        请求体直接是 CookieAccount 结构(非单独 request struct)。
+        cookie_file 必须在白名单目录(OutputRoot/.cookies/bilibili)下,
+        否则 ErrInvalidCookiePath → 400。
+        返回 201 + 账号(含生成的 id)。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/bili.yaml#/CreateCookieAccountRequest'
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/bili.yaml#/BiliCookieAccount'
+        '400':
+          description: cookie_file 路径非法或请求体非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '503':
+          description: cookie account store 未配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/cookie-accounts/{id}:
+    parameters:
+      - $ref: '#/components/parameters/AccountID'
+    put:
+      tags: [B站账号]
+      operationId: updateCookieAccount
+      summary: 更新 cookie 账号(部分更新)
+      description: |
+        全指针 = 部分更新(presence-aware)。
+        is_default_download/publish 传 true 触发**排他操作**(把其他账号同字段清零)。
+        cookie_file 传了必须在白名单目录下。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/bili.yaml#/UpdateCookieAccountRequest'
+      responses:
+        '200':
+          description: 更新后的账号
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/bili.yaml#/BiliCookieAccount'
+        '400':
+          description: id 非法或 cookie_file 路径非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 账号不存在(ErrAccountNotFound)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+    delete:
+      tags: [B站账号]
+      operationId: deleteCookieAccount
+      summary: 删除 cookie 账号
+      description: "**成功返回 204**(无响应体)。"
+      responses:
+        '204':
+          description: 已删除(无响应体)
+        '400':
+          description: id 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '404':
+          description: 账号不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/cookie-accounts/{id}/default-download:
+    parameters:
+      - $ref: '#/components/parameters/AccountID'
+    post:
+      tags: [B站账号]
+      operationId: setDefaultDownloadCookieAccount
+      summary: 设为默认下载账号(排他)
+      description: |
+        把指定账号设为默认下载(**排他:把其他账号 is_default_download 清零**)。
+        返回更新后的账号。
+      responses:
+        '200':
+          description: 已设为默认
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/bili.yaml#/BiliCookieAccount'
+        '400':
+          description: id 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '404':
+          description: 账号不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/cookie-accounts/{id}/default-publish:
+    parameters:
+      - $ref: '#/components/parameters/AccountID'
+    post:
+      tags: [B站账号]
+      operationId: setDefaultPublishCookieAccount
+      summary: 设为默认发布账号(排他)
+      description: |
+        把指定账号设为默认发布(**排他:把其他账号 is_default_publish 清零**)。
+        返回更新后的账号。
+      responses:
+        '200':
+          description: 已设为默认
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/bili.yaml#/BiliCookieAccount'
+        '400':
+          description: id 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '404':
+          description: 账号不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  # 兼容别名端点(转发到 cookie-accounts handler)
+  /api/bili/accounts:
+    get:
+      tags: [B站账号]
+      operationId: listBiliAccounts
+      summary: 列出全部 B站账号(兼容别名)
+      description: |
+        **已废弃**。别名转发到 `GET /api/cookie-accounts`。
+        返回直接数组。新代码请用 cookie-accounts。
+      deprecated: true
+      responses:
+        '200':
+          description: 账号列表
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: 'components/schemas/bili.yaml#/BiliCookieAccount'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/bili/accounts/{id}:
+    parameters:
+      - $ref: '#/components/parameters/AccountID'
+    put:
+      tags: [B站账号]
+      operationId: updateBiliAccount
+      summary: 更新 B站账号(兼容别名)
+      description: |
+        **已废弃**。别名转发到 `PUT /api/cookie-accounts/{id}`。
+      deprecated: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/bili.yaml#/UpdateCookieAccountRequest'
+      responses:
+        '200':
+          description: 更新后的账号
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/bili.yaml#/BiliCookieAccount'
+        '404':
+          description: 账号不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+    delete:
+      tags: [B站账号]
+      operationId: deleteBiliAccount
+      summary: 删除 B站账号(兼容别名)
+      description: |
+        **已废弃**。别名转发到 `DELETE /api/cookie-accounts/{id}`。返回 204。
+      deprecated: true
+      responses:
+        '204':
+          description: 已删除(无响应体)
+        '404':
+          description: 账号不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
