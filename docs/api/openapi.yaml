@@ -1934,3 +1934,817 @@ paths:
             application/json:
               schema:
                 $ref: 'components/schemas/common.yaml#/Error'
+
+  # ───────── 术语表域(T7)─────────
+  # 全局 glossary
+  /api/glossary/entries:
+    get:
+      tags: [术语表]
+      operationId: listGlobalGlossary
+      summary: 列出全局术语表
+      description: "返回全局词条。响应 {items: [GlossaryEntry]}。空时返回 []。"
+      responses:
+        '200':
+          description: 全局词条列表
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/glossary.yaml#/GlossaryEntriesResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    post:
+      tags: [术语表]
+      operationId: upsertGlobalGlossary
+      summary: 新增/更新全局词条
+      description: "term + canonical 存在则更新,否则新增。返回 {ok: true}。"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/UpsertGlossaryEntryRequest'
+      responses:
+        '200':
+          description: 已新增/更新
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/OkResponse'
+        '400':
+          description: term/canonical 缺失
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/glossary/entries/batch-delete:
+    post:
+      tags: [术语表]
+      operationId: batchDeleteGlobalGlossary
+      summary: 批量删除全局词条
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/BatchIdsRequest'
+      responses:
+        '200':
+          description: 已删除计数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted]
+                properties:
+                  deleted:
+                    type: integer
+        '400':
+          description: ids 缺失
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/glossary/entries/batch-toggle:
+    post:
+      tags: [术语表]
+      operationId: batchToggleGlobalGlossary
+      summary: 批量启用/禁用全局词条
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/BatchToggleRequest'
+      responses:
+        '200':
+          description: 已更新计数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [updated]
+                properties:
+                  updated:
+                    type: integer
+        '400':
+          description: ids/enabled 缺失
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/glossary/entries/{eid}:
+    parameters:
+      - $ref: '#/components/parameters/GlossaryEntryID'
+    delete:
+      tags: [术语表]
+      operationId: deleteGlobalGlossary
+      summary: 删除全局词条
+      description: "**成功返回 204**(无响应体)。"
+      responses:
+        '204':
+          description: 已删除(无响应体)
+        '400':
+          description: eid 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 词条不存在(ErrNotFound → 404 `{error:not found, reason:...}`)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/glossary/entries/{eid}/toggle:
+    parameters:
+      - $ref: '#/components/parameters/GlossaryEntryID'
+    post:
+      tags: [术语表]
+      operationId: toggleGlobalGlossary
+      summary: 切换单条全局词条启用状态
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: 已切换
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/OkResponse'
+        '400':
+          description: enabled 缺失或 eid 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/glossary/note:
+    get:
+      tags: [术语表]
+      operationId: getGlobalGlossaryNote
+      summary: 获取全局术语表备注
+      responses:
+        '200':
+          description: 备注内容
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/glossary.yaml#/GlossaryNoteResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    put:
+      tags: [术语表]
+      operationId: updateGlobalGlossaryNote
+      summary: 更新全局术语表备注
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/GlossaryNoteRequest'
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/OkResponse'
+        '400':
+          description: 请求体非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/glossary/candidates:
+    get:
+      tags: [术语表]
+      operationId: listGlobalGlossaryCandidates
+      summary: 列出全局候选词
+      description: |
+        按 status 过滤。status 取值:
+        - `pending`(默认)/`approved`/`rejected`/`all`(跳过过滤)
+        - 非法 status → ErrInvalidCandidate → **400**
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending, approved, rejected, all]
+            default: pending
+      responses:
+        '200':
+          description: 候选词列表
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/glossary.yaml#/GlossaryCandidatesResponse'
+        '400':
+          description: status 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/glossary/candidates/{cid}/approve:
+    parameters:
+      - $ref: '#/components/parameters/GlossaryCandidateID'
+    post:
+      tags: [术语表]
+      operationId: approveGlobalGlossaryCandidate
+      summary: 审批通过全局候选词
+      description: |
+        状态机:已 rejected 的候选不能 approve(`approved candidate cannot be approved` /
+        `rejected candidate cannot be approved`)→ ErrInvalidCandidate → **400**。
+        请求体全可选(容 EOF:无请求体也允许)。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/ApproveCandidateRequest'
+      responses:
+        '200':
+          description: 已通过
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/OkResponse'
+        '400':
+          description: cid 非法或状态机冲突(已 rejected/approved)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '404':
+          description: 候选不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/glossary/candidates/{cid}/reject:
+    parameters:
+      - $ref: '#/components/parameters/GlossaryCandidateID'
+    post:
+      tags: [术语表]
+      operationId: rejectGlobalGlossaryCandidate
+      summary: 拒绝全局候选词
+      description: |
+        状态机:已 approved 的候选不能 reject → ErrInvalidCandidate → **400**。
+        无请求体。
+      responses:
+        '200':
+          description: 已拒绝
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/OkResponse'
+        '400':
+          description: cid 非法或状态机冲突(已 approved)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '404':
+          description: 候选不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/glossary/import/markdown:
+    post:
+      tags: [术语表]
+      operationId: importGlobalGlossaryMarkdown
+      summary: 从 markdown 导入全局词条
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/ImportMarkdownRequest'
+      responses:
+        '200':
+          description: 已导入计数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [imported]
+                properties:
+                  imported:
+                    type: integer
+        '400':
+          description: content 缺失
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/glossary/import/json:
+    post:
+      tags: [术语表]
+      operationId: importGlobalGlossaryJSON
+      summary: 从 JSON 导入全局词条
+      description: |
+        请求体是 **raw JSON**(GlossaryExport 结构),非 application/json wrapper。
+        后端 io.ReadAll(ctx.Request.Body) 直接读。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/GlossaryExport'
+      responses:
+        '200':
+          description: 已导入计数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [imported]
+                properties:
+                  imported:
+                    type: integer
+        '400':
+          description: 读取失败或 JSON 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/glossary/export/json:
+    get:
+      tags: [术语表]
+      operationId: exportGlobalGlossaryJSON
+      summary: 导出全局术语表为 JSON
+      description: |
+        响应带 `Content-Disposition: attachment; filename="glossary.json"`。
+        返回 GlossaryExport 结构。
+      responses:
+        '200':
+          description: JSON 导出
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              description: attachment; filename="glossary.json"
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/glossary.yaml#/GlossaryExport'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  # 主播级 glossary
+  /api/channels/{id}/glossary/entries:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    get:
+      tags: [术语表]
+      operationId: listChannelGlossary
+      summary: 列出主播级术语表(合并视图)
+      description: |
+        返回主播级 + 全局合并的词条,**每个带 source 字段**(global/channel)。
+        响应 `{items: [GlossaryMergedEntry]}`。空时返回 []。
+      responses:
+        '200':
+          description: 合并词条列表
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/glossary.yaml#/GlossaryMergedEntriesResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    post:
+      tags: [术语表]
+      operationId: upsertChannelGlossary
+      summary: 新增/更新主播级词条
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/UpsertGlossaryEntryRequest'
+      responses:
+        '200':
+          description: 已新增/更新
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/OkResponse'
+        '400':
+          description: term/canonical 缺失
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/channels/{id}/glossary/entries/batch-delete:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    post:
+      tags: [术语表]
+      operationId: batchDeleteChannelGlossary
+      summary: 批量删除主播级词条
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/BatchIdsRequest'
+      responses:
+        '200':
+          description: 已删除计数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted]
+                properties:
+                  deleted:
+                    type: integer
+        '400':
+          description: ids 缺失
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/channels/{id}/glossary/entries/batch-toggle:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    post:
+      tags: [术语表]
+      operationId: batchToggleChannelGlossary
+      summary: 批量启用/禁用主播级词条
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/BatchToggleRequest'
+      responses:
+        '200':
+          description: 已更新计数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [updated]
+                properties:
+                  updated:
+                    type: integer
+        '400':
+          description: ids/enabled 缺失
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/channels/{id}/glossary/entries/{eid}:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+      - $ref: '#/components/parameters/GlossaryEntryID'
+    delete:
+      tags: [术语表]
+      operationId: deleteChannelGlossary
+      summary: 删除主播级词条
+      description: "**成功返回 204**(无响应体)。"
+      responses:
+        '204':
+          description: 已删除(无响应体)
+        '400':
+          description: eid 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '404':
+          description: 词条不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/channels/{id}/glossary/entries/{eid}/toggle:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+      - $ref: '#/components/parameters/GlossaryEntryID'
+    post:
+      tags: [术语表]
+      operationId: toggleChannelGlossary
+      summary: 切换单条主播级词条启用状态
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled:
+                  type: boolean
+      responses:
+        '200':
+          description: 已切换
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/OkResponse'
+        '400':
+          description: enabled 缺失或 eid 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/channels/{id}/glossary/note:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    get:
+      tags: [术语表]
+      operationId: getChannelGlossaryNote
+      summary: 获取主播级术语表备注
+      responses:
+        '200':
+          description: 备注内容
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/glossary.yaml#/GlossaryNoteResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    put:
+      tags: [术语表]
+      operationId: updateChannelGlossaryNote
+      summary: 更新主播级术语表备注
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/GlossaryNoteRequest'
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/OkResponse'
+        '400':
+          description: 请求体非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/channels/{id}/glossary/candidates:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    get:
+      tags: [术语表]
+      operationId: listChannelGlossaryCandidates
+      summary: 列出主播级候选词
+      description: |
+        按 status 过滤(同全局)。非法 status → 400。
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [pending, approved, rejected, all]
+            default: pending
+      responses:
+        '200':
+          description: 候选词列表
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/glossary.yaml#/GlossaryCandidatesResponse'
+        '400':
+          description: status 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/channels/{id}/glossary/candidates/batch-approve:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    post:
+      tags: [术语表]
+      operationId: batchApproveChannelGlossaryCandidates
+      summary: 批量审批通过主播级候选词
+      description: |
+        **仅主播级有 batch-approve**(全局只有单条 approve)。
+        返回 `{approved: N}`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/BatchIdsRequest'
+      responses:
+        '200':
+          description: 已通过计数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [approved]
+                properties:
+                  approved:
+                    type: integer
+        '400':
+          description: ids 缺失或为空
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/channels/{id}/glossary/candidates/batch-reject:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    post:
+      tags: [术语表]
+      operationId: batchRejectChannelGlossaryCandidates
+      summary: 批量拒绝主播级候选词
+      description: |
+        **仅主播级有 batch-reject**。返回 `{rejected: N}`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/BatchIdsRequest'
+      responses:
+        '200':
+          description: 已拒绝计数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rejected]
+                properties:
+                  rejected:
+                    type: integer
+        '400':
+          description: ids 缺失或为空
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/channels/{id}/glossary/import/markdown:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    post:
+      tags: [术语表]
+      operationId: importChannelGlossaryMarkdown
+      summary: 从 markdown 导入主播级词条
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/ImportMarkdownRequest'
+      responses:
+        '200':
+          description: 已导入计数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [imported]
+                properties:
+                  imported:
+                    type: integer
+        '400':
+          description: content 缺失
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/channels/{id}/glossary/import/json:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    post:
+      tags: [术语表]
+      operationId: importChannelGlossaryJSON
+      summary: 从 JSON 导入主播级词条
+      description: 请求体是 raw JSON(GlossaryExport 结构)。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/glossary.yaml#/GlossaryExport'
+      responses:
+        '200':
+          description: 已导入计数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [imported]
+                properties:
+                  imported:
+                    type: integer
+        '400':
+          description: 读取失败或 JSON 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/channels/{id}/glossary/export/json:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    get:
+      tags: [术语表]
+      operationId: exportChannelGlossaryJSON
+      summary: 导出主播级术语表为 JSON
+      description: "响应带 Content-Disposition: attachment。"
+      responses:
+        '200':
+          description: JSON 导出
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/glossary.yaml#/GlossaryExport'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  # 主播级回放预览(归 glossary 批次;实为回放发现单频道预览)
+  /api/channels/{id}/discover/preview:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    post:
+      tags: [频道]
+      operationId: discoverChannelPreview
+      summary: 预览单频道回放(不建场次)
+      description: |
+        单频道回放预览(PreviewChannel),**不建场次不入队**。
+        返回 `{items: [DiscoverResult]}`。
+      responses:
+        '200':
+          description: 预览结果
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: 'components/schemas/discover.yaml#/DiscoverResult'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 频道不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'

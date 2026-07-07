@@ -1,0 +1,274 @@
+# 术语表域 schema
+# 真相源:
+#   internal/glossary/glossary.go:41 Entry / :53 MergedEntry / :59 GlossaryExport / :67 GlossaryItem
+#   internal/glossary/candidate_store.go:24 Candidate + :14-16 状态常量 + :131-135 状态机
+#   internal/handler/server.go 各 glossary handler(:2982 upsert / :3110 candidates / :3127 approve ...)
+
+GlossaryEntry:
+  type: object
+  description: 术语表词条(全局或主播级)
+  required: [id, channel_id, term, canonical, category, enabled, created_at, updated_at]
+  properties:
+    id:
+      type: integer
+      format: int64
+    channel_id:
+      type: string
+      description: 全局词条为空串 ""
+    term:
+      type: string
+      description: 原始词
+    canonical:
+      type: string
+      description: 规范化后的词
+    category:
+      type: string
+      description: 分类(自由字符串)
+    enabled:
+      type: boolean
+    created_at:
+      type: string
+    updated_at:
+      type: string
+
+GlossaryMergedEntry:
+  type: object
+  description: |
+    合并视图词条(仅主播级 list 返回)。
+    allOf 继承 GlossaryEntry,追加 source 字段标注来源。
+  allOf:
+    - $ref: 'glossary.yaml#/GlossaryEntry'
+    - type: object
+      properties:
+        source:
+          type: string
+          enum: [global, channel]
+          description: 该词条来源(全局或主播级)
+
+GlossaryCandidate:
+  type: object
+  description: |
+    术语候选词(场次发现后待审批)。
+    reviewed_at 是唯一带 omitempty 的字段(未审批时缺席)。
+  required:
+    - id
+    - channel_id
+    - term
+    - canonical
+    - category
+    - status
+    - confidence
+    - score
+    - occurrence_count
+    - session_count
+    - first_session_id
+    - last_session_id
+    - reason
+    - normalized_key
+    - created_at
+    - updated_at
+  properties:
+    id:
+      type: integer
+      format: int64
+    channel_id:
+      type: string
+    term:
+      type: string
+    canonical:
+      type: string
+    category:
+      type: string
+    status:
+      type: string
+      enum: [pending, approved, rejected]
+    confidence:
+      type: number
+      format: double
+    score:
+      type: number
+      format: double
+    occurrence_count:
+      type: integer
+      description: 出现次数
+    session_count:
+      type: integer
+      description: 出现在多少个场次
+    first_session_id:
+      type: string
+    last_session_id:
+      type: string
+    reason:
+      type: string
+      description: 候选理由
+    normalized_key:
+      type: string
+    created_at:
+      type: string
+    updated_at:
+      type: string
+    reviewed_at:
+      type: string
+      description: 审批时间(omitempty,未审批时缺席)
+
+# 请求 schemas
+UpsertGlossaryEntryRequest:
+  type: object
+  description: 新增/更新词条(POST /api/glossary/entries 等)。term+canonical 必填。
+  required: [term, canonical]
+  properties:
+    term:
+      type: string
+    canonical:
+      type: string
+    category:
+      type: string
+
+GlossaryNoteRequest:
+  type: object
+  description: 更新术语表备注(PUT .../note)。note 可空串。
+  properties:
+    note:
+      type: string
+
+GlossaryNoteResponse:
+  type: object
+  description: GET .../note 响应
+  required: [note]
+  properties:
+    note:
+      type: string
+
+BatchIdsRequest:
+  type: object
+  description: |
+    批量操作的统一请求体(POST .../batch-delete 等)。
+    ids 必填且非空。
+  required: [ids]
+  properties:
+    ids:
+      type: array
+      items:
+        type: integer
+        format: int64
+
+BatchToggleRequest:
+  type: object
+  description: 批量启用/禁用(POST .../batch-toggle)。ids + enabled 都必填。
+  required: [ids, enabled]
+  properties:
+    ids:
+      type: array
+      items:
+        type: integer
+        format: int64
+    enabled:
+      type: boolean
+
+ApproveCandidateRequest:
+  type: object
+  description: |
+    审批候选词(POST .../candidates/{cid}/approve)。
+    全字段可选(容 EOF:无请求体也允许)。
+    term 传了覆盖候选原值;canonical/category 不传则用候选原值。
+  properties:
+    term:
+      type: string
+      description: 可选,覆盖候选原 term
+    canonical:
+      type: string
+    category:
+      type: string
+
+ImportMarkdownRequest:
+  type: object
+  description: 导入 markdown(POST .../import/markdown)。content 必填。
+  required: [content]
+  properties:
+    content:
+      type: string
+      description: markdown 内容(格式见 ImportMarkdown 实现)
+
+# 导出/导入 JSON 的结构
+GlossaryExport:
+  type: object
+  description: |
+    术语表 JSON 导出/导入结构。
+    GET .../export/json 返回此结构(Content-Disposition: attachment);
+    POST .../import/json 请求体是 raw JSON(此结构)。
+  required: [channel_id, entries, note, exported_at]
+  properties:
+    channel_id:
+      type: string
+      description: 全局导出为空串
+    entries:
+      type: array
+      items:
+        $ref: 'glossary.yaml#/GlossaryItem'
+    note:
+      type: string
+    exported_at:
+      type: string
+      format: date-time
+
+GlossaryItem:
+  type: object
+  description: 导出/导入的单个词条
+  required: [term, canonical, category, enabled]
+  properties:
+    term:
+      type: string
+    canonical:
+      type: string
+    category:
+      type: string
+    enabled:
+      type: boolean
+    source:
+      type: string
+      description: 仅合并导出时有(omitempty)
+
+# 响应 schemas
+GlossaryEntriesResponse:
+  type: object
+  description: |
+    全局 list 返回 GlossaryEntry[];主播级 list 返回 GlossaryMergedEntry[]。
+  required: [items]
+  properties:
+    items:
+      type: array
+      items:
+        $ref: 'glossary.yaml#/GlossaryEntry'
+
+GlossaryMergedEntriesResponse:
+  type: object
+  required: [items]
+  properties:
+    items:
+      type: array
+      items:
+        $ref: 'glossary.yaml#/GlossaryMergedEntry'
+
+GlossaryCandidatesResponse:
+  type: object
+  required: [items]
+  properties:
+    items:
+      type: array
+      items:
+        $ref: 'glossary.yaml#/GlossaryCandidate'
+
+CountResponse:
+  type: object
+  description: 计数响应(imported/deleted/updated/approved/rejected)
+  properties:
+    imported:
+      type: integer
+    deleted:
+      type: integer
+    updated:
+      type: integer
+    approved:
+      type: integer
+    rejected:
+      type: integer
