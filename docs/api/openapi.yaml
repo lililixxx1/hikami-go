@@ -1,0 +1,58 @@
+openapi: 3.0.3
+info:
+  title: Hikami-Go API
+  version: 1.0.0
+  description: |
+    B 站直播回顾自动生成服务的后端 HTTP API。
+
+    本规范描述后端现状(internal/handler/server.go 的 ~80 个 HTTP 端点 + WebSocket 事件契约),
+    作为 Vue 3 前端全页面重写的契约源。本规范不包含 HTML 模板与后端接口的差异,后者见 `api-gap-analysis.md`。
+
+    **真相源约定**:所有字段以 `internal/handler/server.go` 及各业务包 Go struct 的 `json:"..."` tag
+    为唯一真相。`web/src/api/types.ts` 仅作交叉验证(有漂移)。
+
+    **路径参数风格**:OpenAPI 用 `{id}`,对应 Gin 的 `:id`。
+
+    **nullable 约定**:
+    - `*T` 带 `omitempty` → 字段缺席(不写 nullable,不进 required)
+    - `*T` 无 omitempty(如 gin.H 里的 nil 指针)→ 字段必出现,值可为 null(写 `nullable: true`)
+  contact:
+    name: Hikami-Go
+servers:
+  - url: http://127.0.0.1:6334
+    description: 默认本机监听(internal/config web.listen 默认值)
+security:
+  - AdminToken: []
+components:
+  securitySchemes:
+    AdminToken:
+      type: apiKey
+      in: header
+      name: X-Admin-Token
+      description: |
+        管理员令牌。`admin_token` 为空时(loopback)中间件放行;绑非 loopback 时强制。
+        兼容 `Authorization: Bearer <token>`。缺失/错误 → 401 `{error: "missing or invalid admin token"}`。
+tags:
+  - name: 系统
+    description: healthz / runtime 状态 / onboarding
+  - name: 频道
+    description: 主播频道 CRUD + identify + copy-config
+  - name: 场次
+    description: 录播/回放/导入场次 + discover 发现 + 回顾生成 + 发布/归档 + glossary
+  - name: 任务
+    description: 异步任务查询与重试/取消
+  - name: 运行时
+    description: 直播状态 / cookies / 统计 / 诊断
+  - name: 配置
+    description: 6 组配置段 + 模型列表 + 导入导出
+  - name: 术语表
+    description: 全局 / 主播级 glossary 词条 + 候选审批
+  - name: 回顾模板
+    description: 全局 / 主播级回顾模板 + 预设
+  - name: B站账号
+    description: QR 扫码登录 + cookie 账号管理 + 兼容别名
+  - name: 密钥
+    description: 环境变量级密钥查询/更新
+  - name: WebSocket
+    description: 任务进度推送事件
+paths: {}

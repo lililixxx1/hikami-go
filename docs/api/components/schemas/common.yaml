@@ -1,0 +1,48 @@
+# 通用 schema:错误响应
+# 真相源:internal/handler/server.go 各 handler 的 ctx.JSON(4xx, gin.H{...})
+
+Error:
+  type: object
+  required: [error]
+  properties:
+    error:
+      type: string
+      description: 错误消息(可直接展示给用户)
+    reason:
+      type: string
+      description: |
+        仅特定错误带此字段:
+        - 能力守卫类 409(`reason: Capabilities.Reason`,如 `"asr"`/`"recap"`/`"upload"`/`"publish"`/`"fetch"`)
+        - glossary not found/duplicate(404/409)
+        - recap template not found(404,reason="template")
+
+ErrorWithSessionCount:
+  type: object
+  required: [error, session_count]
+  properties:
+    error:
+      type: string
+      description: 错误消息
+    session_count:
+      type: integer
+      format: int64
+      description: 关联的场次数(删除频道时若有 active 场次会阻止删除)
+
+# 简单成功响应(多个端点复用)
+OkResponse:
+  type: object
+  required: [ok]
+  properties:
+    ok:
+      type: boolean
+      description: 操作是否成功(几乎恒为 true;失败走错误响应)
+
+# 删除计数响应(DELETE /api/tasks/failed / DELETE /api/sessions/failed)
+DeletedCountResponse:
+  type: object
+  required: [deleted]
+  properties:
+    deleted:
+      type: integer
+      format: int64
+      description: 实际删除的条数

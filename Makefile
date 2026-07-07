@@ -1,4 +1,4 @@
-.PHONY: build build-go build-go-api web-setup web-build web-dev test run fmt tidy
+.PHONY: build build-go build-go-api web-setup web-build web-dev test run fmt tidy api-docs api-lint api-gen-types
 
 # 完整构建：先产出前端 webdist，再以 embedded_web 标签嵌入编译（ISS-1）
 build: web-build build-go
@@ -52,3 +52,16 @@ build-windows-amd64:
 # 轻量 Windows 版：嵌入前端，依赖系统 ffmpeg（不嵌 ffmpeg）
 build-windows-amd64-lite:
 	GOOS=windows GOARCH=amd64 go build -tags embedded_web -o hikami-windows-amd64-lite.exe ./cmd/hikami
+
+# API 文档渲染（本地静态服务器）
+api-docs:
+	@echo "API 文档: http://127.0.0.1:6335"
+	@cd docs/api && python3 -m http.server 6335
+
+# 校验 openapi.yaml 语法（首次会下载 @redocly/cli）
+api-lint:
+	@npx -y @redocly/cli lint docs/api/openapi.yaml
+
+# 从 OpenAPI 生成 TS 类型（前端重写阶段，首次会下载 openapi-typescript）
+api-gen-types:
+	@npx -y openapi-typescript docs/api/openapi.yaml -o web/src/api/generated.ts
