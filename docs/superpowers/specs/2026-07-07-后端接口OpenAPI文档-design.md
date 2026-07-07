@@ -1,6 +1,6 @@
 # 设计:后端接口 OpenAPI 文档(为前端重写服务)
 
-> 状态:**v2 自审后修订(B1+B2 blocking 已修 + I1-I7 改进已采纳),待用户审核** · 日期 2026-07-07 · 形式 OpenAPI 3.0 YAML + 手写 Markdown 总览 + 静态渲染页
+> 状态:**v3 — 经 Claude CLI 第二轮审核,2 blocking(WS 路径 / 配置段数量)+ 5 改进已修,待用户审核** · 日期 2026-07-07 · 形式 OpenAPI 3.0 YAML + 手写 Markdown 总览 + 静态渲染页
 > 目标:在不动后端的前提下,把现有 ~80 个 HTTP 端点 + WebSocket 事件契约固化成一份前端可直接照着写代码的 API 规范,作为 Vue 3 前端全页面重写的契约源。
 
 ## 1. 背景与动机
@@ -22,7 +22,7 @@
 
 ### 1.3 方案选择历程(已与用户确认)
 - ❌ swag 注解生成:与"后端基本不动"冲突(要补 125 处注解 + 抽取 60+ 结构体重构),用户了解后改选 OpenAPI。
-- ✅ **手写 OpenAPI YAML 作为唯一真相源**:不动 Go 代码,预计 2-3 天(分批 PR)产出约 3000-4500 行 YAML(80 端点 + 15 共享 schema),与"后端不动"完全一致。
+- ✅ **手写 OpenAPI YAML 作为唯一真相源**:不动 Go 代码,预计 **3-5 工作日**(分批 PR;80 端点 × ~20min + 15 schema × ~15min + 集成验证)产出约 3000-4500 行 YAML,与"后端不动"完全一致。
 
 ### 1.4 三个子决策(均已确认)
 | 决策点 | 选择 |
@@ -261,7 +261,7 @@ OpenAPI 处理:在 PUT 请求 schema 里定义这些字段,GET 响应 schema 里
 - `POST /api/sessions/{sid}/fetch` — `202 Task`
 - `POST /api/sessions/{sid}/publish` — body(发布参数) · `202 Task`
 - `POST /api/sessions/{sid}/archive` — `202 Task` · 状态不匹配 `409`
-- `POST /api/sessions/{sid}/recap/generate` — `local_available=false` 时 `409`
+- `POST /api/sessions/{sid}/recap/generate` — **双层守卫**:① 能力守卫 `Capabilities.RecapGenerate=false` → `409 {error, reason}`(server.go:1168,优先检查);② `local_available=false` → 返回 `recap.ErrTranscriptMissing` → 经 writeError 映射为 `409`(server.go:1551;提示需先 fetch)
 - `POST /api/sessions/{sid}/recap/regenerate` — 仅 recap_done/published
 - `POST /api/sessions/{sid}/recap-partial` — body `{start_time, end_time}`
 - `POST /api/sessions/{sid}/recap-with-range` — `recap-partial` 兼容别名
@@ -289,7 +289,7 @@ OpenAPI 处理:在 PUT 请求 schema 里定义这些字段,GET 响应 schema 里
 - `GET /api/diagnostic/report` — 诊断报告(实现时再细化字段)
 
 ### 4.6 配置(paths/config.yaml)
-9 组配置端点(publish/recap/dashscope/asr-s3/webdav/archive 各 GET+PUT)+ `GET /api/config/recap/models` + 导出导入。**重点**:每个 PUT 请求 schema 区分"指针字段(presence-aware patch)"和"值字段",密钥字段标"仅写入"。
+6 组配置端点(publish/recap/dashscope/asr-s3/webdav/archive,各 GET+PUT 共 12 个)+ `GET /api/config/recap/models` + 导出导入(GET /api/config/export + POST /api/config/import?strategy=merge|overwrite)。**重点**:每个 PUT 请求 schema 区分"指针字段(presence-aware patch)"和"值字段",密钥字段标"仅写入"。
 
 ### 4.7 术语表(paths/glossary.yaml)
 全局 + 主播级两套(主播级多 `/channels/{id}` 前缀)。CRUD + 导入导出 + 候选审批 + 批量操作。约 30 个端点。
@@ -306,14 +306,14 @@ QR 登录(`/api/bili/login/qrcode/*`) + Cookie Account CRUD(`/api/cookie-account
 - `DELETE /api/secrets/{key}`
 
 ### 4.11 WebSocket(paths/websocket.yaml — 特殊)
-OpenAPI 3.0 不原生支持 WebSocket,用**占位 path + extension** 描述:
+OpenAPI 3.0 不原生支持 WebSocket,用**占位 path + extension** 描述。**注意:path key 必须是 `/ws`(与 server.go:275 真实路由一致),不是 `/api/ws`** —— server.go:275 的 `s.router.GET("/ws", ...)` 没有 `/api` 前缀,server.go:439 的 Origin 校验把 `/ws` 与 `/api/*` 并列排除在受保护组外。
 ```yaml
-/api/ws:
+/ws:
   get:
     tags: [WebSocket]
     summary: 任务进度推送(WebSocket 升级端点)
     description: |
-      gorilla/websocket Upgrade。无需 admin token。
+      gorilla/websocket Upgrade。路径 /ws(无 /api 前缀)。无需 admin token。
       服务端只 WriteJSON 推送 task_progress 事件,不读客户端消息。
       事件 schema 见 components/schemas/websocket.yaml#/TaskProgressEvent。
       OpenAPI 3.0 不原生支持 WS,本条目仅作文档锚点。
@@ -455,7 +455,7 @@ api-gen-types:
 
 1. `docs/api/openapi.yaml` + 子文件通过 `npx @redocly/cli lint`(无 error,warning 可接受)
 2. `make api-docs` 起服务后,浏览器打开 `http://127.0.0.1:6335` 能看到完整可交互文档
-3. **抽查验证**:随机选 **≥10 个端点**(覆盖 GET/POST/PUT/DELETE + 全部 6 个域),对照 `internal/handler/server.go` 实际实现,字段名/类型/错误码 100% 一致
+3. **抽查验证**:随机选 **≥15 个端点**(~20% 覆盖),对照 `internal/handler/server.go` 实际实现,字段名/类型/错误码 100% 一致。必须覆盖:每个域至少 2 个端点、≥3 个 multipart 端点、≥5 个能力守卫端点、≥2 个配置导入导出端点
 4. WebSocket 端点有文档锚点,事件 schema 完整
 5. `api-gap-analysis.md` 覆盖全部 4 个模板页
 
@@ -481,7 +481,7 @@ api-gen-types:
 
 为提高 schema 编写效率,采用"双源对齐"工作流:
 1. **主源 `server.go`**:每个字段以 Go struct 的 `json:"..."` tag 为准,这是**唯一真相**。
-2. **辅助源 `web/src/api/types.ts`**:起草同名 schema 时先看 TS 类型作"骨架参考"(字段名/嵌套关系),再用 server.go 修正字段类型与 `omitempty` 语义。
+2. **辅助源 `web/src/api/types.ts`**:起草同名 schema 时先看 TS 类型作"骨架参考"(字段名/嵌套关系),再用 server.go 修正字段类型与 `omitempty` 语义。**注意常见陷阱**:TS 的 `field?: string` 或 `string | null` 容易被误读为 nullable,但后端 Go 的 `omitempty` 是**字段缺席**(JSON 无此 key),不是 null —— 遇到此差异一律以 server.go 为准,OpenAPI schema 不写 `nullable: true`。
 3. **漂移处理**:发现 types.ts 与 server.go 不一致时,**以 server.go 为准**,把差异记入 `docs/api/api-gap-analysis.md` 的"字段映射差异"小节(前端重写时需统一对齐)。
 
 这样比"纯从 Go struct 反推 JSON 结构"更快,又不失准确性。
