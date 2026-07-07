@@ -18,7 +18,7 @@ import { cancelTask } from '@/api/tasks'
 import { formatDateTime } from '@/utils/format'
 import TaskProgressBar from '@/components/task/TaskProgressBar.vue'
 import OnboardingWizard from '@/components/onboarding/OnboardingWizard.vue'
-import type { DashboardData, Task } from '@/api/types'
+import type { DashboardData, Task } from '@/api/types-derived'
 import DiscoverResultDrawer from '@/components/session/DiscoverResultDrawer.vue'
 
 const router = useRouter()
