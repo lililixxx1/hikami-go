@@ -57,6 +57,9 @@ type Task struct {
 	// 用于"重新生成回顾"等非推进型任务：published/recap_done 状态下重跑 recap，
 	// 失败不应把已发布/已生成的 session 打成 failed。与类型级 WithBypassFailState 取 OR。
 	BypassFailState bool `json:"bypass_fail_state,omitempty"`
+	// ChannelName 来自 LEFT JOIN channels，用于前端任务列表展示频道名。
+	// 仅 Store.List (listWithChannelSQL) 填充，其余读取路径为空。
+	ChannelName string `json:"channel_name,omitempty"`
 }
 
 type CreateInput struct {
@@ -109,7 +112,7 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (Task, error) {
 }
 
 func (s *Store) List(ctx context.Context) ([]Task, error) {
-	rows, err := s.db.QueryContext(ctx, listSQL)
+	rows, err := s.db.QueryContext(ctx, listWithChannelSQL)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +120,7 @@ func (s *Store) List(ctx context.Context) ([]Task, error) {
 
 	var tasks []Task
 	for rows.Next() {
-		task, err := scanTask(rows)
+		task, err := scanTaskWithChannel(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -133,7 +136,7 @@ func (s *Store) List(ctx context.Context) ([]Task, error) {
 }
 
 func (s *Store) Get(ctx context.Context, id string) (Task, error) {
-	task, err := scanTask(s.db.QueryRowContext(ctx, getSQL, id))
+	task, err := scanTaskCore(s.db.QueryRowContext(ctx, getSQL, id))
 	if err == sql.ErrNoRows {
 		return Task{}, ErrTaskNotFound
 	}
@@ -144,7 +147,7 @@ func (s *Store) ActiveBySessionAndType(ctx context.Context, sessionID string, ta
 	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(taskType) == "" {
 		return Task{}, false, fmt.Errorf("%w: session_id and type are required", ErrInvalidTask)
 	}
-	task, err := scanTask(s.db.QueryRowContext(ctx, activeBySessionAndTypeSQL, sessionID, taskType, StatusPending, StatusRunning))
+	task, err := scanTaskCore(s.db.QueryRowContext(ctx, activeBySessionAndTypeSQL, sessionID, taskType, StatusPending, StatusRunning))
 	if err == sql.ErrNoRows {
 		return Task{}, false, nil
 	}
@@ -174,7 +177,7 @@ func (s *Store) listByStatus(ctx context.Context, status Status) ([]Task, error)
 
 	var tasks []Task
 	for rows.Next() {
-		task, err := scanTask(rows)
+		task, err := scanTaskCore(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -433,7 +436,9 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
-func scanTask(row scanner) (Task, error) {
+// scanTaskCore 扫描 selectTaskColumns 列序（不含 channel_name）。
+// 用于 Get / ListRunning / ListPending / RecentFailedTasks / ActiveBySessionAndType 等无 JOIN 读取路径。
+func scanTaskCore(row scanner) (Task, error) {
 	var task Task
 	var sessionID sql.NullString
 	var errorMessage sql.NullString
@@ -442,6 +447,39 @@ func scanTask(row scanner) (Task, error) {
 	err := row.Scan(
 		&task.ID,
 		&task.ChannelID,
+		&sessionID,
+		&task.Type,
+		&task.Status,
+		&task.Payload,
+		&task.Progress,
+		&task.Message,
+		&errorMessage,
+		&task.Attempt,
+		&startedAt,
+		&finishedAt,
+		&task.CreatedAt,
+		&task.UpdatedAt,
+		&task.BypassFailState,
+	)
+	task.SessionID = sessionID.String
+	task.Error = errorMessage.String
+	task.StartedAt = startedAt.String
+	task.FinishedAt = finishedAt.String
+	return task, err
+}
+
+// scanTaskWithChannel 扫描 listWithChannelSQL 的列序（channel_name 紧跟 channel_id）。
+// 仅用于 Store.List。
+func scanTaskWithChannel(row scanner) (Task, error) {
+	var task Task
+	var sessionID sql.NullString
+	var errorMessage sql.NullString
+	var startedAt sql.NullString
+	var finishedAt sql.NullString
+	err := row.Scan(
+		&task.ID,
+		&task.ChannelID,
+		&task.ChannelName,
 		&sessionID,
 		&task.Type,
 		&task.Status,
@@ -496,7 +534,30 @@ const selectTaskColumns = `
 	bypass_fail_state
 `
 
-const listSQL = `SELECT ` + selectTaskColumns + ` FROM tasks ORDER BY created_at DESC, id DESC`
+// listWithChannelSQL 与 Store.List 配对：LEFT JOIN channels 取 channel_name。
+// 列序与 scanTaskWithChannel 对齐（channel_name 紧跟 channel_id）。
+const listWithChannelSQL = `
+SELECT
+	t.id,
+	t.channel_id,
+	COALESCE(c.name, '') AS channel_name,
+	t.session_id,
+	t.type,
+	t.status,
+	t.payload,
+	t.progress,
+	t.message,
+	t.error,
+	t.attempt,
+	t.started_at,
+	t.finished_at,
+	t.created_at,
+	t.updated_at,
+	t.bypass_fail_state
+FROM tasks t
+LEFT JOIN channels c ON t.channel_id = c.id
+ORDER BY t.created_at DESC, t.id DESC
+`
 const getSQL = `SELECT ` + selectTaskColumns + ` FROM tasks WHERE id = ?`
 const listRunningSQL = `SELECT ` + selectTaskColumns + ` FROM tasks WHERE status = ? ORDER BY created_at ASC`
 const activeBySessionAndTypeSQL = `SELECT ` + selectTaskColumns + `
@@ -520,7 +581,7 @@ func (s *Store) RecentFailedTasks(ctx context.Context, limit int) ([]Task, error
 	defer rows.Close()
 	var tasks []Task
 	for rows.Next() {
-		t, err := scanTask(rows)
+		t, err := scanTaskCore(rows)
 		if err != nil {
 			return nil, err
 		}
