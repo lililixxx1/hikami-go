@@ -4,7 +4,7 @@
 // 职责:加载数据(channels/sessions/runtime/recap models)、消费 ?id query 打开抽屉、
 // 把网格 + 详情抽屉 + 两个 EP 对话框组合起来。写操作全部委托给 useStreamerDetail composable,
 // 成功后重新拉取 channels store 并同步选中主播(避免本地乐观更新与后端漂移)。
-// EP 组件(ChannelIdentifyDialog / BiliQRCodeLoginDialog)Phase 6 统一换为 H* 实现。
+// 对话框(ChannelIdentifyDialog / BiliQRCodeLoginDialog)已迁移为 H* 实现(Phase 6)。
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { HMessage } from '@/components/ui/message'
