@@ -1,6 +1,6 @@
 # 设计:后端接口 OpenAPI 文档(为前端重写服务)
 
-> 状态:**待用户审核** · 日期 2026-07-07 · 形式 OpenAPI 3.0 YAML + 手写 Markdown 总览 + 静态渲染页
+> 状态:**v2 自审后修订(B1+B2 blocking 已修 + I1-I7 改进已采纳),待用户审核** · 日期 2026-07-07 · 形式 OpenAPI 3.0 YAML + 手写 Markdown 总览 + 静态渲染页
 > 目标:在不动后端的前提下,把现有 ~80 个 HTTP 端点 + WebSocket 事件契约固化成一份前端可直接照着写代码的 API 规范,作为 Vue 3 前端全页面重写的契约源。
 
 ## 1. 背景与动机
@@ -22,7 +22,7 @@
 
 ### 1.3 方案选择历程(已与用户确认)
 - ❌ swag 注解生成:与"后端基本不动"冲突(要补 125 处注解 + 抽取 60+ 结构体重构),用户了解后改选 OpenAPI。
-- ✅ **手写 OpenAPI YAML 作为唯一真相源**:不动 Go 代码,半天-1 天产出可用文档,与"后端不动"完全一致。
+- ✅ **手写 OpenAPI YAML 作为唯一真相源**:不动 Go 代码,预计 2-3 天(分批 PR)产出约 3000-4500 行 YAML(80 端点 + 15 共享 schema),与"后端不动"完全一致。
 
 ### 1.4 三个子决策(均已确认)
 | 决策点 | 选择 |
@@ -174,7 +174,7 @@ Error:
         - recap template not found(404):reason = 原始错误
 ```
 
-**状态码映射**(摘自调研,完整表写进 `openapi.yaml` 的 `components.responses`):
+**状态码映射**(下表为示例,实现时以 `server.go:1507-1615` 的 `writeError` 全量枚举为准,本表不穷尽):
 
 | 错误 | 状态码 |
 |---|---|
@@ -195,6 +195,7 @@ Error:
 - 2026-07-04 起统一存本地时区(见 AGENTS.md)
 - 历史数据可能为 UTC 无时区格式
 - OpenAPI schema:`type: string`, `format: date-time`
+- **`omitempty` 语义**:后端很多时间字段是 `*time.Time` 带 `json:"...,omitempty"`,**空值时字段缺席**(JSON 里完全没有这个 key),不是 `null` 也不是空串。OpenAPI schema 里**不要写 `nullable: true`**,而是用 `required` 数组排除该字段(字段可缺席)。区分:`nullable: true` = 字段存在但值为 null(后端不产生这种);字段缺席 = key 不存在(后端的实际行为)。
 
 ### 3.5 只写字段约定(密钥)
 
@@ -204,7 +205,20 @@ Error:
 
 OpenAPI 处理:在 PUT 请求 schema 里定义这些字段,GET 响应 schema 里**不出现**。在字段 description 里标注"仅写入,响应永不返回明文"。
 
-### 3.6 字段命名
+### 3.6 HTTP 状态码语义
+
+后端遵循以下 2xx 用法,前端据此判断请求结果:
+
+| 码 | 含义 | 后端用法 |
+|---|---|---|
+| `200` | 成功(同步) | GET 查询、PUT 更新、同步操作(如 cancel、copy-config) |
+| `201` | 创建(同步) | POST /api/channels(新建)、identify/save(新建分支) |
+| `202` | 已入队(异步) | **所有任务创建类端点**(download/upload/publish/recap/asr/import/discover 等返回 Task 的) |
+| `204` | 无内容 | DELETE 成功(deleteChannel/deleteSession/deleteTask) |
+
+**重点**:`202` 是本项目的核心模式——接口返回成功不代表任务完成,只代表任务已入队,真实进度走 WebSocket `task_progress` 事件或 `GET /api/tasks/{id}` 轮询。前端所有"开始 XX"按钮都要按此处理。
+
+### 3.7 字段命名
 
 后端 JSON 字段一律 `snake_case`(Go struct json tag),OpenAPI schema 属性名严格对齐:
 - `live_room_id`(不是 `liveRoomId`)
@@ -230,7 +244,7 @@ OpenAPI 处理:在 PUT 请求 schema 里定义这些字段,GET 响应 schema 里
 - `DELETE /api/channels/{id}` — `204` · 冲突 `409 {error, session_count}`
 - `POST /api/channels/identify` — body `{input, uid?, live_room_id?}` · `200 {channel: UpsertInput, source}`
 - `POST /api/channels/identify/save` — `200/201 {channel, source, created}`
-- `POST /api/channels/{id}/copy-config` — body `{target_channel_id, copy_glossary, copy_template, copy_publish, copy_automation, copy_recap}` · `200` 条件字段(glossary_copied/template_copied/channel_updated)
+- `POST /api/channels/{id}/copy-config` — body `{target_channel_id(必填), copy_glossary, copy_template, copy_publish, copy_automation, copy_recap}`(target_channel_id + 5 个 copy_* bool) · `200` 条件字段(glossary_copied/template_copied/channel_updated)
 
 ### 4.3 场次(paths/sessions.yaml)
 - `GET /api/sessions` — **无查询参数过滤** · `200 {items: [Session]}`
@@ -258,7 +272,10 @@ OpenAPI 处理:在 PUT 请求 schema 里定义这些字段,GET 响应 schema 里
 ### 4.4 任务(paths/tasks.yaml)
 - `GET /api/tasks` — `200 {items: [Task]}`
 - `GET /api/tasks/{id}` — `200 {task, friendly_error?, auto_retry?}`(后两者仅 failed 时出现)
+- `POST /api/tasks/{id}/retry` — `202 Task`
+- `POST /api/tasks/{id}/cancel` — `200 Task`
 - `POST /api/tasks/batch-retry` — body `{task_ids: [string]}` · `200 {retried, tasks}`
+- `DELETE /api/tasks/{id}` — `204`
 - `DELETE /api/tasks/failed` — `200 {deleted: int64}`
 
 ### 4.5 运行时与统计(paths/runtime-stats.yaml)
@@ -438,7 +455,7 @@ api-gen-types:
 
 1. `docs/api/openapi.yaml` + 子文件通过 `npx @redocly/cli lint`(无 error,warning 可接受)
 2. `make api-docs` 起服务后,浏览器打开 `http://127.0.0.1:6335` 能看到完整可交互文档
-3. **抽查验证**:随机选 5 个端点(覆盖 GET/POST/PUT/DELETE + 多个域),对照 `internal/handler/server.go` 实际实现,字段名/类型/错误码 100% 一致
+3. **抽查验证**:随机选 **≥10 个端点**(覆盖 GET/POST/PUT/DELETE + 全部 6 个域),对照 `internal/handler/server.go` 实际实现,字段名/类型/错误码 100% 一致
 4. WebSocket 端点有文档锚点,事件 schema 完整
 5. `api-gap-analysis.md` 覆盖全部 4 个模板页
 
@@ -452,9 +469,19 @@ api-gen-types:
 | 字段调研有遗漏 | 抽查验证(§9.3)+ 前端重写时发现差异即修文档 |
 | 单个端点的内联 `gin.H` 返回字段不全 | 调研已基于代码逐个核对;实现时每个 path 都注明 `server.go:行号` 溯源 |
 | 80 端点工作量大 | 按域拆分,可分批 PR(system/channels/sessions 先行,其余跟进) |
+| **`web/src/api/types.ts` 与后端字段名漂移** | schema 起草**以 `server.go` 为唯一真相源**,`types.ts` 仅作交叉验证参考(不直接抄);发现漂移时以 server.go 为准、记入 `api-gap-analysis.md` |
 
 ---
 
 ## 11. 后续(本 spec 之后)
 
 本 spec 完成后,用户审核通过 → 进入 `writing-plans` 制定详细实现计划(分批 PR 的粒度、每个 path 文件的填充顺序)→ 然后才开始实际写 YAML。
+
+### 11.1 实现阶段的 schema 起草策略(加速)
+
+为提高 schema 编写效率,采用"双源对齐"工作流:
+1. **主源 `server.go`**:每个字段以 Go struct 的 `json:"..."` tag 为准,这是**唯一真相**。
+2. **辅助源 `web/src/api/types.ts`**:起草同名 schema 时先看 TS 类型作"骨架参考"(字段名/嵌套关系),再用 server.go 修正字段类型与 `omitempty` 语义。
+3. **漂移处理**:发现 types.ts 与 server.go 不一致时,**以 server.go 为准**,把差异记入 `docs/api/api-gap-analysis.md` 的"字段映射差异"小节(前端重写时需统一对齐)。
+
+这样比"纯从 Go struct 反推 JSON 结构"更快,又不失准确性。
