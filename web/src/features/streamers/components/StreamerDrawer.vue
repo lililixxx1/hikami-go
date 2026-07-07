@@ -20,6 +20,7 @@ const props = defineProps<{
   channel: Channel | null
   runtime: RuntimeStatus | null
   isExpert: boolean
+  updating: boolean
   recapModelGroups: { name: string; models: { value: string; label: string }[] }[]
   recentSessions: Session[]
 }>()
@@ -147,7 +148,7 @@ function applyRecapOverrides() {
       <!-- 自动化设置 -->
       <section class="detail-section">
         <h4 class="detail-section-title">自动化设置</h4>
-        <AutoSwitches :channel="channel" :updating="false" @toggle="emit('toggle', $event)" />
+        <AutoSwitches :channel="channel" :updating="updating" @toggle="emit('toggle', $event)" />
       </section>
 
       <!-- Cookie 状态 -->
