@@ -694,6 +694,41 @@ func TestListOrderedByCreatedDesc(t *testing.T) {
 	}
 }
 
+func TestListReturnsChannelName(t *testing.T) {
+	database := setupDB(t)
+	store := NewStore(database)
+
+	// Seed a channel named "火西肆" (room 924973, uid 1401928).
+	_, err := database.Exec(
+		`INSERT INTO channels (id, name, uid, live_room_id, enabled) VALUES (?, ?, ?, ?, 1)`,
+		"huo_xi_si", "火西肆", 1401928, 924973,
+	)
+	if err != nil {
+		t.Fatalf("insert channel: %v", err)
+	}
+
+	_, err = store.CreateLive(context.Background(), CreateLiveInput{
+		ChannelID: "huo_xi_si",
+		Title:     "测试直播",
+		RoomID:    924973,
+		StartedAt: time.Date(2026, 5, 1, 10, 0, 0, 0, time.Local),
+	})
+	if err != nil {
+		t.Fatalf("CreateLive: %v", err)
+	}
+
+	sessions, err := store.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	if sessions[0].ChannelName != "火西肆" {
+		t.Fatalf("expected ChannelName %q, got %q", "火西肆", sessions[0].ChannelName)
+	}
+}
+
 func TestActiveLiveForChannel(t *testing.T) {
 	database := setupDB(t)
 	insertChannel(t, database)
