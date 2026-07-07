@@ -147,6 +147,33 @@
 .drawer-body { flex: 1; overflow-y: auto; padding: 20px; }
 @media (max-width: 1024px) { .drawer { width: 100vw !important; } }
 
+/* ===== HDialog ===== */
+.dialog-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.3); z-index: 120;
+  opacity: 1; pointer-events: auto; transition: opacity 0.2s;
+  display: flex; align-items: center; justify-content: center;
+}
+.dialog {
+  position: relative; z-index: 121; max-width: calc(100vw - 32px);
+  background: var(--canvas); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xl); display: flex; flex-direction: column;
+  max-height: calc(100vh - 64px); overflow: hidden;
+}
+.dialog-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 16px 20px; border-bottom: 1px solid var(--border-light); flex-shrink: 0;
+}
+.dialog-title { font-size: 16px; font-weight: 600; color: var(--text); }
+.dialog-close { background: none; border: none; cursor: pointer; color: var(--text-muted); padding: 4px; border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; }
+.dialog-close:hover { background: var(--surface-warm); color: var(--text); }
+.dialog-body { padding: 20px; overflow-y: auto; }
+.dialog-footer {
+  padding: 12px 20px; border-top: 1px solid var(--border-light);
+  display: flex; justify-content: flex-end; gap: 8px; flex-shrink: 0;
+}
+@media (max-width: 640px) { .dialog { width: calc(100vw - 32px) !important; } }
+
+
 
 
 
