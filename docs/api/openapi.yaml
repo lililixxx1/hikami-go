@@ -3421,3 +3421,70 @@ paths:
             application/json:
               schema:
                 $ref: 'components/schemas/common.yaml#/Error'
+
+  # ───────── 密钥域(T10)─────────
+  /api/secrets:
+    get:
+      tags: [密钥]
+      operationId: listSecrets
+      summary: 列出全部密钥(脱敏)
+      description: |
+        返回所有已知密钥的脱敏视图(顺序按 KnownKeys:
+        DashScope/Recap/ASRS3/WebDAV 的 Effective* env 名)。
+        **永不返回明文**,只有 masked_value + set + source + updated_at。
+      responses:
+        '200':
+          description: 密钥列表
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/secrets.yaml#/SecretsListResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/secrets/{key}:
+    parameters:
+      - $ref: '#/components/parameters/SecretKey'
+    put:
+      tags: [密钥]
+      operationId: updateSecret
+      summary: 设置/删除单个密钥
+      description: |
+        `{key}` 必须是 KnownKeys 白名单内的 env 名(DashScope/Recap 的 EffectiveAPIKeyEnv
+        + ASRS3/WebDAV 的 EffectiveAccessKeyEnv/PasswordEnv)。
+
+        **特殊拒绝**:key 等于 ASRS3.EffectiveAccessKeyEnv 或 WebDAV.EffectivePasswordEnv 时 → **400**,
+        错误消息 `"this secret is managed by its section config endpoint; update it via the corresponding settings card"`。
+        原因:这两个密钥有 config.yaml 明文兜底 + tombstone 语义,必须走
+        `PUT /api/config/asr-s3` / `PUT /api/config/webdav`(那里会写 tombstone 标志)。
+        DashScope/Recap 的 api_key 无明文字段,走本接口安全。
+
+        **value 语义**:
+        - 非空 → 设置(secrets.Set + os.Setenv + bumpConfigGen + refreshRuntimeStatus)
+        - 空串 → 删除(secrets.Delete + os.Unsetenv + 同副作用)
+
+        返回 SecretView(**注意:PUT 响应不填 updated_at**,仅 GET 列表填)。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/secrets.yaml#/UpdateSecretRequest'
+      responses:
+        '200':
+          description: 已设置/删除(脱敏视图)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/secrets.yaml#/SecretView'
+        '400':
+          description: |
+            1. key 不在白名单(`unknown secret key: ...`)
+            2. key 被分段配置托管(ASRS3/WebDAV 的密钥)
+            3. 请求体非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
