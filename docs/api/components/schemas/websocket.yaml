@@ -1,0 +1,38 @@
+# WebSocket 事件 schema
+# 真相源:internal/worker/hub.go Event struct(Type 恒 "task_progress")
+#         internal/worker/task.go:34 Status 常量(pending/running/succeeded/failed/cancelled)
+
+TaskProgressEvent:
+  type: object
+  description: |
+    服务端通过 WebSocket 推送的任务进度事件。
+    服务端只 WriteJSON 推送,**不读**客户端消息(单向推送)。
+  required: [type, task_id, channel_id, status, progress, message]
+  properties:
+    type:
+      type: string
+      description: 恒为 "task_progress"
+      example: task_progress
+    task_id:
+      type: string
+      description: 任务 ID(string 化的 int64)
+    channel_id:
+      type: string
+    session_id:
+      type: string
+      description: 关联场次 ID(omitempty,部分任务类型不绑场次时缺席)
+    status:
+      type: string
+      enum: [pending, running, succeeded, failed, cancelled]
+      description: 任务状态
+    progress:
+      type: integer
+      minimum: 0
+      maximum: 100
+      description: 进度百分比
+    message:
+      type: string
+      description: 进度描述文字
+    error:
+      type: string
+      description: 失败时的错误消息(omitempty,仅 status=failed 出现)

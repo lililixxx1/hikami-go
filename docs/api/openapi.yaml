@@ -55,4 +55,122 @@ tags:
     description: 环境变量级密钥查询/更新
   - name: WebSocket
     description: 任务进度推送事件
-paths: {}
+paths:
+  # ───────── 系统域(T1)─────────
+  /api/healthz:
+    get:
+      tags: [系统]
+      operationId: getHealthz
+      summary: 健康检查
+      description: |
+        liveness 探针。**无需 admin token**(路由注册在 adminTokenMiddleware 之外,server.go:278)。
+      security: []
+      responses:
+        '200':
+          description: 服务存活
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /api/health/runtime:
+    get:
+      tags: [系统]
+      operationId: getRuntimeStatus
+      summary: 运行时能力探测
+      description: |
+        返回工具可用性、能力开关、配置就绪状态、cookie 告警、磁盘占用,
+        以及默认下载/发布账号是否存在。
+        前端首页能力卡据此渲染。
+      responses:
+        '200':
+          description: 探测结果
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/runtime.yaml#/RuntimeStatus'
+        '401':
+          description: 未授权
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/onboarding/status:
+    get:
+      tags: [系统]
+      operationId: getOnboardingStatus
+      summary: 新手引导状态
+      description: |
+        判断是否需要显示新手引导(未跳过 && (工具不全 || 密钥未设 || 无频道))。
+      responses:
+        '200':
+          description: 引导状态
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/runtime.yaml#/OnboardingStatus'
+        '401':
+          description: 未授权
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/onboarding/dismiss:
+    post:
+      tags: [系统]
+      operationId: dismissOnboarding
+      summary: 跳过新手引导
+      description: |
+        在 secrets 表写入 `_onboarding_dismissed=true`,之后 onboarding/status 返回 needed=false。
+        无请求体。
+      responses:
+        '200':
+          description: 已跳过
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/runtime.yaml#/OnboardingDismissResponse'
+        '401':
+          description: 未授权
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  # ───────── WebSocket(文档锚点,非 REST)─────────
+  /ws:
+    get:
+      tags: [WebSocket]
+      operationId: websocketTaskProgress
+      summary: 任务进度推送(WebSocket 升级端点)
+      description: |
+        gorilla/websocket Upgrade 端点。
+
+        **路径是 `/ws`(无 `/api` 前缀)**,见 server.go:275。
+        **无需 admin token**。
+
+        OpenAPI 3.0 不原生支持 WebSocket,本条目仅作文档锚点。
+        实际协议:
+        - 客户端发起 HTTP GET(带 `Upgrade: websocket` 头)
+        - 服务端返回 `101 Switching Protocols` 升级为 WebSocket
+        - 服务端**只 WriteJSON 推送** `task_progress` 事件,**不读**客户端消息(单向推送)
+        - 事件 schema 见 `components/schemas/websocket.yaml#/TaskProgressEvent`
+
+        前端连接示例:`new WebSocket('ws://127.0.0.1:6334/ws')`(注意无 token、无 /api)。
+      security: []
+      responses:
+        '101':
+          description: Switching Protocols(WebSocket 握手成功)
+        '401':
+          description: 未授权(实际本端点不校验,仅作文档占位)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
