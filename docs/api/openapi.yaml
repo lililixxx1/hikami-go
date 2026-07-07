@@ -2748,3 +2748,255 @@ paths:
             application/json:
               schema:
                 $ref: 'components/schemas/common.yaml#/Error'
+
+  # ───────── 回顾模板域(T8)─────────
+  /api/recap/templates:
+    get:
+      tags: [回顾模板]
+      operationId: listGlobalRecapTemplates
+      summary: 列出全局回顾模板
+      description: "返回全局全部模板。响应 {items: [RecapTemplate]}。空时返回 []。"
+      responses:
+        '200':
+          description: 全局模板列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: 'components/schemas/templates.yaml#/RecapTemplate'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    put:
+      tags: [回顾模板]
+      operationId: upsertGlobalRecapTemplate
+      summary: 新增/更新全局回顾模板
+      description: |
+        全字段可选(name 空默认 "default";enabled 缺省默认 true)。
+        返回更新后的 RecapTemplate。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/templates.yaml#/UpsertRecapTemplateRequest'
+      responses:
+        '200':
+          description: 已新增/更新
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/templates.yaml#/RecapTemplate'
+        '400':
+          description: 请求体非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/recap/templates/export:
+    get:
+      tags: [回顾模板]
+      operationId: exportGlobalRecapTemplates
+      summary: 导出全局模板为 JSON
+      description: |
+        响应带 Content-Disposition: attachment; filename="recap-templates.json"。
+        返回 TemplateExport 结构。
+      responses:
+        '200':
+          description: JSON 导出
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              description: attachment; filename="recap-templates.json"
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/templates.yaml#/TemplateExport'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/recap/templates/import:
+    post:
+      tags: [回顾模板]
+      operationId: importGlobalRecapTemplates
+      summary: 从 JSON 导入全局模板
+      description: 请求体是 raw JSON(TemplateExport 结构)。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/templates.yaml#/TemplateExport'
+      responses:
+        '200':
+          description: 已导入计数
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/templates.yaml#/ImportedCountResponse'
+        '400':
+          description: 读取失败或 JSON 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/recap/presets:
+    get:
+      tags: [回顾模板]
+      operationId: listRecapPresets
+      summary: 内置模板预设列表
+      description: "返回内置预设库。响应 {presets: [TemplatePreset]}。"
+      responses:
+        '200':
+          description: 预设列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [presets]
+                properties:
+                  presets:
+                    type: array
+                    items:
+                      $ref: 'components/schemas/templates.yaml#/TemplatePreset'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/channels/{id}/recap-template:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    get:
+      tags: [回顾模板]
+      operationId: getChannelRecapTemplate
+      summary: 获取主播级模板(含全局合并视图)
+      description: |
+        返回 `{global, channel, resolved}`:
+        - global/channel 是 `*Template`,**查不到时为 null(非缺席)**(gin.H 无 omitempty)
+        - resolved 是合并后的 ResolvedTemplate(**字段名 PascalCase**,见 schema)
+      responses:
+        '200':
+          description: 主播级模板视图
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/templates.yaml#/ChannelRecapTemplateResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    put:
+      tags: [回顾模板]
+      operationId: upsertChannelRecapTemplate
+      summary: 新增/更新主播级模板
+      description: |
+        请求体与全局 PUT 相同(UpsertRecapTemplateRequest)。
+        返回更新后的 RecapTemplate。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/templates.yaml#/UpsertRecapTemplateRequest'
+      responses:
+        '200':
+          description: 已新增/更新
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/templates.yaml#/RecapTemplate'
+        '400':
+          description: 请求体非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+    delete:
+      tags: [回顾模板]
+      operationId: deleteChannelRecapTemplate
+      summary: 删除主播级模板
+      description: |
+        内部按 GetByChannel(id, "default") 查找。
+        **返回 `{ok: true}`(非 204)**。
+        错误码:
+        - 查不到 → recap.ErrTemplateNotFound → **404** `{error:not found, reason:...}`
+        - 内置模板 → recap.ErrTemplateBuiltIn → **403** `{error:cannot delete built-in template}`
+      responses:
+        '200':
+          description: 已删除
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/OkResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '403':
+          description: 不能删除内置模板
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: cannot delete built-in template
+        '404':
+          description: 主播级模板不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/channels/{id}/recap-template/export:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    get:
+      tags: [回顾模板]
+      operationId: exportChannelRecapTemplates
+      summary: 导出主播级模板为 JSON
+      description: "响应带 Content-Disposition: attachment。"
+      responses:
+        '200':
+          description: JSON 导出
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/templates.yaml#/TemplateExport'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/channels/{id}/recap-template/import:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    post:
+      tags: [回顾模板]
+      operationId: importChannelRecapTemplates
+      summary: 从 JSON 导入主播级模板
+      description: 请求体是 raw JSON(TemplateExport 结构)。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/templates.yaml#/TemplateExport'
+      responses:
+        '200':
+          description: 已导入计数
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/templates.yaml#/ImportedCountResponse'
+        '400':
+          description: 读取失败或 JSON 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
