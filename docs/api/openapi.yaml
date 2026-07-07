@@ -1201,3 +1201,176 @@ paths:
             application/json:
               schema:
                 $ref: 'components/schemas/common.yaml#/Error'
+
+  # ───────── 任务域(T4)─────────
+  /api/tasks:
+    get:
+      tags: [任务]
+      operationId: listTasks
+      summary: 列出全部任务
+      description: "返回全部任务(无分页)。响应 {items: [Task]}。"
+      responses:
+        '200':
+          description: 任务列表
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/TasksListResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/tasks/batch-retry:
+    post:
+      tags: [任务]
+      operationId: batchRetryTasks
+      summary: 批量重试任务
+      description: |
+        对一组 task_ids 批量重试。task_ids 必须非空(空数组→400)。
+        返回 `{retried: N, tasks: [Task]}`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/task.yaml#/BatchRetryRequest'
+      responses:
+        '200':
+          description: 批量重试结果
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/BatchRetryResponse'
+        '400':
+          description: task_ids 缺失或为空
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/tasks/failed:
+    delete:
+      tags: [任务]
+      operationId: deleteFailedTasks
+      summary: 删除所有失败任务
+      description: |
+        按状态 DeleteByStatus(failed)批量删除。
+        返回 `{deleted: N}`。
+      responses:
+        '200':
+          description: 已删除的失败任务数
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/DeletedCountResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/tasks/{id}:
+    parameters:
+      - $ref: '#/components/parameters/TaskID'
+    get:
+      tags: [任务]
+      operationId: getTask
+      summary: 获取任务详情(含条件字段)
+      description: |
+        返回 TaskDetailResponse:`{task, friendly_error?, auto_retry?}`。
+        - `friendly_error` 仅 `status==failed && error!=""` 出现
+        - `auto_retry` 仅 `status==failed` 且 `ShouldAutoRetry=true` 出现
+      responses:
+        '200':
+          description: 任务详情
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/TaskDetailResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 任务不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+    delete:
+      tags: [任务]
+      operationId: deleteTask
+      summary: 删除任务
+      description: |
+        删除单个任务。**成功返回 204 No Content**(无响应体)。
+      responses:
+        '204':
+          description: 已删除(无响应体)
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 任务不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/tasks/{id}/retry:
+    parameters:
+      - $ref: '#/components/parameters/TaskID'
+    post:
+      tags: [任务]
+      operationId: retryTask
+      summary: 重试任务
+      description: |
+        重试单个任务(Attempt+1,重新入队)。
+        返回 202 + Task。
+      responses:
+        '202':
+          description: 已重试
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 任务不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 任务状态冲突(如非 failed 不能重试)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/tasks/{id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/TaskID'
+    post:
+      tags: [任务]
+      operationId: cancelTask
+      summary: 取消任务
+      description: |
+        取消运行中/待执行的任务(标记 cancelled)。
+        **返回 200**(非 202) + Task。
+      responses:
+        '200':
+          description: 已取消
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 任务不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 任务状态冲突(如已终态不能取消)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'

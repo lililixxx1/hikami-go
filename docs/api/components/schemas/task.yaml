@@ -74,4 +74,70 @@ TasksListResponse:
       items:
         $ref: 'task.yaml#/Task'
 
-# TaskDetail / 条件字段 / BatchRetry 等在 T4 任务域 task 补充。
+FriendlyError:
+  type: object
+  description: |
+    友好错误信息。仅 status=failed && error!="" 时出现在 TaskDetailResponse.friendly_error。
+  required: [message, suggestion]
+  properties:
+    message:
+      type: string
+      description: 中文友好消息
+    suggestion:
+      type: string
+      description: 建议操作
+
+AutoRetryInfo:
+  type: object
+  description: |
+    自动重试信息。仅 status=failed 且 ShouldAutoRetry 返回 true 时出现。
+  required: [scheduled, attempt, max_attempts]
+  properties:
+    scheduled:
+      type: boolean
+      description: 是否会自动重试(几乎恒为 true,出现即代表会重试)
+    attempt:
+      type: integer
+      description: 当前已尝试次数
+    max_attempts:
+      type: integer
+      description: 最大重试次数(cfg.Worker.MaxRetryAttempts)
+
+TaskDetailResponse:
+  type: object
+  description: |
+    GET /api/tasks/{id} 响应。
+    - task 永远出现
+    - friendly_error 仅 status=failed && error!="" 出现
+    - auto_retry 仅 status=failed 且 ShouldAutoRetry=true 出现
+  required: [task]
+  properties:
+    task:
+      $ref: 'task.yaml#/Task'
+    friendly_error:
+      $ref: 'task.yaml#/FriendlyError'
+    auto_retry:
+      $ref: 'task.yaml#/AutoRetryInfo'
+
+BatchRetryRequest:
+  type: object
+  required: [task_ids]
+  properties:
+    task_ids:
+      type: array
+      items:
+        type: string
+      description: 要重试的任务 ID 列表(非空,空数组→400)
+
+BatchRetryResponse:
+  type: object
+  required: [retried, tasks]
+  properties:
+    retried:
+      type: integer
+      description: 实际重试的任务数
+    tasks:
+      type: array
+      items:
+        $ref: 'task.yaml#/Task'
+      description: 重试后的任务列表
