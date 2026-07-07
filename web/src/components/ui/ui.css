@@ -110,5 +110,19 @@
   border-top: none; border-left: none; transform: rotate(45deg) translateY(-0.5px);
 }
 
+/* ===== HCollapse ===== */
+.collapse { display: flex; flex-direction: column; gap: 0; }
+.collapse-item { border-bottom: 1px solid var(--border-light); }
+.collapse-item:last-child { border-bottom: none; }
+.collapse-trigger {
+  padding: 12px 0; cursor: pointer; display: flex; align-items: center; gap: 8px;
+  font-size: 14px; color: var(--text-secondary); user-select: none;
+}
+.collapse-trigger:hover { color: var(--text); }
+.collapse-arrow { display: inline-block; transition: transform 0.15s; color: var(--text-muted); }
+.collapse-arrow.open { transform: rotate(90deg); }
+.collapse-content { padding: 8px 0 16px 20px; }
+
+
 
 
