@@ -224,7 +224,51 @@ func (s *Store) CreateImport(ctx context.Context, input CreateImportInput) (Sess
 }
 
 func (s *Store) List(ctx context.Context) ([]Session, error) {
-	rows, err := s.db.QueryContext(ctx, listWithChannelSQL)
+	return s.ListWithFilter(ctx, ListFilter{})
+}
+
+// ListFilter controls server-side filtering of ListWithFilter.
+// Empty fields mean "do not filter on this dimension".
+type ListFilter struct {
+	ChannelID string // exact match on s.channel_id
+	Source    string // exact match on s.source_type (live_record/download/import)
+	Search    string // LIKE %x% against s.title, s.source_id, s.id (case-insensitive)
+}
+
+// ListWithFilter lists sessions joined with their channel name, optionally
+// narrowed by the given filter. With an empty filter it is equivalent to List.
+func (s *Store) ListWithFilter(ctx context.Context, f ListFilter) ([]Session, error) {
+	var where strings.Builder
+	var args []any
+	if f.ChannelID != "" {
+		where.WriteString("s.channel_id = ?")
+		args = append(args, f.ChannelID)
+	}
+	if f.Source != "" {
+		if where.Len() > 0 {
+			where.WriteString(" AND ")
+		}
+		where.WriteString("s.source_type = ?")
+		args = append(args, f.Source)
+	}
+	if f.Search != "" {
+		if where.Len() > 0 {
+			where.WriteString(" AND ")
+		}
+		// SQLite LIKE is case-insensitive for ASCII by default; Chinese has no
+		// case so LIKE is sufficient for keyword search across title/source_id/id.
+		where.WriteString("(s.title LIKE ? OR s.source_id LIKE ? OR s.id LIKE ?)")
+		pattern := "%" + f.Search + "%"
+		args = append(args, pattern, pattern, pattern)
+	}
+
+	query := listWithChannelBaseSQL
+	if where.Len() > 0 {
+		query += " WHERE " + where.String()
+	}
+	query += " ORDER BY s.created_at DESC, s.id DESC"
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -513,7 +557,12 @@ const selectColumns = `
 `
 
 const getSQL = `SELECT ` + selectColumns + ` FROM sessions WHERE id = ?`
-const listWithChannelSQL = `SELECT
+
+// listWithChannelBaseSQL is the SELECT column list + FROM/JOIN shared by every
+// list-style query that needs channel_name. Callers append an optional WHERE
+// clause and the ORDER BY tail. Keeping the column list in one place avoids the
+// two copies drifting when a column is added.
+const listWithChannelBaseSQL = `SELECT
 		s.id,
 		s.slug,
 		s.channel_id,
@@ -535,7 +584,9 @@ const listWithChannelSQL = `SELECT
 		s.created_at,
 		s.updated_at
 	FROM sessions s
-	LEFT JOIN channels c ON s.channel_id = c.id
+	LEFT JOIN channels c ON s.channel_id = c.id`
+
+const listWithChannelSQL = listWithChannelBaseSQL + `
 	ORDER BY s.created_at DESC, s.id DESC`
 const getBySourceSQL = `SELECT ` + selectColumns + ` FROM sessions WHERE channel_id = ? AND source_type = ? AND source_id = ?`
 const activeLiveSQL = `SELECT ` + selectColumns + `
