@@ -2,6 +2,7 @@
 import { onBeforeUnmount, ref } from 'vue'
 import QRCode from 'qrcode'
 import { useBiliQRCodeLogin } from '@/features/channel/useBiliQRCodeLogin'
+import { HDialog, HButton, HInput } from '@/components/ui'
 import type {
   BiliCookieAccount,
   Channel,
@@ -72,58 +73,58 @@ function handleClose(): void {
 onBeforeUnmount(() => {
   void cleanupSession()
 })
+
+function selectUsage(value: QRCodeCookieUsage): void {
+  usage.value = value
+}
 </script>
 
 <template>
-  <el-dialog
-    :model-value="visible"
+  <HDialog
+    :visible="visible"
     title="B 站扫码登录"
     width="360px"
-    @update:model-value="handleClose"
+    @update:visible="handleClose"
   >
     <div class="qr-login-body">
       <!-- 状态驱动展示:loading 骨架 / 二维码 / 状态提示 -->
-      <div v-if="creating && !session" class="qr-skeleton">
-        <el-skeleton animated>
-          <template #template>
-            <el-skeleton-item variant="image" style="width: 220px; height: 220px;" />
-          </template>
-        </el-skeleton>
-      </div>
+      <div v-if="creating && !session" class="qr-skeleton" />
       <canvas v-show="session" ref="canvasRef" class="qr-canvas" />
 
-      <el-alert
-        :type="state === 'done' ? 'success' : state === 'expired' || state === 'failed' ? 'error' : state === 'scanned' ? 'success' : 'info'"
-        :title="statusText"
-        :closable="false"
-        show-icon
-        class="status-alert"
-      />
+      <div class="status-alert" :class="`alert-${state}`">
+        {{ statusText }}
+      </div>
 
       <!-- 扫码成功后的保存区 -->
       <div v-if="pollResult?.status === 'succeeded'" class="save-panel">
         <!-- 账号模式:输入昵称 -->
         <template v-if="isAccountMode">
-          <el-input v-model="nickname" placeholder="账号备注名(可选)" clearable />
+          <HInput v-model="nickname" placeholder="账号备注名(可选)" />
         </template>
         <!-- 主播模式:选择用途 -->
         <template v-else>
-          <el-radio-group v-model="usage">
-            <el-radio value="download">下载用</el-radio>
-            <el-radio value="publish">发布用</el-radio>
-          </el-radio-group>
+          <div class="radio-group">
+            <label class="radio-item">
+              <input type="radio" :checked="usage === 'download'" @change="selectUsage('download')">
+              <span>下载用</span>
+            </label>
+            <label class="radio-item">
+              <input type="radio" :checked="usage === 'publish'" @change="selectUsage('publish')">
+              <span>发布用</span>
+            </label>
+          </div>
         </template>
-        <el-button type="primary" :loading="saving" :disabled="!canSave" @click="handleSave">
+        <HButton variant="primary" :loading="saving" :disabled="!canSave" @click="handleSave">
           保存
-        </el-button>
+        </HButton>
       </div>
     </div>
 
     <template #footer>
-      <el-button @click="handleClose">关闭</el-button>
-      <el-button type="primary" plain :loading="creating" @click="startLogin">刷新二维码</el-button>
+      <HButton variant="secondary" @click="handleClose">关闭</HButton>
+      <HButton variant="primary" :loading="creating" @click="startLogin">刷新二维码</HButton>
     </template>
-  </el-dialog>
+  </HDialog>
 </template>
 
 <style scoped>
@@ -141,8 +142,45 @@ onBeforeUnmount(() => {
   height: 220px;
 }
 
+.qr-skeleton {
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
 .status-alert {
   width: 100%;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  text-align: center;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+}
+
+.status-alert.alert-done {
+  border-color: var(--success-border, #d1edc4);
+  background: var(--success-bg, #f0f9eb);
+  color: var(--success, #1aae39);
+}
+
+.status-alert.alert-expired,
+.status-alert.alert-failed {
+  border-color: var(--danger-border, #fcd3d3);
+  background: var(--danger-bg, #fef0f0);
+  color: var(--danger, #e03e2d);
+}
+
+.status-alert.alert-scanned {
+  border-color: var(--success-border, #d1edc4);
+  background: var(--success-bg, #f0f9eb);
+  color: var(--success, #1aae39);
 }
 
 .save-panel {
@@ -153,11 +191,22 @@ onBeforeUnmount(() => {
   align-items: stretch;
 }
 
-.save-panel :deep(.el-radio-group) {
+.radio-group {
+  display: flex;
   justify-content: center;
+  gap: 20px;
 }
 
-.save-panel .el-button {
+.radio-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.save-panel :deep(.btn) {
   align-self: center;
 }
 </style>

@@ -3,6 +3,7 @@ import { ref, watch } from 'vue'
 import { identifyChannel, identifyAndSave } from '@/api/channels'
 import type { IdentifyResult } from '@/api/types'
 import { HMessage } from '@/components/ui/message'
+import { HDialog, HButton, HInput, HDescriptions } from '@/components/ui'
 
 const props = defineProps<{
   visible: boolean
@@ -77,74 +78,67 @@ function handleBack(): void {
 </script>
 
 <template>
-  <el-dialog
-    :model-value="visible"
+  <HDialog
+    :visible="visible"
     title="识别主播"
     width="500px"
-    @close="handleClose"
+    @update:visible="(v) => { if (!v) handleClose() }"
   >
     <!-- Step 1: Input -->
     <div v-if="step === 1">
-      <el-form @submit.prevent="handleIdentify">
-        <el-form-item label="输入">
-          <el-input
-            v-model="inputText"
-            placeholder="输入 B站 直播链接、空间链接或 UID"
-            :loading="loading"
-            clearable
-          />
-        </el-form-item>
-      </el-form>
+      <form @submit.prevent="handleIdentify">
+        <label class="field-label">输入</label>
+        <HInput v-model="inputText" placeholder="输入 B站 直播链接、空间链接或 UID" />
+      </form>
       <div class="step-actions">
-        <el-button type="primary" :loading="loading" @click="handleIdentify">
+        <HButton variant="primary" :loading="loading" @click="handleIdentify">
           识别
-        </el-button>
+        </HButton>
       </div>
     </div>
 
     <!-- Step 2: Result -->
     <div v-if="step === 2 && identifyResult">
-      <el-descriptions :column="1" border>
-        <el-descriptions-item label="主播名称">
-          {{ identifyResult.channel.name }}
-        </el-descriptions-item>
-        <el-descriptions-item label="UID">
-          {{ identifyResult.channel.uid }}
-        </el-descriptions-item>
-        <el-descriptions-item label="直播间ID">
-          {{ identifyResult.channel.live_room_id || '-' }}
-        </el-descriptions-item>
-        <el-descriptions-item label="空间URL">
-          {{ identifyResult.channel.space_url }}
-        </el-descriptions-item>
-        <el-descriptions-item label="回放来源">
-          {{ identifyResult.channel.replay_source_url }}
-        </el-descriptions-item>
-        <el-descriptions-item label="来源方式">
-          {{ identifyResult.source }}
-        </el-descriptions-item>
-      </el-descriptions>
+      <HDescriptions
+        :items="[
+          { label: '主播名称', value: identifyResult.channel.name },
+          { label: 'UID', value: String(identifyResult.channel.uid) },
+          { label: '直播间ID', value: identifyResult.channel.live_room_id ? String(identifyResult.channel.live_room_id) : '-' },
+          { label: '空间URL', value: identifyResult.channel.space_url },
+          { label: '回放来源', value: identifyResult.channel.replay_source_url },
+          { label: '来源方式', value: identifyResult.source },
+        ]"
+      />
     </div>
 
     <template #footer>
-      <el-button @click="step === 2 ? handleBack() : handleClose()">
+      <HButton variant="secondary" @click="step === 2 ? handleBack() : handleClose()">
         {{ step === 2 ? '返回' : '取消' }}
-      </el-button>
-      <el-button
+      </HButton>
+      <HButton
         v-if="step === 2"
-        type="primary"
+        variant="primary"
         :loading="loading"
         @click="handleSave"
       >
         确认保存
-      </el-button>
+      </HButton>
     </template>
-  </el-dialog>
+  </HDialog>
 </template>
 
 <style scoped>
+.field-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
 .step-actions {
   display: flex;
   justify-content: flex-end;
+  margin-top: 16px;
 }
 </style>

@@ -9,7 +9,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { HMessage } from '@/components/ui/message'
 import { HConfirm } from '@/components/ui/HConfirm'
-import { Plus, Search } from '@element-plus/icons-vue'
+import { HButton, HInput } from '@/components/ui'
 import { useChannelsStore } from '@/stores/channels'
 import { useSessionsStore } from '@/stores/sessions'
 import { useRuntimeStore } from '@/stores/runtime'
@@ -206,12 +206,11 @@ onMounted(async () => {
     <div class="page-header">
       <h2>我的主播</h2>
       <div class="page-actions">
-        <el-input v-model="keyword" clearable placeholder="搜索主播" class="search-input">
-          <template #prefix><el-icon><Search /></el-icon></template>
-        </el-input>
-        <el-button type="primary" @click="showIdentifyDialog = true">
-          <el-icon><Plus /></el-icon> 添加主播
-        </el-button>
+        <HInput v-model="keyword" placeholder="搜索主播" class="search-input" />
+        <HButton variant="primary" @click="showIdentifyDialog = true">
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3v10M3 8h10" /></svg>
+          添加主播
+        </HButton>
       </div>
     </div>
 

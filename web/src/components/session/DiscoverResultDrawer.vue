@@ -13,6 +13,7 @@
 import { computed, ref, watch } from 'vue'
 import { HMessage } from '@/components/ui/message'
 import { HConfirm } from '@/components/ui/HConfirm'
+import { HDrawer, HButton, HCheckbox, HEmpty, HPill } from '@/components/ui'
 import {
   discoverSessions,
   previewDiscoverSessions,
@@ -192,25 +193,25 @@ function handleClose(value: boolean): void {
 </script>
 
 <template>
-  <el-drawer
-    :model-value="visible"
+  <HDrawer
+    :visible="visible"
     direction="rtl"
     size="560px"
     title="发现回放"
-    @update:model-value="handleClose"
+    @update:visible="handleClose"
   >
     <!-- 顶部动作栏：预览态显示下载按钮 -->
-    <template v-if="phase === 'preview'">
-      <div class="toolbar-row">
-        <el-button type="primary" :loading="executing" :disabled="selectedCount === 0" @click="handleExecuteSelected">
-          下载选中 ({{ selectedCount }})
-        </el-button>
-        <el-button :loading="executing" @click="handleDownloadAll">全部下载</el-button>
-      </div>
-    </template>
+    <div v-if="phase === 'preview'" class="toolbar-row">
+      <HButton variant="primary" :loading="executing" :disabled="selectedCount === 0" @click="handleExecuteSelected">
+        下载选中 ({{ selectedCount }})
+      </HButton>
+      <HButton variant="secondary" :loading="executing" @click="handleDownloadAll">全部下载</HButton>
+    </div>
 
     <!-- loading 态 -->
-    <div v-if="phase === 'loading'" v-loading="true" class="discover-loading" />
+    <div v-if="phase === 'loading'" class="discover-loading">
+      <span class="loading-text">正在发现回放…</span>
+    </div>
 
     <!-- 预览勾选态 -->
     <div v-else-if="phase === 'preview'" class="discover-body">
@@ -223,17 +224,17 @@ function handleClose(value: boolean): void {
         </div>
       </div>
 
-      <el-empty v-if="validPreviewItems.length === 0" description="未发现任何回放" />
+      <HEmpty v-if="validPreviewItems.length === 0" description="未发现任何回放" />
 
       <div v-for="group in grouped" :key="group.channelId" class="group-block">
         <div class="group-header">
-          <el-checkbox
+          <HCheckbox
             :model-value="groupAllSelected(group.channelId)"
-            @change="(v: boolean) => toggleGroup(group.channelId, v)"
+            @update:model-value="(v) => toggleGroup(group.channelId, v)"
           >
             <strong>{{ group.channelId }}</strong>
             <span class="group-count">({{ group.items.length }})</span>
-          </el-checkbox>
+          </HCheckbox>
         </div>
 
         <div
@@ -242,14 +243,14 @@ function handleClose(value: boolean): void {
           class="preview-row"
           :class="{ 'is-exists': item.exists }"
         >
-          <el-checkbox
+          <HCheckbox
             :model-value="isSelected(item)"
-            @change="(v: boolean) => toggleItem(item, v)"
+            @update:model-value="(v) => toggleItem(item, v)"
           >
             <div class="row-title">{{ item.title || item.source_id }}</div>
-          </el-checkbox>
-          <el-tag v-if="item.exists" type="info" size="small">已处理</el-tag>
-          <el-tag v-else type="success" size="small">新</el-tag>
+          </HCheckbox>
+          <HPill v-if="item.exists" variant="neutral">已处理</HPill>
+          <HPill v-else variant="success">新</HPill>
         </div>
       </div>
     </div>
@@ -280,9 +281,9 @@ function handleClose(value: boolean): void {
         >
           <div class="row-main">
             <div class="row-title">{{ item.title || item.source_id || '-' }}</div>
-            <el-tag v-if="item.error" type="danger" size="small">错误</el-tag>
-            <el-tag v-else-if="item.created" type="success" size="small">新建</el-tag>
-            <el-tag v-else type="info" size="small">跳过</el-tag>
+            <HPill v-if="item.error" variant="danger">错误</HPill>
+            <HPill v-else-if="item.created" variant="success">新建</HPill>
+            <HPill v-else variant="neutral">跳过</HPill>
           </div>
           <div class="row-fields">
             <span>主播：{{ item.channel_id || '-' }}</span>
@@ -294,7 +295,7 @@ function handleClose(value: boolean): void {
         </div>
       </div>
     </div>
-  </el-drawer>
+  </HDrawer>
 </template>
 
 <style scoped>
@@ -306,6 +307,14 @@ function handleClose(value: boolean): void {
 
 .discover-loading {
   min-height: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.loading-text {
+  color: var(--text-muted);
+  font-size: 14px;
 }
 
 .discover-body {
@@ -315,14 +324,14 @@ function handleClose(value: boolean): void {
 }
 
 .error-block {
-  border: 1px solid #fcd3d3;
+  border: 1px solid var(--danger-border, #fcd3d3);
   border-radius: 8px;
   padding: 10px 12px;
-  background: #fef0f0;
+  background: var(--danger-bg, #fef0f0);
 }
 
 .error-block-title {
-  color: #f56c6c;
+  color: var(--danger, #f56c6c);
   font-size: 13px;
   font-weight: 600;
   margin-bottom: 8px;
@@ -333,7 +342,7 @@ function handleClose(value: boolean): void {
   flex-direction: column;
   gap: 2px;
   padding: 4px 0;
-  border-top: 1px solid #fde2e2;
+  border-top: 1px solid var(--danger-border-light, #fde2e2);
 }
 
 .error-row:first-of-type {
@@ -341,20 +350,20 @@ function handleClose(value: boolean): void {
 }
 
 .group-block {
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--border-light, #ebeef5);
   border-radius: 8px;
   padding: 10px 12px;
-  background: #fff;
+  background: var(--canvas);
 }
 
 .group-header {
   padding-bottom: 8px;
   margin-bottom: 8px;
-  border-bottom: 1px solid #f0f0f0;
+  border-bottom: 1px solid var(--border-lighter, #f0f0f0);
 }
 
 .group-count {
-  color: #909399;
+  color: var(--text-muted);
   font-weight: normal;
   margin-left: 4px;
 }
@@ -371,7 +380,7 @@ function handleClose(value: boolean): void {
 }
 
 .preview-row .row-title {
-  color: #303133;
+  color: var(--text);
   font-size: 13px;
   word-break: break-word;
 }
@@ -383,30 +392,30 @@ function handleClose(value: boolean): void {
 }
 
 .stat-item {
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--border-light);
   border-radius: 8px;
   padding: 12px;
-  background: #fff;
+  background: var(--canvas);
 }
 
 .stat-item span {
   display: block;
-  color: #909399;
+  color: var(--text-muted);
   font-size: 12px;
   margin-bottom: 6px;
 }
 
 .stat-item strong {
-  color: #303133;
+  color: var(--text);
   font-size: 22px;
 }
 
 .stat-item.success strong {
-  color: #67c23a;
+  color: var(--success);
 }
 
 .stat-item.danger strong {
-  color: #f56c6c;
+  color: var(--danger, #f56c6c);
 }
 
 .result-list {
@@ -415,18 +424,18 @@ function handleClose(value: boolean): void {
 }
 
 .result-row {
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--border-light);
   border-radius: 8px;
   padding: 12px;
-  background: #fff;
+  background: var(--canvas);
 }
 
 .result-row.is-created {
-  border-color: #d1edc4;
+  border-color: var(--success-border, #d1edc4);
 }
 
 .result-row.is-error {
-  border-color: #fcd3d3;
+  border-color: var(--danger-border, #fcd3d3);
 }
 
 .row-main {
@@ -437,7 +446,7 @@ function handleClose(value: boolean): void {
 }
 
 .row-title {
-  color: #303133;
+  color: var(--text);
   font-weight: 600;
   line-height: 1.4;
   word-break: break-word;
@@ -447,14 +456,14 @@ function handleClose(value: boolean): void {
   display: grid;
   gap: 4px;
   margin-top: 10px;
-  color: #606266;
+  color: var(--text-secondary);
   font-size: 12px;
   line-height: 1.5;
 }
 
 .row-error {
   margin-top: 8px;
-  color: #f56c6c;
+  color: var(--danger, #f56c6c);
   font-size: 12px;
   line-height: 1.5;
   word-break: break-word;
