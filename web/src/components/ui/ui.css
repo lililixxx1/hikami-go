@@ -60,3 +60,24 @@
 .pill-info { background: rgba(0,117,222,0.1); color: #005bab; }
 .pill-neutral { background: var(--surface); color: var(--text-secondary); }
 
+/* ===== Form (HInput / HTextarea / HSelect) ===== */
+.form-field { display: flex; flex-direction: column; gap: 6px; }
+.form-label { font-size: 13px; font-weight: 500; color: var(--text-secondary); }
+.input, .textarea, .select {
+  font-family: inherit; font-size: 13px;
+  padding: 8px 12px; border: 1px solid var(--border);
+  border-radius: var(--radius-md); background: var(--canvas); color: var(--text);
+  transition: border-color 0.15s; width: 100%;
+}
+.input:focus, .textarea:focus, .select:focus { border-color: var(--accent); outline: none; }
+.input::placeholder, .textarea::placeholder { color: var(--text-muted); }
+.input:disabled, .textarea:disabled, .select:disabled { opacity: 0.5; cursor: not-allowed; background: var(--surface); }
+.input-sm { padding: 5px 10px; font-size: 12px; }
+.textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
+.select {
+  appearance: none; cursor: pointer; padding-right: 32px;
+  background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%23615d59' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 12px center;
+}
+
+
