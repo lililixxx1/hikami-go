@@ -5,7 +5,12 @@ import type { components, paths } from './generated'
 type Schema<K extends keyof components['schemas']> = components['schemas'][K]
 
 // 实体
-export type Session = Schema<'Session'>
+// NOTE: source_type 在 generated schema 里被收窄为 "live"|"download"|"import",但后端实际还会发出
+// "live_record" 等值(枚举不完整)。这里放宽为 string,与旧手写 types.ts 一致,也使派生 Session
+// 与 sessionActions.ts 消费的 types.ts Session 在该字段上兼容。其余字段保留 generated 的 optional 语义
+// (与真实 API omitempty 一致;plan 的测试 fixture 按需填充,未填的允许缺席)。
+// 与 sessionActions.ts(types.ts 的全必填 Session/Task)互操作时,由 V10 组件在调用边界做窄化转换。
+export type Session = Omit<Schema<'Session'>, 'source_type'> & { source_type: string }
 export type Task = Schema<'Task'>
 export type Channel = Schema<'Channel'>
 export type LiveStatus = Schema<'LiveStatus'>
