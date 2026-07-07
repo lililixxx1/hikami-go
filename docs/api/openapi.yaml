@@ -1584,3 +1584,353 @@ paths:
                 $ref: 'components/schemas/stats.yaml#/DiagnosticReport'
         '401':
           $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  # ───────── 配置域(T6)─────────
+  /api/config/publish:
+    get:
+      tags: [配置]
+      operationId: getPublishConfig
+      summary: 获取发布配置
+      responses:
+        '200':
+          description: 发布配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/PublishConfigResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    put:
+      tags: [配置]
+      operationId: updatePublishConfig
+      summary: 更新发布配置(patch 语义)
+      description: |
+        全字段可选(presence-aware):传哪个改哪个,未传保持原值。
+        传了但值非法(如 mode 非 draft/publish)→ 400。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/config-sections.yaml#/PublishConfigRequest'
+      responses:
+        '200':
+          description: 更新后的发布配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/PublishConfigResponse'
+        '400':
+          description: 字段值非法(如 private_pub 非 1/2,timer_pub_time 超区间)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/config/recap:
+    get:
+      tags: [配置]
+      operationId: getRecapConfig
+      summary: 获取回顾 AI 配置
+      responses:
+        '200':
+          description: 回顾配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/RecapConfigResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    put:
+      tags: [配置]
+      operationId: updateRecapConfig
+      summary: 更新回顾 AI 配置(密钥三态)
+      description: |
+        全字段可选。密钥三态:
+        - 不传 api_key/clear_key → 保持
+        - 传 api_key → 设置
+        - 传 clear_key=true → 清空
+        provider 传了必须在白名单(openai_compatible/anthropic/claude_cli/codex_cli/local)。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/config-sections.yaml#/RecapConfigRequest'
+      responses:
+        '200':
+          description: 更新后的回顾配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/RecapConfigResponse'
+        '400':
+          description: 字段值非法(provider 非白名单/max_tokens<0 等)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/config/recap/models:
+    get:
+      tags: [配置]
+      operationId: getRecapModels
+      summary: 推荐回顾模型列表(只读)
+      description: "返回按厂商分组的推荐模型快捷选项。响应 {models: [RecapModelOption]}。"
+      responses:
+        '200':
+          description: 推荐模型列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [models]
+                properties:
+                  models:
+                    type: array
+                    items:
+                      $ref: 'components/schemas/config-sections.yaml#/RecapModelOption'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/config/dashscope:
+    get:
+      tags: [配置]
+      operationId: getDashScopeConfig
+      summary: 获取 DashScope(ASR)配置
+      responses:
+        '200':
+          description: DashScope 配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/DashScopeConfigResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    put:
+      tags: [配置]
+      operationId: updateDashScopeConfig
+      summary: 更新 DashScope 配置(密钥三态)
+      description: |
+        全字段可选。asr_url/tasks_url 传了必须合法 http(s) url + host。
+        密钥三态同 recap。env 改名会原子迁移 secret。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/config-sections.yaml#/DashScopeConfigRequest'
+      responses:
+        '200':
+          description: 更新后的 DashScope 配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/DashScopeConfigResponse'
+        '400':
+          description: 字段值非法(url 格式/speaker_count<0/env 名非法)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/config/asr-s3:
+    get:
+      tags: [配置]
+      operationId: getASRS3Config
+      summary: 获取 ASR S3 配置
+      responses:
+        '200':
+          description: ASR S3 配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/ASRS3ConfigResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    put:
+      tags: [配置]
+      operationId: updateASRS3Config
+      summary: 更新 ASR S3 配置(密钥三态)
+      description: |
+        全字段可选。endpoint 传了必须合法 http(s) + host,禁 .. 和反斜杠。
+        ⚠️ 注意:更新此处的 access_key_secret 走 secrets,与
+        `PUT /api/secrets/{ASRS3EffectiveAccessKeyEnv}` 互斥(后者被特殊拒绝,见密钥域)。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/config-sections.yaml#/ASRS3ConfigRequest'
+      responses:
+        '200':
+          description: 更新后的 ASR S3 配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/ASRS3ConfigResponse'
+        '400':
+          description: 字段值非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/config/webdav:
+    get:
+      tags: [配置]
+      operationId: getWebDAVConfig
+      summary: 获取 WebDAV 配置
+      responses:
+        '200':
+          description: WebDAV 配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/WebDAVConfigResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    put:
+      tags: [配置]
+      operationId: updateWebDAVConfig
+      summary: 更新 WebDAV 配置(密钥三态)
+      description: |
+        全字段可选。url/base_path/remote 有格式校验。
+        ⚠️ password 走 secrets,与 `PUT /api/secrets/{WebDAVEffectivePasswordEnv}` 互斥。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/config-sections.yaml#/WebDAVConfigRequest'
+      responses:
+        '200':
+          description: 更新后的 WebDAV 配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/WebDAVConfigResponse'
+        '400':
+          description: 字段值非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/config/archive:
+    get:
+      tags: [配置]
+      operationId: getArchiveConfig
+      summary: 获取归档配置
+      responses:
+        '200':
+          description: 归档配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/ArchiveConfigResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    put:
+      tags: [配置]
+      operationId: updateArchiveConfig
+      summary: 更新归档配置
+      description: 全字段可选。cleanup_policy 传了必须在 [none,temp,generated,all]。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/config-sections.yaml#/ArchiveConfigRequest'
+      responses:
+        '200':
+          description: 更新后的归档配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/ArchiveConfigResponse'
+        '400':
+          description: cleanup_policy 非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/config/export:
+    get:
+      tags: [配置]
+      operationId: exportConfig
+      summary: 导出全部配置(含明文密钥)
+      description: |
+        导出 ConfigExportBundle:6 段全局配置 + secrets(明文)+ channels +
+        glossary + templates + bili_accounts。
+        ⚠️ **响应包含明文密钥**,仅用于备份/迁移,不要外传。
+      responses:
+        '200':
+          description: 配置备份 bundle
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/ConfigExportBundle'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/config/import:
+    post:
+      tags: [配置]
+      operationId: importConfig
+      summary: 导入配置(merge 或 overwrite)
+      description: |
+        请求体是 ConfigExportBundle(export 的产物)。
+        **两阶段事务化**:
+        - 阶段一:6 段 + secrets 绑进同一 WithTx 事务(commit 成功后才改内存 cfg + env)
+        - 阶段二(仅 overwrite):清 glossary/templates/cookies
+        overwrite 的 WebDAV/ASRS3 tombstone:清了 secrets 但 bundle 无对应 env → managed=true。
+      parameters:
+        - name: strategy
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [merge, overwrite]
+            default: merge
+          description: "merge=合并(已存在的不覆盖);overwrite=全覆盖(清 glossary/templates/cookies)"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/config-sections.yaml#/ConfigExportBundle'
+      responses:
+        '200':
+          description: 导入结果
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/ConfigImportResult'
+        '400':
+          description: strategy 非法,或 version 非 "1",或段内字段非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '500':
+          description: 持久化失败(事务回滚,内存 cfg 与 env 不变)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'

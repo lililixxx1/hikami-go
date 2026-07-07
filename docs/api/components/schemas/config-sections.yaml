@@ -1,0 +1,685 @@
+# 配置域 schema(6 组 config Request/Response + export/import + recap models)
+#
+# 真相源:
+#   internal/handler/server.go publishConfigResponse(:1966) / recapConfigResponse(:2535)
+#     / dashscopeConfigResponse(:2364) / asrS3ConfigResponse(:2171)
+#     / webDAVConfigResponse(:2749) / archiveConfigResponse(:2894)
+#   各 updateXxxConfig 的 input struct(全 *T 指针 = patch 语义)
+#   internal/handler/config_export.go ConfigExportBundle(:34) / importResult(:110)
+#
+# 关键约定:
+#   1. **patch 语义**:6 组 config 的 Request schema 全字段指针(presence-aware),
+#      **所有字段都不进 required**(传哪个改哪个,未传保持原值)。
+#      传了但值非法 → 400(用 minLength/enum 约束合法性)。
+#   2. **密钥只写**:GET 响应永不返回明文密钥,只有 *_set boolean。
+#      api_key/password/access_key_secret 只出现在 Request。
+#   3. **clear_key/clear_secret/clear_password**:显式清空密钥的专用 bool 字段。
+
+# ───── Publish ─────
+PublishConfigResponse:
+  type: object
+  required:
+    - enabled
+    - mode
+    - category_id
+    - list_id
+    - private_pub
+    - summary_len
+    - original
+    - aigc
+    - timer_pub_time
+    - cover_url
+    - auto_cover
+    - topics
+    - topic_id
+    - topic_name
+    - close_comment
+    - up_choose_comment
+  properties:
+    enabled:
+      type: boolean
+    mode:
+      type: string
+      enum: [draft, publish]
+    category_id:
+      type: integer
+    list_id:
+      type: integer
+    private_pub:
+      type: integer
+      enum: [1, 2]
+    summary_len:
+      type: integer
+      minimum: 0
+    original:
+      type: integer
+      enum: [0, 1]
+    aigc:
+      type: integer
+      enum: [0, 1]
+    timer_pub_time:
+      type: integer
+      format: int64
+      description: 定时发布时间戳(秒)。校验:必须在 now+7200 到 now+7*86400 之间(传 >0 时)
+    cover_url:
+      type: string
+    auto_cover:
+      type: boolean
+    topics:
+      type: string
+    topic_id:
+      type: integer
+    topic_name:
+      type: string
+    close_comment:
+      type: integer
+      enum: [0, 1]
+    up_choose_comment:
+      type: integer
+      enum: [0, 1]
+
+PublishConfigRequest:
+  type: object
+  description: |
+    全字段可选(patch 语义)。传了但值非法 → 400。
+    例:mode 传了必须是 draft/publish;但可以完全不传(保持原值)。
+  properties:
+    enabled:
+      type: boolean
+    mode:
+      type: string
+      enum: [draft, publish, ""]
+      description: 空串允许(等价不设)
+    category_id:
+      type: integer
+    list_id:
+      type: integer
+    private_pub:
+      type: integer
+      enum: [1, 2]
+    summary_len:
+      type: integer
+      minimum: 0
+    original:
+      type: integer
+      enum: [0, 1]
+    aigc:
+      type: integer
+      enum: [0, 1]
+    timer_pub_time:
+      type: integer
+      format: int64
+      description: ">0 时校验区间(now+7200 ~ now+7*86400)"
+    cover_url:
+      type: string
+    auto_cover:
+      type: boolean
+    topics:
+      type: string
+    topic_id:
+      type: integer
+    topic_name:
+      type: string
+    close_comment:
+      type: integer
+      enum: [0, 1]
+    up_choose_comment:
+      type: integer
+      enum: [0, 1]
+
+# ───── Recap AI ─────
+RecapConfigResponse:
+  type: object
+  description: |
+    回顾 AI 配置响应。provider/base_url/model/api_key_env 经 Effective* 兜底
+    (空值回落 DeepSeek 默认),保证前端表单始终显示有效值。
+    api_key 永不返回明文,只返回 api_key_set。
+  required:
+    - enabled
+    - provider
+    - api_key_env
+    - api_key_set
+    - base_url
+    - model
+    - max_tokens
+    - max_continuations
+    - timeout_seconds
+    - include_speaker_info
+  properties:
+    enabled:
+      type: boolean
+    provider:
+      type: string
+      description: 实际生效 provider(走 EffectiveProvider,空回落 deepseek)
+    api_key_env:
+      type: string
+      description: 实际生效的 key env 名(走 EffectiveAPIKeyEnv)
+    api_key_set:
+      type: boolean
+      description: api key 是否已设(只读,永不返回明文)
+    base_url:
+      type: string
+      description: 实际生效的 base URL(走 EffectiveBaseURL)
+    model:
+      type: string
+      description: 实际生效的模型(走 EffectiveModel)
+    max_tokens:
+      type: integer
+      minimum: 0
+    max_continuations:
+      type: integer
+      minimum: 0
+    timeout_seconds:
+      type: integer
+      minimum: 0
+    include_speaker_info:
+      type: boolean
+
+RecapConfigRequest:
+  type: object
+  description: |
+    全字段可选(patch 语义)。密钥三态:
+    - 不传 api_key 也不传 clear_key → 保持原值
+    - 传 api_key="xxx" → 设置新值
+    - 传 clear_key=true → 显式清空
+  properties:
+    enabled:
+      type: boolean
+    provider:
+      type: string
+      enum: [openai_compatible, anthropic, claude_cli, codex_cli, local, ""]
+      description: 空串允许(走兜底)。provider 白名单见 validRecapProviders
+    api_key_env:
+      type: string
+      description: 自定义 env 名(校验 ^[A-Z_][A-Z0-9_]*$)
+    api_key:
+      type: string
+      description: "**仅写入**。明文 api key(走 secrets.Set)"
+    clear_key:
+      type: boolean
+      description: 显式清空已设的 api key
+    base_url:
+      type: string
+    model:
+      type: string
+    max_tokens:
+      type: integer
+      minimum: 0
+    max_continuations:
+      type: integer
+      minimum: 0
+    timeout_seconds:
+      type: integer
+      minimum: 0
+    include_speaker_info:
+      type: boolean
+
+RecapModelOption:
+  type: object
+  description: 推荐回顾模型快捷选项(前端下拉填充)
+  required: [value, label, group]
+  properties:
+    value:
+      type: string
+      example: deepseek-v4-pro
+    label:
+      type: string
+      example: deepseek-v4-pro(默认)
+    group:
+      type: string
+      example: DeepSeek
+
+# ───── DashScope ─────
+DashScopeConfigResponse:
+  type: object
+  description: |
+    DashScope(语音转写)配置响应。
+    api_key_env 经 EffectiveAPIKeyEnv 兜底;api_key 永不返回明文。
+  required:
+    - api_key_env
+    - api_key_set
+    - asr_url
+    - tasks_url
+    - model
+    - language
+    - diarization_enabled
+    - speaker_count
+    - vocabulary_id
+  properties:
+    api_key_env:
+      type: string
+    api_key_set:
+      type: boolean
+    asr_url:
+      type: string
+      description: ASR 提交 URL(空走官方默认)
+    tasks_url:
+      type: string
+      description: 任务查询 URL(空走官方默认)
+    model:
+      type: string
+    language:
+      type: string
+    diarization_enabled:
+      type: boolean
+    speaker_count:
+      type: integer
+      minimum: 0
+    vocabulary_id:
+      type: string
+
+DashScopeConfigRequest:
+  type: object
+  description: |
+    全字段可选。asr_url/tasks_url 传了必须是合法 http(s) url + host。
+    密钥三态同 RecapConfigRequest。
+  properties:
+    api_key_env:
+      type: string
+    api_key:
+      type: string
+      description: "**仅写入**。明文 api key"
+    clear_key:
+      type: boolean
+    asr_url:
+      type: string
+      description: 校验合法 http(s) url + host
+    tasks_url:
+      type: string
+    model:
+      type: string
+    language:
+      type: string
+    diarization_enabled:
+      type: boolean
+    speaker_count:
+      type: integer
+      minimum: 0
+    vocabulary_id:
+      type: string
+
+# ───── ASR S3(对象存储)─────
+ASRS3ConfigResponse:
+  type: object
+  description: |
+    ASR S3 配置响应。
+    access_key_env 经 EffectiveAccessKeyEnv 兜底;access_key_secret 永不返回明文。
+    access_key_set 基于 EffectiveAccessKey()(managed 时不回落 yaml 明文)。
+  required:
+    - endpoint
+    - bucket
+    - access_key_id
+    - access_key_env
+    - region
+    - public_url_prefix
+    - use_path_style
+    - access_key_set
+  properties:
+    endpoint:
+      type: string
+      description: S3 endpoint(空=未配置,走其他后端)
+    bucket:
+      type: string
+    access_key_id:
+      type: string
+    access_key_env:
+      type: string
+    region:
+      type: string
+    public_url_prefix:
+      type: string
+    use_path_style:
+      type: boolean
+    access_key_set:
+      type: boolean
+
+ASRS3ConfigRequest:
+  type: object
+  description: |
+    全字段可选。endpoint 传了必须是合法 http(s) url + host,禁含 .. 和反斜杠。
+    密钥三态:access_key_secret / clear_secret。
+  properties:
+    endpoint:
+      type: string
+    bucket:
+      type: string
+    access_key_id:
+      type: string
+    access_key_secret:
+      type: string
+      description: "**仅写入**。明文 access key secret"
+    access_key_env:
+      type: string
+    region:
+      type: string
+    public_url_prefix:
+      type: string
+    use_path_style:
+      type: boolean
+    clear_secret:
+      type: boolean
+
+# ───── WebDAV ─────
+WebDAVConfigResponse:
+  type: object
+  description: |
+    WebDAV 配置响应。
+    password_env 经 EffectivePasswordEnv 兜底;password 永不返回明文。
+    password_set 基于 EffectivePassword()(managed 时不回落 yaml 明文)。
+  required:
+    - url
+    - username
+    - base_path
+    - remote
+    - password_env
+    - password_set
+  properties:
+    url:
+      type: string
+    username:
+      type: string
+    base_path:
+      type: string
+    remote:
+      type: string
+      description: rclone remote 名(rclone 模式用)
+    password_env:
+      type: string
+    password_set:
+      type: boolean
+
+WebDAVConfigRequest:
+  type: object
+  description: |
+    全字段可选。url 传了必须合法;base_path/remote 有格式校验。
+    密钥三态:password / clear_password。
+  properties:
+    url:
+      type: string
+    username:
+      type: string
+    password:
+      type: string
+      description: "**仅写入**。明文 password"
+    password_env:
+      type: string
+    base_path:
+      type: string
+    remote:
+      type: string
+    clear_password:
+      type: boolean
+
+# ───── Archive ─────
+ArchiveConfigResponse:
+  type: object
+  required: [auto_after_publish, cleanup_policy]
+  properties:
+    auto_after_publish:
+      type: boolean
+      description: 发布后自动归档
+    cleanup_policy:
+      type: string
+      enum: [none, temp, generated, all]
+      description: 归档后本地清理策略
+
+ArchiveConfigRequest:
+  type: object
+  description: 全字段可选。
+  properties:
+    auto_after_publish:
+      type: boolean
+    cleanup_policy:
+      type: string
+      enum: [none, temp, generated, all]
+
+# ───── Export / Import ─────
+ConfigExportBundle:
+  type: object
+  description: |
+    GET /api/config/export 响应 + POST /api/config/import 请求体。
+    全局配置 6 段(指针 + omitempty,缺席=备份不含该段)+ secrets + channels +
+    glossary + templates + bili_accounts。
+  required: [version, exported_at, secrets, channels, glossary, templates, bili_accounts]
+  properties:
+    version:
+      type: string
+      example: "1"
+      description: 导出格式版本(目前恒 "1")
+    exported_at:
+      type: string
+      format: date-time
+      description: 导出时间(UTC RFC3339)
+    recap_ai:
+      $ref: 'config-sections.yaml#/ExportRecapAI'
+    publish:
+      $ref: 'config-sections.yaml#/ExportPublish'
+    webdav:
+      $ref: 'config-sections.yaml#/ExportWebDAV'
+    asr_s3:
+      $ref: 'config-sections.yaml#/ExportASRS3'
+    dashscope:
+      $ref: 'config-sections.yaml#/ExportDashScope'
+    archive:
+      $ref: 'config-sections.yaml#/ExportArchive'
+    secrets:
+      type: object
+      additionalProperties:
+        type: string
+      description: |
+        明文密钥 map(env名 → 值)。
+        ⚠️ 导出**包含明文密钥**,仅用于备份/迁移,不要外传。
+    channels:
+      type: array
+      items:
+        $ref: 'channel.yaml#/UpsertChannelInput'
+    glossary:
+      $ref: 'config-sections.yaml#/GlossaryExportSection'
+    templates:
+      $ref: 'config-sections.yaml#/TemplateExportSection'
+    bili_accounts:
+      type: array
+      items:
+        type: object
+        properties:
+          uid:
+            type: integer
+            format: int64
+          nickname:
+            type: string
+          is_default_download:
+            type: boolean
+          is_default_publish:
+            type: boolean
+
+# 6 段导出投影(剔密钥明文)。字段与各 Response 一致但去掉 *_set。
+ExportRecapAI:
+  type: object
+  description: 回顾 AI 段导出(指针,缺席=备份不含)
+  nullable: true
+  properties:
+    enabled:
+      type: boolean
+    provider:
+      type: string
+    api_key_env:
+      type: string
+    base_url:
+      type: string
+    model:
+      type: string
+    max_tokens:
+      type: integer
+    max_continuations:
+      type: integer
+    timeout_seconds:
+      type: integer
+    include_speaker_info:
+      type: boolean
+
+ExportPublish:
+  type: object
+  nullable: true
+  properties:
+    enabled:
+      type: boolean
+    mode:
+      type: string
+    category_id:
+      type: integer
+    list_id:
+      type: integer
+    private_pub:
+      type: integer
+    summary_len:
+      type: integer
+    original:
+      type: integer
+    aigc:
+      type: integer
+    timer_pub_time:
+      type: integer
+      format: int64
+    cover_url:
+      type: string
+    auto_cover:
+      type: boolean
+    topics:
+      type: string
+    topic_id:
+      type: integer
+    topic_name:
+      type: string
+    close_comment:
+      type: integer
+    up_choose_comment:
+      type: integer
+
+ExportWebDAV:
+  type: object
+  nullable: true
+  description: WebDAV 导出投影(剔 Password 明文,密钥随 Secrets 段)
+  properties:
+    remote:
+      type: string
+    base_path:
+      type: string
+    url:
+      type: string
+    username:
+      type: string
+    password_env:
+      type: string
+
+ExportASRS3:
+  type: object
+  nullable: true
+  description: ASR S3 导出投影(剔 AccessKeySecret 明文)
+  properties:
+    endpoint:
+      type: string
+    bucket:
+      type: string
+    access_key_id:
+      type: string
+    access_key_env:
+      type: string
+    region:
+      type: string
+    public_url_prefix:
+      type: string
+    use_path_style:
+      type: boolean
+
+ExportDashScope:
+  type: object
+  nullable: true
+  properties:
+    api_key_env:
+      type: string
+    asr_url:
+      type: string
+    tasks_url:
+      type: string
+    model:
+      type: string
+    language:
+      type: string
+    diarization_enabled:
+      type: boolean
+    speaker_count:
+      type: integer
+    vocabulary_id:
+      type: string
+
+ExportArchive:
+  type: object
+  nullable: true
+  properties:
+    auto_after_publish:
+      type: boolean
+    cleanup_policy:
+      type: string
+
+GlossaryExportSection:
+  type: object
+  properties:
+    global:
+      type: object
+      nullable: true
+      description: 全局术语导出(GlossaryExport 结构,见 glossary.yaml)
+    channels:
+      type: object
+      additionalProperties: true
+      description: channelID → 术语导出 map
+
+TemplateExportSection:
+  type: object
+  properties:
+    global:
+      type: object
+      nullable: true
+      description: 全局模板导出(TemplateExport 结构)
+    channels:
+      type: object
+      additionalProperties: true
+      description: channelID → 模板导出 map
+
+ConfigImportResult:
+  type: object
+  description: POST /api/config/import 响应
+  required: [imported, strategy, details]
+  properties:
+    imported:
+      type: boolean
+      description: 是否导入成功(几乎恒为 true;失败走错误响应)
+    strategy:
+      type: string
+      enum: [merge, overwrite]
+    warnings:
+      type: array
+      items:
+        type: string
+      description: 警告列表(omitempty,如某段跳过)
+    details:
+      type: object
+      required:
+        - secrets_count
+        - channels_count
+        - glossary_count
+        - templates_count
+        - bili_accounts_count
+        - config_sections_count
+      properties:
+        secrets_count:
+          type: integer
+        channels_count:
+          type: integer
+        glossary_count:
+          type: integer
+        templates_count:
+          type: integer
+        bili_accounts_count:
+          type: integer
+        config_sections_count:
+          type: integer
