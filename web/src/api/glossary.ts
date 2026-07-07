@@ -1,5 +1,5 @@
 import { get, post, put, del } from './client'
-import type { GlossaryEntry, GlossaryNote } from './types'
+import type { GlossaryEntry, GlossaryNote, GlossaryCandidate } from './types'
 
 // Global glossary
 
@@ -99,4 +99,19 @@ export function batchToggleChannelEntries(channelId: string, ids: number[], enab
 
 export function toggleChannelEntry(channelId: string, id: number, enabled: boolean): Promise<void> {
   return post(`/api/channels/${encodeURIComponent(channelId)}/glossary/entries/${id}/toggle`, { enabled })
+}
+
+// ---------- Glossary candidates (V10 候选审批,Phase 5 Task 5.3) ----------
+
+export function listGlobalCandidates(status?: 'pending' | 'approved' | 'rejected' | 'all'): Promise<{ items: GlossaryCandidate[] }> {
+  return get('/api/glossary/candidates', status ? { status } : undefined)
+}
+
+export function approveGlobalCandidate(cid: number, term?: string): Promise<GlossaryCandidate> {
+  // term 可选覆盖候选原值;不传则后端用候选原值。请求体全可选(容 EOF)。
+  return post(`/api/glossary/candidates/${cid}/approve`, term ? { term } : {})
+}
+
+export function rejectGlobalCandidate(cid: number): Promise<GlossaryCandidate> {
+  return post(`/api/glossary/candidates/${cid}/reject`, {})
 }
