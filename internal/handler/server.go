@@ -1089,7 +1089,12 @@ func (s *Server) downloadSessionByURL(ctx *gin.Context) {
 }
 
 func (s *Server) listSessions(ctx *gin.Context) {
-	sessions, err := s.sessions.List(ctx.Request.Context())
+	f := session.ListFilter{
+		ChannelID: ctx.Query("channel_id"),
+		Source:    ctx.Query("source"),
+		Search:    ctx.Query("search"),
+	}
+	sessions, err := s.sessions.ListWithFilter(ctx.Request.Context(), f)
 	if err != nil {
 		writeError(ctx, err)
 		return

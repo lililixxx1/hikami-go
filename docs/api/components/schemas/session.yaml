@@ -74,6 +74,12 @@ Session:
     publish_target:
       type: string
       description: 发布目标(omitempty,如 opus id)
+    channel_name:
+      type: string
+      description: |
+        主播显示名(由 List JOIN channels 填充)。
+        omitempty。Get/GetBySource 不填(空字符串);List 返回 COALESCE(c.name,'')。
+        孤儿 session(channel 已删)为空字符串。
     created_at:
       type: string
     updated_at:

@@ -270,6 +270,86 @@ func TestStartLiveRecordRouteRejectsDuplicateActiveSession(t *testing.T) {
 	}
 }
 
+func TestListSessionsFilter(t *testing.T) {
+	server := newTestServer(t)
+	ctx := context.Background()
+
+	// Seed 2 channels.
+	for _, ch := range []channel.UpsertInput{
+		{ID: "chan_a", Name: "alice", UID: 1001, LiveRoomID: 100, Enabled: true},
+		{ID: "chan_b", Name: "bob", UID: 1002, LiveRoomID: 200, Enabled: true},
+	} {
+		if _, err := server.channels.Create(ctx, ch); err != nil {
+			t.Fatalf("create channel %s: %v", ch.ID, err)
+		}
+	}
+
+	// chan_a: one live_record "abc live", one download "xyz dl".
+	if _, err := server.sessions.CreateLive(ctx, session.CreateLiveInput{
+		ChannelID: "chan_a",
+		Title:     "abc live",
+		RoomID:    100,
+		StartedAt: time.Date(2026, 7, 7, 10, 0, 0, 0, time.Local),
+	}); err != nil {
+		t.Fatalf("create live chan_a: %v", err)
+	}
+	if _, _, err := server.sessions.CreateDownload(ctx, session.CreateDownloadInput{
+		ChannelID: "chan_a",
+		SourceID:  "xyz_dl",
+		Title:     "xyz dl",
+		SourceURL: "https://example.com/xyz",
+		StartedAt: time.Date(2026, 7, 7, 11, 0, 0, 0, time.Local),
+	}); err != nil {
+		t.Fatalf("create download chan_a: %v", err)
+	}
+	// chan_b: one live_record "abc live 2".
+	if _, err := server.sessions.CreateLive(ctx, session.CreateLiveInput{
+		ChannelID: "chan_b",
+		Title:     "abc live 2",
+		RoomID:    200,
+		StartedAt: time.Date(2026, 7, 7, 12, 0, 0, 0, time.Local),
+	}); err != nil {
+		t.Fatalf("create live chan_b: %v", err)
+	}
+
+	cases := []struct {
+		name    string
+		query   string
+		wantLen int
+	}{
+		{"no filter", "", 3},
+		{"channel_id chan_a", "?channel_id=chan_a", 2},
+		{"source live_record", "?source=live_record", 2},
+		{"search abc", "?search=abc", 2},
+		{"channel_id+source download", "?channel_id=chan_a&source=download", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := "/api/sessions" + tc.query
+			resp := performRequest(server, http.MethodGet, path, "")
+			if resp.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", resp.Code, resp.Body.String())
+			}
+			var got struct {
+				Items []struct {
+					ChannelName string `json:"channel_name"`
+					Title       string `json:"title"`
+				} `json:"items"`
+			}
+			if err := json.Unmarshal(resp.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode: %v, body=%s", err, resp.Body.String())
+			}
+			if len(got.Items) != tc.wantLen {
+				t.Fatalf("len(items) = %d, want %d (body=%s)", len(got.Items), tc.wantLen, resp.Body.String())
+			}
+			// channel_name must still flow through with the filter applied.
+			if len(got.Items) > 0 && got.Items[0].ChannelName == "" {
+				t.Fatalf("items[0].ChannelName empty, expected channel join (body=%s)", resp.Body.String())
+			}
+		})
+	}
+}
+
 func TestRuntimeHealthIncludesASRDetails(t *testing.T) {
 	server := newTestServer(t)
 	server.runtimeStatus = &runtime.Status{

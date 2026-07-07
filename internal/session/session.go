@@ -48,6 +48,7 @@ type Session struct {
 	PublishTarget  string `json:"publish_target,omitempty"`
 	CreatedAt      string `json:"created_at"`
 	UpdatedAt      string `json:"updated_at"`
+	ChannelName    string `json:"channel_name,omitempty"`
 }
 
 type CreateLiveInput struct {
@@ -223,7 +224,51 @@ func (s *Store) CreateImport(ctx context.Context, input CreateImportInput) (Sess
 }
 
 func (s *Store) List(ctx context.Context) ([]Session, error) {
-	rows, err := s.db.QueryContext(ctx, listSQL)
+	return s.ListWithFilter(ctx, ListFilter{})
+}
+
+// ListFilter controls server-side filtering of ListWithFilter.
+// Empty fields mean "do not filter on this dimension".
+type ListFilter struct {
+	ChannelID string // exact match on s.channel_id
+	Source    string // exact match on s.source_type (live_record/download/import)
+	Search    string // LIKE %x% against s.title, s.source_id, s.id (case-insensitive)
+}
+
+// ListWithFilter lists sessions joined with their channel name, optionally
+// narrowed by the given filter. With an empty filter it is equivalent to List.
+func (s *Store) ListWithFilter(ctx context.Context, f ListFilter) ([]Session, error) {
+	var where strings.Builder
+	var args []any
+	if f.ChannelID != "" {
+		where.WriteString("s.channel_id = ?")
+		args = append(args, f.ChannelID)
+	}
+	if f.Source != "" {
+		if where.Len() > 0 {
+			where.WriteString(" AND ")
+		}
+		where.WriteString("s.source_type = ?")
+		args = append(args, f.Source)
+	}
+	if f.Search != "" {
+		if where.Len() > 0 {
+			where.WriteString(" AND ")
+		}
+		// SQLite LIKE is case-insensitive for ASCII by default; Chinese has no
+		// case so LIKE is sufficient for keyword search across title/source_id/id.
+		where.WriteString("(s.title LIKE ? OR s.source_id LIKE ? OR s.id LIKE ?)")
+		pattern := "%" + f.Search + "%"
+		args = append(args, pattern, pattern, pattern)
+	}
+
+	query := listWithChannelBaseSQL
+	if where.Len() > 0 {
+		query += " WHERE " + where.String()
+	}
+	query += " ORDER BY s.created_at DESC, s.id DESC"
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -231,7 +276,7 @@ func (s *Store) List(ctx context.Context) ([]Session, error) {
 
 	var sessions []Session
 	for rows.Next() {
-		session, err := scanSession(rows)
+		session, err := scanSessionWithChannel(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -247,7 +292,7 @@ func (s *Store) List(ctx context.Context) ([]Session, error) {
 }
 
 func (s *Store) Get(ctx context.Context, id string) (Session, error) {
-	session, err := scanSession(s.db.QueryRowContext(ctx, getSQL, id))
+	session, err := scanSessionCore(s.db.QueryRowContext(ctx, getSQL, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrNotFound
 	}
@@ -255,7 +300,7 @@ func (s *Store) Get(ctx context.Context, id string) (Session, error) {
 }
 
 func (s *Store) GetBySource(ctx context.Context, channelID string, sourceType string, sourceID string) (Session, error) {
-	session, err := scanSession(s.db.QueryRowContext(ctx, getBySourceSQL, channelID, sourceType, sourceID))
+	session, err := scanSessionCore(s.db.QueryRowContext(ctx, getBySourceSQL, channelID, sourceType, sourceID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrNotFound
 	}
@@ -338,7 +383,7 @@ func (s *Store) SetArchivedAt(ctx context.Context, sessionID string, archivedAt 
 
 func (s *Store) ActiveLiveForChannel(ctx context.Context, channelID string) (Session, bool, error) {
 	row := s.db.QueryRowContext(ctx, activeLiveSQL, channelID, state.StatusRecording, state.StatusDiscovered, state.StatusDownloading, state.StatusImporting)
-	session, err := scanSession(row)
+	session, err := scanSessionCore(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, false, nil
 	}
@@ -355,7 +400,7 @@ func (s *Store) FindLiveSessionByTimeWindow(ctx context.Context, channelID strin
 	windowSecs := int64(window.Seconds())
 	startedAtEpoch := startedAt.Unix()
 	row := s.db.QueryRowContext(ctx, findLiveByTimeWindowSQL, channelID, startedAtEpoch, windowSecs, startedAtEpoch)
-	session, err := scanSession(row)
+	session, err := scanSessionCore(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrNotFound
 	}
@@ -369,7 +414,7 @@ func (s *Store) FindDownloadByTimeWindow(ctx context.Context, channelID string, 
 	windowSecs := int64(window.Seconds())
 	startedAtEpoch := startedAt.Unix()
 	row := s.db.QueryRowContext(ctx, findDownloadByTimeWindowSQL, channelID, startedAtEpoch, windowSecs, startedAtEpoch)
-	session, err := scanSession(row)
+	session, err := scanSessionCore(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, ErrNotFound
 	}
@@ -380,7 +425,7 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
-func scanSession(row scanner) (Session, error) {
+func scanSessionCore(row scanner) (Session, error) {
 	var session Session
 	var startedAt sql.NullString
 	var endedAt sql.NullString
@@ -395,6 +440,52 @@ func scanSession(row scanner) (Session, error) {
 		&session.ID,
 		&session.Slug,
 		&session.ChannelID,
+		&session.SourceType,
+		&session.SourceID,
+		&session.Title,
+		&startedAt,
+		&endedAt,
+		&session.SourceURL,
+		&session.Status,
+		&currentTaskID,
+		&lastError,
+		&localAvailable,
+		&uploadedAt,
+		&publishedAt,
+		&archivedAt,
+		&publishTarget,
+		&session.CreatedAt,
+		&session.UpdatedAt,
+	)
+	session.StartedAt = startedAt.String
+	session.EndedAt = endedAt.String
+	session.CurrentTaskID = currentTaskID.String
+	session.LastError = lastError.String
+	session.LocalAvailable = localAvailable != 0
+	session.UploadedAt = uploadedAt.String
+	session.PublishedAt = publishedAt.String
+	session.ArchivedAt = archivedAt.String
+	session.PublishTarget = publishTarget.String
+	return session, err
+}
+
+func scanSessionWithChannel(row scanner) (Session, error) {
+	var session Session
+	var startedAt sql.NullString
+	var endedAt sql.NullString
+	var currentTaskID sql.NullString
+	var lastError sql.NullString
+	var uploadedAt sql.NullString
+	var publishedAt sql.NullString
+	var archivedAt sql.NullString
+	var publishTarget sql.NullString
+	var localAvailable int
+	// channel_name is inserted right after channel_id (19 columns total).
+	err := row.Scan(
+		&session.ID,
+		&session.Slug,
+		&session.ChannelID,
+		&session.ChannelName,
 		&session.SourceType,
 		&session.SourceID,
 		&session.Title,
@@ -466,7 +557,37 @@ const selectColumns = `
 `
 
 const getSQL = `SELECT ` + selectColumns + ` FROM sessions WHERE id = ?`
-const listSQL = `SELECT ` + selectColumns + ` FROM sessions ORDER BY created_at DESC, id DESC`
+
+// listWithChannelBaseSQL is the SELECT column list + FROM/JOIN shared by every
+// list-style query that needs channel_name. Callers append an optional WHERE
+// clause and the ORDER BY tail. Keeping the column list in one place avoids the
+// two copies drifting when a column is added.
+const listWithChannelBaseSQL = `SELECT
+		s.id,
+		s.slug,
+		s.channel_id,
+		COALESCE(c.name, '') AS channel_name,
+		s.source_type,
+		s.source_id,
+		s.title,
+		s.started_at,
+		s.ended_at,
+		s.source_url,
+		s.status,
+		s.current_task_id,
+		s.last_error,
+		s.local_available,
+		s.uploaded_at,
+		s.published_at,
+		s.archived_at,
+		s.publish_target,
+		s.created_at,
+		s.updated_at
+	FROM sessions s
+	LEFT JOIN channels c ON s.channel_id = c.id`
+
+const listWithChannelSQL = listWithChannelBaseSQL + `
+	ORDER BY s.created_at DESC, s.id DESC`
 const getBySourceSQL = `SELECT ` + selectColumns + ` FROM sessions WHERE channel_id = ? AND source_type = ? AND source_id = ?`
 const activeLiveSQL = `SELECT ` + selectColumns + `
 FROM sessions

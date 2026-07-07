@@ -177,7 +177,7 @@ func TestCreateBypassFailStateRoundTrip(t *testing.T) {
 		t.Fatalf("created task BypassFailState = false, want true")
 	}
 
-	// 回读验证（经 Get 走 scanTask）
+	// 回读验证（经 Get 走 scanTaskCore）
 	got, err := store.Get(ctx, bypassTask.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
@@ -224,4 +224,50 @@ func newTaskTestStore(t *testing.T) *Store {
 		t.Fatalf("seed channel: %v", err)
 	}
 	return NewStore(database)
+}
+
+// TestListReturnsChannelName 验证 Store.List 通过 LEFT JOIN channels 返回 channel_name。
+func TestListReturnsChannelName(t *testing.T) {
+	store := newTaskTestStore(t)
+	ctx := context.Background()
+
+	// 额外插入一个带中文名 + live_room_id 的频道，匹配 Task 0.1 的 session JOIN 用例风格。
+	if _, err := store.db.Exec(`INSERT INTO channels (id, name, uid, live_room_id) VALUES ('huoxisi', '火西肆', 1401928, 924973)`); err != nil {
+		t.Fatalf("seed channel huoxisi: %v", err)
+	}
+	if _, err := store.db.Exec(`
+		INSERT INTO sessions(id, slug, channel_id, source_type, source_id, title, status)
+		VALUES ('session_hxs', 'session_hxs', 'huoxisi', 'live_record', 'live-924973', 'Live', 'media_ready')
+	`); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+
+	task, err := store.Create(ctx, CreateInput{
+		ChannelID: "huoxisi",
+		SessionID: "session_hxs",
+		Type:      "asr",
+		Payload:   "{}",
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	tasks, err := store.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+
+	var found *Task
+	for i := range tasks {
+		if tasks[i].ID == task.ID {
+			found = &tasks[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("created task %s not in List result (len=%d)", task.ID, len(tasks))
+	}
+	if found.ChannelName != "火西肆" {
+		t.Fatalf("ChannelName = %q, want %q", found.ChannelName, "火西肆")
+	}
 }

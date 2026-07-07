@@ -64,6 +64,12 @@ Task:
       description: |
         失败时不降级 session 主状态(仅写 last_error)。
         omitempty。用于"重新生成回顾"等非推进型任务(published/recap_done 下重跑 recap 失败不打回)。
+    channel_name:
+      type: string
+      description: |
+        主播显示名(由 List JOIN channels 填充)。
+        omitempty。Get/ListRunning/ListPending 不填(空字符串);List 返回 COALESCE(c.name,'')。
+        孤儿 task(channel 已删)为空字符串。
 
 TasksListResponse:
   type: object
