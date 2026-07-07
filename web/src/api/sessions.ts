@@ -19,8 +19,15 @@ export function executeDiscoverSessions(items: DiscoverPickItem[]): Promise<List
   return post('/api/sessions/discover/execute', { items })
 }
 
-export function listSessions(): Promise<ListResponse<Session>> {
-  return get('/api/sessions')
+// 可选过滤参数(channel_id/source/search),Phase 0 后端已支持。
+// 不传或传空对象时退化为无参 GET /api/sessions(旧调用 listSessions() 仍工作)。
+export function listSessions(params?: {
+  channel_id?: string
+  source?: string
+  search?: string
+}): Promise<ListResponse<Session>> {
+  const query = params && Object.keys(params).length ? (params as Record<string, unknown>) : undefined
+  return get('/api/sessions', query)
 }
 
 export function getSessionDetail(sid: string): Promise<SessionDetail> {
