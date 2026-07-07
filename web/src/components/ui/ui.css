@@ -173,6 +173,19 @@
 }
 @media (max-width: 640px) { .dialog { width: calc(100vw - 32px) !important; } }
 
+/* ===== HProgress ===== */
+.progress-bar {
+  height: 6px; background: var(--surface); border-radius: var(--radius-full);
+  overflow: hidden; min-width: 80px;
+}
+.progress-bar-fill {
+  height: 100%; background: var(--accent); border-radius: var(--radius-full);
+  transition: width 0.3s;
+}
+.progress-bar-fill.success { background: var(--success); }
+.progress-bar-fill.failed { background: var(--danger); }
+
+
 
 
 
