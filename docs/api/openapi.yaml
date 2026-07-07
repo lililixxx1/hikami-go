@@ -99,6 +99,33 @@ components:
         type: integer
         format: int64
       description: 候选词 ID
+  responses:
+    CapabilityUnavailable:
+      description: |
+        能力守卫失败:对应 Capability 不可用。
+        响应 `{error: "<cap> capability unavailable", reason: "<原因汇总>"}`。
+      content:
+        application/json:
+          schema:
+            $ref: 'components/schemas/common.yaml#/Error'
+    Unauthorized:
+      description: 未授权(admin token 缺失或错误)
+      content:
+        application/json:
+          schema:
+            $ref: 'components/schemas/common.yaml#/Error'
+    NotFound:
+      description: 资源不存在
+      content:
+        application/json:
+          schema:
+            $ref: 'components/schemas/common.yaml#/Error'
+    BadRequest:
+      description: 请求体非法或必填字段缺失
+      content:
+        application/json:
+          schema:
+            $ref: 'components/schemas/common.yaml#/Error'
 tags:
   - name: 系统
     description: healthz / runtime 状态 / onboarding
@@ -441,3 +468,736 @@ paths:
                 $ref: 'components/schemas/common.yaml#/Error'
         '401':
           $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  # ───────── 场次域(T3)─────────
+  /api/sessions:
+    get:
+      tags: [场次]
+      operationId: listSessions
+      summary: 列出全部场次
+      description: "返回全部场次(无分页)。响应 {items: [Session]}。"
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+          description: 按状态过滤(可选,未传则返回全部)
+      responses:
+        '200':
+          description: 场次列表
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/session.yaml#/SessionsListResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/sessions/{sid}:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    get:
+      tags: [场次]
+      operationId: getSession
+      summary: 获取场次详情
+      description: "返回 session + 关联文件列表。响应 {session, files}。"
+      responses:
+        '200':
+          description: 场次详情
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/session.yaml#/SessionDetailResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+    delete:
+      tags: [场次]
+      operationId: deleteSession
+      summary: 删除场次
+      description: |
+        删除场次及其关联任务(`DeleteBySession`),并从 sessions 表删除。
+        **成功返回 204 No Content**(无响应体)。
+      responses:
+        '204':
+          description: 已删除(无响应体)
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/sessions/failed:
+    delete:
+      tags: [场次]
+      operationId: deleteFailedSessions
+      summary: 删除所有失败场次
+      description: |
+        先删除失败场次关联的所有任务(不限状态),再删除 sessions。
+        返回 `{deleted: N}`。
+      responses:
+        '200':
+          description: 已删除的失败场次数
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/DeletedCountResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/sessions/download:
+    post:
+      tags: [场次]
+      operationId: downloadSession
+      summary: 下载已发现的回放场次
+      description: |
+        对已 discover 出的 download 场次入队下载任务。
+        返回 202 + Task(下载任务)。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/session.yaml#/DownloadSessionRequest'
+      responses:
+        '202':
+          description: 下载任务已入队
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '400':
+          description: session_id 缺失
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/sessions/download-by-url:
+    post:
+      tags: [场次]
+      operationId: downloadSessionByURL
+      summary: 按 URL 创建下载场次
+      description: |
+        接收视频链接(B 站 BV 号等)+ 主播 ID,创建 download 场次并入队。
+        **前置能力守卫**:Capabilities.ReplayDownload 不可用 → 409 + reason。
+        返回 202 + Task。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/session.yaml#/DownloadByURLRequest'
+      responses:
+        '202':
+          description: 下载任务已入队
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '400':
+          description: channel_id 或 url 缺失
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '409':
+          $ref: '#/components/responses/CapabilityUnavailable'
+
+  /api/sessions/import:
+    post:
+      tags: [场次]
+      operationId: importSession
+      summary: 导入本地媒体文件
+      description: |
+        **multipart/form-data**(非 JSON)。
+        创建 import 场次并入队 normalize 任务。
+        media_file 必填;channel_id + title 必填;started_at/ended_at 可选(RFC3339);
+        danmaku_file 可选;source_url 可选。
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [media_file, channel_id, title]
+              properties:
+                media_file:
+                  type: string
+                  format: binary
+                  description: 媒体文件(必填)
+                channel_id:
+                  type: string
+                  description: 归属主播 ID(必填)
+                title:
+                  type: string
+                  description: 场次标题(必填)
+                started_at:
+                  type: string
+                  description: 开播时间(可选,RFC3339)
+                ended_at:
+                  type: string
+                  description: 结束时间(可选,RFC3339)
+                source_url:
+                  type: string
+                  description: 源 URL(可选)
+                danmaku_file:
+                  type: string
+                  format: binary
+                  description: 弹幕文件(可选)
+      responses:
+        '202':
+          description: normalize 任务已入队
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '400':
+          description: media_file 缺失,或 channel_id/title 缺失,或时间格式非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/sessions/discover:
+    post:
+      tags: [场次]
+      operationId: discoverSessions
+      summary: 发现所有频道的新回放(一步式)
+      description: |
+        遍历所有启用且配了 ReplaySourceURL 的主播,跑 yt-dlp 列出回放,
+        **直接建 download 场次 + 入队下载**(一步式)。
+        返回 202 + `{items: [DiscoverResult]}`。
+      responses:
+        '202':
+          description: 发现完成,已建场次和入队
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: 'components/schemas/discover.yaml#/DiscoverResult'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/sessions/discover/preview:
+    post:
+      tags: [场次]
+      operationId: discoverPreviewAll
+      summary: 预览所有频道的新回放(两步式 · 第一步)
+      description: |
+        遍历所有频道预览回放(**不建场次、不入队**)。
+        每条 Result 带 `exists` 标记(是否已建过 download 场次),前端据此标记「已处理」。
+        复用 DiscoverChannel 的 discover_limit 语义(按频道 limit 截断新项)。
+        返回 200 + `{items: [DiscoverResult]}`。
+      responses:
+        '200':
+          description: 预览结果(未建场次)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: 'components/schemas/discover.yaml#/DiscoverResult'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/sessions/discover/execute:
+    post:
+      tags: [场次]
+      operationId: discoverExecute
+      summary: 执行勾选的回放下载(两步式 · 第二步)
+      description: |
+        按前端勾选的 entry 列表建 download 场次 + 入队下载任务。
+        **不重跑 yt-dlp**——复用预览阶段已拿到的 entry 信息。
+        返回 202 + `{items: [DiscoverResult]}`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/discover.yaml#/DiscoverExecuteRequest'
+      responses:
+        '202':
+          description: 已按勾选项建场次入队
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: 'components/schemas/discover.yaml#/DiscoverResult'
+        '400':
+          description: 请求体非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/sessions/{sid}/asr/submit:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    post:
+      tags: [场次]
+      operationId: submitASR
+      summary: 提交 ASR 转写任务
+      description: |
+        为场次创建 ASR 转写任务。
+        **能力守卫**:Capabilities.ASRSubmit 不可用 → 409 + reason。
+        返回 202 + Task。
+      responses:
+        '202':
+          description: ASR 任务已入队
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: |
+            能力不可用(ASR)或场次状态不允许(recap.ErrSessionNotReady /
+            recap.ErrTranscriptMissing 等会映射为 409)。
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/sessions/{sid}/recap/generate:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    post:
+      tags: [场次]
+      operationId: generateRecap
+      summary: 生成整场回顾
+      description: |
+        为场次创建回顾生成任务。
+        **双层守卫**:
+        1. 能力守卫:Capabilities.RecapGenerate 不可用 → 409 + reason(能力原因)
+        2. 业务守卫:recap.ErrSessionNotReady / ErrTranscriptMissing / ErrRecapUnavailable
+           → 409 + reason(业务原因)
+        返回 202 + Task。
+      responses:
+        '202':
+          description: 回顾任务已入队
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 能力守卫(RecapGenerate)或业务守卫(场次未就绪/转写缺失)失败
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/sessions/{sid}/recap/regenerate:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    post:
+      tags: [场次]
+      operationId: regenerateRecap
+      summary: 重新生成回顾(覆盖本地 md,不碰 B站)
+      description: |
+        重新生成整场回顾(覆盖本地 md,不碰 B 站专栏)。
+        仅 recap_done/published 状态允许。
+        任务带 **BypassFailState=true**:失败时仅写 last_error,**不降级** published/recap_done 主状态。
+        **双层守卫**同 generateRecap(能力 + 业务)。
+        返回 202 + Task。
+      responses:
+        '202':
+          description: 重新生成任务已入队
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 能力守卫或业务守卫失败
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/sessions/{sid}/recap-partial:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    post:
+      tags: [场次]
+      operationId: generateRecapPartial
+      summary: 按时间区间生成回顾(局部)
+      description: |
+        按 [start_time, end_time] 区间生成回顾(秒)。
+        **双层守卫**同 generateRecap。返回 202 + Task。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/session.yaml#/RecapPartialRequest'
+      responses:
+        '202':
+          description: 局部回顾任务已入队
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '400':
+          description: 时间区间非法(end_time 必须 > start_time,均 ≥0)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 能力守卫或业务守卫失败
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/sessions/{sid}/recap-with-range:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    post:
+      tags: [场次]
+      operationId: generateRecapWithRange
+      summary: 按时间区间生成回顾(recap-with-range 别名)
+      description: |
+        与 recap-partial 完全相同(内部 `s.generateRecapPartial(ctx)` 转发)。
+        保留两个路径是为了前端兼容。请求体/响应/守卫完全一致。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/session.yaml#/RecapPartialRequest'
+      responses:
+        '202':
+          description: 局部回顾任务已入队
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '400':
+          description: 时间区间非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 能力守卫或业务守卫失败
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/sessions/{sid}/recap:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    get:
+      tags: [场次]
+      operationId: getRecapContent
+      summary: 获取回顾内容
+      description: |
+        读取场次生成的回顾 markdown / prompt / raw_response / suggested_terms。
+        `available=false` 时其余字段为空串。
+      responses:
+        '200':
+          description: 回顾内容
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/session.yaml#/RecapContent'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/sessions/{sid}/recap/content:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    put:
+      tags: [场次]
+      operationId: updateRecapContent
+      summary: 手动编辑回顾内容
+      description: |
+        覆盖本地回顾 markdown 文件。
+        前置:`sess.LocalAvailable` 必须为 true(本地文件存在),否则
+        recap.ErrTranscriptMissing → 409。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/session.yaml#/UpdateRecapContentRequest'
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/session.yaml#/MessageResponse'
+        '400':
+          description: content 为空或请求体非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 本地文件已移除(需先 fetch)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/sessions/{sid}/upload:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    post:
+      tags: [场次]
+      operationId: uploadSession
+      summary: 上传场次到 WebDAV
+      description: |
+        创建 WebDAV 上传任务。
+        **能力守卫**:Capabilities.WebDAVUpload 不可用 → 409 + reason。
+        返回 202 + Task。
+      responses:
+        '202':
+          description: 上传任务已入队
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 能力不可用(WebDAVUpload)或场次状态不允许
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/sessions/{sid}/fetch:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    post:
+      tags: [场次]
+      operationId: fetchSession
+      summary: 从 WebDAV 拉取场次文件到本地
+      description: |
+        把已归档到 WebDAV 的场次文件拉回本地(LocalAvailable → true)。
+        **能力守卫**:Capabilities.WebDAVUpload 不可用 → 409 + reason。
+        返回 202 + `{session: Session}`(注意:此端点不返回 Task)。
+      responses:
+        '202':
+          description: 已拉取
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session]
+                properties:
+                  session:
+                    $ref: 'components/schemas/session.yaml#/Session'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 能力不可用或归档文件缺失
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/sessions/{sid}/publish:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    post:
+      tags: [场次]
+      operationId: publishSession
+      summary: 发布场次到 B 站专栏
+      description: |
+        创建发布任务。
+        **能力守卫**:Capabilities.PublishOpus 不可用 → 409 + reason。
+        业务错误:CookieMissing/Expired → 409/403;ContentRejected → 422;
+        RateLimited → 429;BilibiliAPI → 502。
+        返回 202 + Task。
+      responses:
+        '202':
+          description: 发布任务已入队
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 能力不可用或场次/cookie 状态不允许
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/sessions/{sid}/archive:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    post:
+      tags: [场次]
+      operationId: archiveSession
+      summary: 手动归档已发布场次到 WebDAV
+      description: |
+        自动归档失败时的手动重试入口。
+        **能力守卫**:Capabilities.WebDAVUpload 不可用 → 409 + reason(归档与上传同一 WebDAV 后端)。
+        返回 202 + Task。
+      responses:
+        '202':
+          description: 归档任务已入队
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/task.yaml#/Task'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 能力不可用或场次状态不允许归档
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/sessions/{sid}/glossary/discover:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    post:
+      tags: [场次]
+      operationId: discoverSessionGlossary
+      summary: 发现场次术语候选
+      description: |
+        读取场次 transcript,跑术语发现器生成候选词(异步,不返回候选列表)。
+        前置:LocalAvailable + transcript.txt 存在,否则 recap.ErrTranscriptMissing → 409。
+        返回 `{ok: true}`。
+      responses:
+        '200':
+          description: 发现已触发
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/OkResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 本地文件已移除或 transcript 缺失
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '503':
+          description: 术语发现器未配置(glossaryDiscoverer == nil)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'

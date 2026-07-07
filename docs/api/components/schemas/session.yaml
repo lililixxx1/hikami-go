@@ -1,0 +1,192 @@
+# 场次域 schema
+# 真相源:internal/session/session.go:31 Session(全字段)
+#         internal/discover/discover.go:81 Result / :97 ExecuteItem
+
+Session:
+  type: object
+  description: |
+    场次(直播/回放/导入)实体。对应 `session.Session` struct。
+    时间字段统一本地时区 RFC3339(见 AGENTS.md 时区约定)。
+  required:
+    - id
+    - slug
+    - channel_id
+    - source_type
+    - source_id
+    - title
+    - source_url
+    - status
+    - local_available
+    - created_at
+    - updated_at
+  properties:
+    id:
+      type: string
+      description: 场次 ID(如 `<channel>_live_<时间>` / `<channel>_download_<sourceid>`)
+    slug:
+      type: string
+      description: 文件系统 slug(如 `live_20260704_090739`)
+    channel_id:
+      type: string
+    source_type:
+      type: string
+      enum: [live, download, import]
+      description: 场次来源类型
+    source_id:
+      type: string
+      description: 源标识(live 用 room-time;download 用 BV 号;import 自定义)
+    title:
+      type: string
+    started_at:
+      type: string
+      description: 开播时间(omitempty,未开播缺席)
+    ended_at:
+      type: string
+      description: 下播时间(omitempty)
+    source_url:
+      type: string
+      description: 源 URL(直播流/回放页/导入的 source_url)
+    status:
+      type: string
+      description: |
+        场次状态。常见值:recording/discovered/downloading/downloaded/importing/imported/
+        normalizing/normalized/asr_queued/transcribing/transcribed/recap_pending/recap_done/
+        uploading/uploaded/publishing/published/archived/failed/cancelled。
+        完整状态机见 internal/state。
+    current_task_id:
+      type: string
+      description: 当前任务 ID(omitempty,空闲时缺席)
+    last_error:
+      type: string
+      description: 最近一次错误(omitempty,无错时缺席)
+    local_available:
+      type: boolean
+      description: 本地文件是否可用(归档清理后为 false,需 fetch)
+    uploaded_at:
+      type: string
+      description: 上传时间(omitempty)
+    published_at:
+      type: string
+      description: 发布时间(omitempty)
+    archived_at:
+      type: string
+      description: 归档时间(omitempty)
+    publish_target:
+      type: string
+      description: 发布目标(omitempty,如 opus id)
+    created_at:
+      type: string
+    updated_at:
+      type: string
+
+SessionFile:
+  type: object
+  description: 场次关联文件(listSessionFiles 输出)
+  properties:
+    path:
+      type: string
+      description: 相对 output_root 的路径
+    size:
+      type: integer
+      format: int64
+      description: 字节数
+
+SessionDetailResponse:
+  type: object
+  description: GET /api/sessions/{sid} 响应
+  required: [session, files]
+  properties:
+    session:
+      $ref: 'session.yaml#/Session'
+    files:
+      type: array
+      items:
+        $ref: 'session.yaml#/SessionFile'
+
+SessionsListResponse:
+  type: object
+  required: [items]
+  properties:
+    items:
+      type: array
+      items:
+        $ref: 'session.yaml#/Session'
+
+DownloadSessionRequest:
+  type: object
+  required: [session_id]
+  properties:
+    session_id:
+      type: string
+      description: 已 discover 出的 download 场次 ID
+
+DownloadByURLRequest:
+  type: object
+  required: [channel_id, url]
+  properties:
+    channel_id:
+      type: string
+      description: 归属主播 ID
+    url:
+      type: string
+      description: 视频 URL(如 B 站 BV 号)
+
+# 回顾内容(GET /api/sessions/{sid}/recap)
+RecapContent:
+  type: object
+  description: |
+    GET /api/sessions/{sid}/recap 响应。
+    available=false 时其余字段为空串。
+  required: [available, markdown, prompt, raw_response]
+  properties:
+    available:
+      type: boolean
+      description: 回顾 markdown 是否已生成
+    markdown:
+      type: string
+      description: 回顾 markdown 正文(未生成时为空串)
+    prompt:
+      type: string
+      description: 生成回顾用的 prompt(未生成时为空串)
+    raw_response:
+      type: string
+      description: AI 原始响应 JSON 字符串(未生成时为空串)
+    suggested_terms:
+      type: array
+      items:
+        type: string
+      description: 建议术语列表(omitempty,仅当 suggested_terms.json 存在时出现)
+
+# 局部回顾请求(recap-partial / recap-with-range 共用)
+RecapPartialRequest:
+  type: object
+  description: |
+    按时间区间生成回顾。POST /api/sessions/{sid}/recap-partial
+    和 POST /api/sessions/{sid}/recap-with-range 共用同一 handler。
+  required: [start_time, end_time]
+  properties:
+    start_time:
+      type: number
+      format: double
+      description: 起始秒(≥0)
+    end_time:
+      type: number
+      format: double
+      description: 结束秒(必须 > start_time)
+
+# 更新回顾 markdown(PUT /api/sessions/{sid}/recap/content)
+UpdateRecapContentRequest:
+  type: object
+  required: [content]
+  properties:
+    content:
+      type: string
+      description: 新的回顾 markdown 内容(空串→400)
+
+MessageResponse:
+  type: object
+  required: [message]
+  properties:
+    message:
+      type: string
+      description: 操作结果消息(如 "回顾内容已更新")
