@@ -1,5 +1,5 @@
 // web/src/components/ui/message.ts
-// 轻量 toast 消息队列 + HMessage API(V10 自建,已移除 element-plus)。
+// 轻量 toast 消息队列 + HMessage API(V10 自建,已彻底移除第三方 UI 框架)。
 // 由 HToast.vue 挂载消费;HMessage.* 在任意处命令式调用即可入队。
 import { ref } from 'vue'
 

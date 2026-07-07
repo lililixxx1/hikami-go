@@ -1,5 +1,5 @@
 // web/src/components/ui/HConfirm.ts
-// 轻量确认/提示/输入对话框(V10 自建,已移除 element-plus)。
+// 轻量确认/提示/输入对话框(V10 自建,已彻底移除第三方 UI 框架)。
 // 用法:
 //   - HConfirm(message, opts): Promise<boolean>  true=确认 false=取消
 //     替代 ElMessageBox.confirm(msg, title, {...}).then(confirm).catch(cancel)

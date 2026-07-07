@@ -29,7 +29,7 @@
 | 需要注意·Cookie 过期告警 | cookie 告警 | GET /api/health/runtime.cookie_warnings | ✅ | channel_name/days_left/is_expired 一致 |
 | 最近回顾卡 | 最近场次 | GET /api/sessions | ✅ | 前端按 published_at 排序截断 |
 | 回顾卡 pill 状态 | 场次状态中文 | GET /api/sessions.status | 📝 | 后端英文枚举,**前端做中文映射表** |
-| 回顾卡·主播名 | 主播显示名 | GET /api/sessions(仅 channel_id) | 📝 | **Session 无 channel_name 字段**,见下方"核心缺口" |
+| 回顾卡·主播名 | 主播显示名 | GET /api/sessions(仅 channel_id) | ✅ | Phase 0 后端已 join channel_name(原 📝 核心缺口已解决) |
 | 运行中任务表 | 运行中任务 | GET /api/tasks | ✅ | type/channel_id/progress 一致 |
 | 任务取消按钮 | 取消任务 | POST /api/tasks/{id}/cancel | ✅ | — |
 | 统计·本月录制场次 | 当月场次 | GET /api/stats/dashboard.sessions_by_month | 📝 | overview.total_sessions 是全量;**用 dashboard.sessions_by_month 取最近月** |
@@ -56,7 +56,7 @@
 | 回顾模板 textarea | 主播级模板 | GET/PUT /api/channels/{id}/recap-template | 📝 | 模板是结构化(system_prompt/user_format/...),textarea 简化了模型 |
 | 下载账号绑定 | download_account_id | GET /api/cookie-accounts + PUT /api/channels/{id} | ✅ | 详情面板缺绑定下拉,需补 UI |
 | 复制配置按钮 | 跨频道复制 | POST /api/channels/{id}/copy-config | ❌ | **模板无此按钮**,后端已实现,建议加 |
-| 最近场次列表(详情面板) | 按频道的场次 | GET /api/sessions?channel_id= | ❌ | **listSessions 不支持 channel_id 过滤**,见下方"核心缺口" |
+| 最近场次列表(详情面板) | 按频道的场次 | GET /api/sessions?channel_id= | ✅ | Phase 0 后端已支持 channel_id 过滤(原 ❌ 核心缺口已解决) |
 | 高级配置(码率/分片/回顾长度) | 频道级编码参数 | 无 | ❌ | Channel schema 无这些字段,**移除 UI 或扩展 schema** |
 
 ## 页 3:回顾(page-reviews)
@@ -139,8 +139,8 @@
 
 | 缺口 | 影响页 | 优先级 | 建议 |
 |---|---|---|---|
-| **Session/Task 无 channel_name 字段** | 首页/回顾 | **P0** | list 响应 join 返回 channel_name,或前端维护 channel 映射表(避免 N 次请求) |
-| **listSessions 不支持 channel_id/source/search 过滤** | 回顾/主播 | P1 | 后端补查询参数 |
+| **Session/Task 无 channel_name 字段** | 首页/回顾 | **P0 ✅ 已解决(Phase 0)** | list 响应 join 返回 channel_name,或前端维护 channel 映射表(避免 N 次请求) |
+| **listSessions 不支持 channel_id/source/search 过滤** | 回顾/主播 | P1 ✅ 已解决(Phase 0) | 后端补查询参数 |
 | **DashboardChannel 无"总时长"字段** | 首页排名 | P2 | 后端补 duration_hours 或砍模板列 |
 | **导出回顾 Markdown 端点** | 回顾抽屉 | P2 | 前端用 GET recap 内容自行下载(无需后端) |
 | **回顾片段预览端点** | 回顾抽屉 | P3 | 砍模板元素(语义与 recap-partial 重复) |
@@ -182,8 +182,8 @@
 V10 模板与后端 API **整体契合度高**:6 组配置表单、频道/场次/任务 CRUD、QR 登录、术语/模板管理、统计 Dashboard 等核心功能端点齐全。
 
 **前端重写的关键阻塞点**(P0/P1):
-1. **Session/Task 需补 channel_name**(否则首页/回顾页每张卡都要二次查频道列表)
-2. **listSessions 需支持 channel_id/source/search 过滤**(否则回顾页筛选无法实现)
+1. ~~**Session/Task 需补 channel_name**~~ ✅ **已解决(Phase 0)**:后端 list 响应已 join 返回 channel_name。
+2. ~~**listSessions 需支持 channel_id/source/search 过滤**~~ ✅ **已解决(Phase 0)**:后端已补查询参数。
 3. **WebSocket 必须接入**(模板完全缺失,进度刷新依赖它)
 
 其余差异均为前端映射工作(英文枚举→中文、字段计算)或可选启用(多余端点),不阻塞重写。
