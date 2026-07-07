@@ -1,6 +1,7 @@
 import './styles/design-tokens.css'
 import './styles/base.css'
 import './styles/ep-theme-bridge.css'
+import './components/ui/ui.css'
 
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
