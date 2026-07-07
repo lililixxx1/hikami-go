@@ -7,18 +7,19 @@ import { useChannelsStore } from '@/stores/channels'
 import { useRuntimeStore } from '@/stores/runtime'
 import { useTasksStore } from '@/stores/tasks'
 import { useExpertMode } from '@/composables/useExpertMode'
-import { useDiscoverReplay } from '@/composables/useDiscoverReplay'
 import { statusGroupMap } from '@/utils/friendlyStatus'
 import {
   decideRetry,
   type PrimaryAction,
   type PrimaryActionName,
 } from '@/features/recaps/sessionActions'
-import RecapToolbar from '@/features/recaps/components/RecapToolbar.vue'
-import SessionFilters from '@/features/recaps/components/SessionFilters.vue'
-import SessionTable from '@/features/recaps/components/SessionTable.vue'
-import RecapDrawer from '@/features/recaps/components/RecapDrawer.vue'
-import DiscoverResultDrawer from '@/components/session/DiscoverResultDrawer.vue'
+// V10 组件(Phase 4):替代旧 EP 版 RecapToolbar/SessionFilters/SessionTable/RecapDrawer/DiscoverResultDrawer。
+import RecapToolbarV10 from '@/features/recaps/components/RecapToolbarV10.vue'
+import SessionFiltersV10 from '@/features/recaps/components/SessionFiltersV10.vue'
+import SessionTableV10 from '@/features/recaps/components/SessionTableV10.vue'
+import RecapDrawerV10 from '@/features/recaps/components/RecapDrawerV10.vue'
+import DiscoverPreviewDrawer from '@/features/recaps/components/DiscoverPreviewDrawer.vue'
+// EP 抽屉(Phase 6 才迁移):导入 + 下载仍是 el-drawer 实现。
 import ImportSessionDrawer from '@/components/session/ImportSessionDrawer.vue'
 import DownloadByURLDrawer from '@/components/session/DownloadByURLDrawer.vue'
 import {
@@ -30,11 +31,30 @@ import {
   submitASR,
   uploadSession,
   getRecapContent,
+  // 发现回放两步式:预览 / 执行 / 一键全下(壳编排,DiscoverPreviewDrawer 仅展示)。
+  previewDiscoverSessions,
+  executeDiscoverSessions,
+  discoverSessions,
+  deleteFailedSessions,
 } from '@/api/sessions'
-import { deleteFailedSessions } from '@/api/sessions'
 import { retryTask } from '@/api/tasks'
 import { upsertChannelEntry } from '@/api/glossary'
-import type { RecapContent, Session, Task } from '@/api/types'
+// V10 组件 + DiscoverPreviewDrawer 消费 generated 派生类型(optional 字段);stores/API/状态机仍消费
+// 旧手写 types.ts(全必填)。两者 TS 层不完全兼容(Phase 6 统一迁移),在 view 边界用 as unknown as 窄化,
+// 与已迁移的 HomeView/StreamersView 一致;状态机调用边界窄化转换与 V10 组件内部一致(见组件头注释)。
+import type {
+  Capabilities as DerivedCapabilities,
+  Channel as DerivedChannel,
+  DiscoverResult as DerivedDiscoverResult,
+  DiscoverPickItem as DerivedDiscoverPickItem,
+  RecapContent as DerivedRecapContent,
+  Session as DerivedSession,
+} from '@/api/types-derived'
+import type {
+  DiscoverPickItem,
+  Session,
+  Task,
+} from '@/api/types'
 
 const router = useRouter()
 const route = useRoute()
@@ -44,7 +64,7 @@ const runtimeStore = useRuntimeStore()
 const tasksStore = useTasksStore()
 const { isExpert } = useExpertMode()
 
-// ---------- 过滤状态(传给 SessionFilters) ----------
+// ---------- 过滤状态(传给 SessionFiltersV10) ----------
 const keyword = ref('')
 const statusFilter = ref<'all' | 'processing' | 'recap' | 'published' | 'failed'>('all')
 const channelFilter = ref('')
@@ -57,34 +77,50 @@ const activeTab = ref<RecapTab>('live')
 // ---------- 工具栏相关 ----------
 const importDrawerVisible = ref(false)
 const downloadDrawerVisible = ref(false)
-const { drawerVisible: discoverDrawerVisible, openDiscover, onExecuted: onDiscoverExecuted } = useDiscoverReplay()
+
+// ---------- 发现回放两步式(壳编排;DiscoverPreviewDrawer 仅展示 items/executing) ----------
+const discoverDrawerVisible = ref(false)
+const discoverItems = ref<DerivedDiscoverResult[]>([])
+const discoverExecuting = ref(false)
 
 // ---------- 动作 loading ----------
 const actionLoadingId = ref('')
 
 // ---------- 抽屉相关 ----------
+// selectedSession/recapContent 喂给 RecapDrawerV10(派生类型);API 调用边界窄化为 loose。
 const recapDrawerVisible = ref(false)
-const selectedSession = ref<Session | null>(null)
-const recapContent = ref<RecapContent | null>(null)
+const selectedSession = ref<DerivedSession | null>(null)
+const recapContent = ref<DerivedRecapContent | null>(null)
 const recapLoading = ref(false)
 const addingSuggestedTerm = ref('')
 const partialLoading = ref(false)
 // 抽屉内术语「已添加」标记:API 成功后才写入(避免失败时按钮误显示已添加)
 const addedSuggestedTerms = ref<Set<string>>(new Set())
 
-const capabilities = computed(() => runtimeStore.status?.capabilities ?? null)
+// capabilities 传给 V10 组件(消费派生类型),从 store 窄化转换。
+const capabilities = computed<DerivedCapabilities | null>(
+  () => (runtimeStore.status?.capabilities as unknown as DerivedCapabilities) ?? null,
+)
 
-// ---------- 过滤 + 分页(壳持有,SessionTable 用 v-model 双向) ----------
+// channels 传给 V10 组件(消费派生类型)。
+const channels = computed<DerivedChannel[]>(() => channelsStore.items as unknown as DerivedChannel[])
+
+// 失败场次数(RecapToolbarV10 清空失败徽标用)
+const failedCount = computed(
+  () => sessionsStore.items.filter((s) => s.status === 'failed').length,
+)
+
+// ---------- 过滤 + 分页(壳持有,SessionTableV10 用 v-model 双向) ----------
 const currentPage = ref(1)
 const pageSize = ref(20)
 
-const filteredSessions = computed(() => {
+const filteredSessions = computed<DerivedSession[]>(() => {
   const q = keyword.value.trim().toLowerCase()
   const statuses = statusFilter.value !== 'all' ? (statusGroupMap[statusFilter.value] ?? []) : []
   // 子 tab 按 source_type 过滤:录播=live_record;回放=download+import
   const isReplayTab = activeTab.value === 'replay'
 
-  return sessionsStore.items
+  return (sessionsStore.items as unknown as DerivedSession[])
     .filter((s) => {
       const isReplay = REPLAY_TYPES.includes(s.source_type)
       if (isReplayTab !== isReplay) return false
@@ -105,8 +141,7 @@ const pagedSessions = computed(() => {
 watch([keyword, statusFilter, channelFilter, activeTab], () => { currentPage.value = 1 })
 
 // ---------- query 消费 ----------
-// 切换子 tab 时同步 ?tab query。注意:el-tabs 的 v-model 会先于 tab-change 更新 activeTab,
-// 故此处不做 activeTab 判断,只负责把 URL 补齐(刷新/分享链接落到正确 tab)。
+// RecapToolbarV10 自管 tab 栏,点击 tab 通过 update:activeTab 回传;壳负责同步 ?tab query。
 function changeTab(tab: RecapTab) {
   activeTab.value = tab
   const query = { ...route.query, tab }
@@ -163,29 +198,33 @@ watch(
 )
 
 // ---------- 辅助 ----------
-function matchesKeyword(s: Session, q: string): boolean {
-  return [s.title, s.id, s.slug, s.source_id].some((v) => v.toLowerCase().includes(q))
+function matchesKeyword(s: DerivedSession, q: string): boolean {
+  return [s.title ?? '', s.id, s.slug ?? '', s.source_id ?? ''].some((v) =>
+    v.toLowerCase().includes(q),
+  )
 }
 
-function ts(v: string): number {
+function ts(v: string | undefined): number {
   const t = new Date(v || '').getTime()
   return Number.isNaN(t) ? 0 : t
 }
 
-// 当前 session 关联的任务(供 retry 二次校验读取 task 状态)
-function sessionTask(s: Session): Task | null {
-  return tasksStore.items.find((t) => t.id === s.current_task_id) ?? null
+// 当前 session 关联的任务(供 retry 二次校验读取 task 状态)。tasksStore 仍是旧类型,窄化为 loose。
+function sessionTask(s: DerivedSession): Task | null {
+  const tid = s.current_task_id ?? ''
+  if (!tid) return null
+  return tasksStore.items.find((t) => t.id === tid) ?? null
 }
 
 // ---------- 抽屉:打开/复制 ----------
-async function openRecap(s: Session) {
+async function openRecap(s: DerivedSession) {
   selectedSession.value = s
   recapDrawerVisible.value = true
   recapContent.value = null
   addedSuggestedTerms.value = new Set()
   recapLoading.value = true
   try {
-    recapContent.value = await getRecapContent(s.id)
+    recapContent.value = (await getRecapContent(s.id)) as unknown as DerivedRecapContent
   } catch {
     recapContent.value = null
   } finally {
@@ -202,7 +241,8 @@ function handleCopyRecap() {
 
 // ---------- 抽屉:主动作(表B) + 部分回顾 + 术语 ----------
 // 抽屉主动作与列表行主动作一致:确认后提交(防误触)
-async function handleDrawerAction(session: Session, action: PrimaryAction) {
+// 抽屉 emit 的 session 是派生类型(V10 组件内);executeAction 只用 id,无需窄化。
+async function handleDrawerAction(session: DerivedSession, action: PrimaryAction) {
   if (action.disabled || actionLoadingId.value) return
   try {
     await ElMessageBox.confirm(action.confirmText, '操作确认', {
@@ -255,8 +295,9 @@ async function executeAction(sid: string, name: PrimaryActionName) {
   else if (name === 'publish') await publishSession(sid)
 }
 
-// ---------- 列表行动作(SessionTable emit) ----------
-async function handleRowAction(session: Session, action: PrimaryAction) {
+// ---------- 列表行动作(SessionTableV10 emit) ----------
+// SessionTableV10 emit 的 session 是派生类型;executeAction 只用 id,无需窄化。
+async function handleRowAction(session: DerivedSession, action: PrimaryAction) {
   if (action.disabled || actionLoadingId.value) return
   try {
     await ElMessageBox.confirm(action.confirmText, '操作确认', {
@@ -274,7 +315,7 @@ async function handleRowAction(session: Session, action: PrimaryAction) {
 }
 
 // 从 WebDAV 取回本场文件：上传清理策略删除本地目录后，需先取回才能发布/生成回顾。
-async function handleFetch(session: Session) {
+async function handleFetch(session: DerivedSession) {
   if (actionLoadingId.value) return
   try {
     await ElMessageBox.confirm('确定要从归档取回本场文件？', '操作确认', {
@@ -316,7 +357,7 @@ async function handleRegenerate() {
 
 // 重试失败任务(§7.1 + 吸收 codex 阶段1 建议):
 //  - 用户确认后、调 retryTask 前用 decideRetry 二次校验(防弹窗期间 WS 改了任务状态)
-async function handleRetry(session: Session) {
+async function handleRetry(session: DerivedSession) {
   if (actionLoadingId.value) return
   try {
     await ElMessageBox.confirm('确定重试该失败任务？', '操作确认', {
@@ -324,15 +365,16 @@ async function handleRetry(session: Session) {
     })
   } catch { return }
 
-  // 二次校验:弹窗期间 WS 可能已把任务推进/清理
-  if (decideRetry(session, sessionTask(session)) !== 'retryable') {
+  // 二次校验:弹窗期间 WS 可能已把任务推进/清理。decideRetry 消费 loose 类型,窄化转换。
+  if (decideRetry(session as unknown as Session, sessionTask(session)) !== 'retryable') {
     ElMessage.info('任务状态已变化，无需重试')
     return
   }
 
+  const taskId = session.current_task_id ?? ''
   actionLoadingId.value = `${session.id}:retry`
   try {
-    await retryTask(session.current_task_id)
+    await retryTask(taskId)
     ElMessage.success('重试任务已提交')
     await tasksStore.fetchTasks()
     await sessionsStore.fetchSessions()
@@ -344,6 +386,77 @@ async function handleRetry(session: Session) {
   }
 }
 
+// ---------- 发现回放(壳编排:openDiscover 拉 preview;execute/discover-all 提交) ----------
+// DiscoverPreviewDrawer 是纯展示组件,preview/execute/discover-all 的 API 调用搬到这里。
+async function openDiscover() {
+  discoverDrawerVisible.value = true
+  discoverItems.value = []
+  discoverExecuting.value = false
+  try {
+    const result = await previewDiscoverSessions()
+    discoverItems.value = result.items as unknown as DerivedDiscoverResult[]
+    const validNew = result.items.filter((i) => !i.error && !i.exists && i.channel_id && i.source_id).length
+    const errorCount = result.items.filter((i) => i.error).length
+    if (validNew > 0) {
+      ElMessage.info(`预览到 ${validNew} 条新回放，请勾选后下载`)
+    } else if (errorCount > 0) {
+      ElMessage.warning(`部分主播发现失败（${errorCount} 条错误），其余回放均已处理`)
+    } else {
+      ElMessage.info('未发现新回放（全部已处理）')
+    }
+  } catch {
+    // previewDiscoverSessions 失败由 client.ts 拦截器统一 toast;items 为空,抽屉展示空态
+  }
+}
+
+async function handleDiscoverExecute(picks: DerivedDiscoverPickItem[]) {
+  if (picks.length === 0) {
+    ElMessage.warning('请先勾选要下载的回放')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(`确定下载选中的 ${picks.length} 个回放？将自动开始下载。`, '下载确认', {
+      confirmButtonText: '下载', cancelButtonText: '取消', type: 'warning',
+    })
+  } catch { return }
+  discoverExecuting.value = true
+  try {
+    // executeDiscoverSessions 消费旧 types.ts 的 DiscoverPickItem(全必填);派生类型窄化转换。
+    const result = await executeDiscoverSessions(picks as unknown as DiscoverPickItem[])
+    const created = result.items.filter((i) => i.created && !i.error).length
+    if (created > 0) ElMessage.success(`已开始下载 ${created} 个新回放`)
+    else ElMessage.info('选中项均已处理，无新下载')
+    await onDiscoverExecuted()
+    discoverDrawerVisible.value = false
+  } finally {
+    discoverExecuting.value = false
+  }
+}
+
+async function handleDiscoverAll() {
+  try {
+    await ElMessageBox.confirm('将立即下载所有新回放（不经过勾选），确定继续？', '全部下载', {
+      confirmButtonText: '全部下载', cancelButtonText: '取消', type: 'warning',
+    })
+  } catch { return }
+  discoverExecuting.value = true
+  try {
+    const result = await discoverSessions()
+    const created = result.items.filter((i) => i.created && !i.error).length
+    if (created > 0) ElMessage.success(`已开始下载 ${created} 个新回放`)
+    else ElMessage.info('未发现新回放')
+    await onDiscoverExecuted()
+    discoverDrawerVisible.value = false
+  } finally {
+    discoverExecuting.value = false
+  }
+}
+
+// 执行/全下完成后的刷新(发现产出属回放 tab)
+async function onDiscoverExecuted() {
+  await Promise.all([sessionsStore.fetchSessions(), tasksStore.fetchTasks()])
+}
+
 // ---------- 工具栏动作 ----------
 function handleImportSubmitted() {
   sessionsStore.fetchSessions()
@@ -351,7 +464,7 @@ function handleImportSubmitted() {
 }
 
 async function handleClearFailed() {
-  const count = sessionsStore.items.filter((s) => s.status === 'failed').length
+  const count = failedCount.value
   if (count === 0) { ElMessage.info('没有失败场次'); return }
   try {
     await ElMessageBox.confirm(`确定清空 ${count} 个失败场次？`, '清空', {
@@ -376,38 +489,32 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="recaps-page">
-    <RecapToolbar
-      :discovering="false"
-      :tab="activeTab"
+  <div class="recaps-view">
+    <RecapToolbarV10
+      v-model:active-tab="activeTab"
+      :failed-count="failedCount"
       :capabilities="capabilities"
+      :action-loading="discoverExecuting"
       @discover="openDiscover"
       @import="importDrawerVisible = true"
       @download="downloadDrawerVisible = true"
       @clear-failed="handleClearFailed"
     />
 
-    <el-tabs v-model="activeTab" class="recap-tabs" @tab-change="changeTab($event as RecapTab)">
-      <el-tab-pane label="录播" name="live" />
-      <el-tab-pane label="回放" name="replay" />
-    </el-tabs>
-
-    <SessionFilters
+    <SessionFiltersV10
       v-model:keyword="keyword"
       v-model:status-filter="statusFilter"
       v-model:channel-filter="channelFilter"
-      :channels="channelsStore.items"
+      :channels="channels"
     />
 
-    <SessionTable
+    <SessionTableV10
       v-model:current-page="currentPage"
       v-model:page-size="pageSize"
       :sessions="pagedSessions"
-      :total="filteredSessions.length"
-      :loading="sessionsStore.loading"
-      :channels="channelsStore.items"
       :tasks="tasksStore.items"
       :capabilities="capabilities"
+      :channels="channels"
       :action-loading-id="actionLoadingId"
       @open-recap="openRecap"
       @run-action="handleRowAction"
@@ -415,14 +522,14 @@ onMounted(async () => {
       @retry="handleRetry"
     />
 
-    <RecapDrawer
+    <RecapDrawerV10
       v-model:visible="recapDrawerVisible"
       :session="selectedSession"
       :content="recapContent"
       :loading="recapLoading"
       :capabilities="capabilities"
       :is-expert="isExpert"
-      :channels="channelsStore.items"
+      :channels="channels"
       :action-loading-id="actionLoadingId"
       :adding-term="addingSuggestedTerm"
       :partial-loading="partialLoading"
@@ -434,9 +541,12 @@ onMounted(async () => {
       @add-term="handleAddSuggestedTerm"
     />
 
-    <DiscoverResultDrawer
+    <DiscoverPreviewDrawer
       v-model:visible="discoverDrawerVisible"
-      @executed="onDiscoverExecuted"
+      :items="discoverItems"
+      :executing="discoverExecuting"
+      @execute="handleDiscoverExecute"
+      @discover-all="handleDiscoverAll"
     />
 
     <ImportSessionDrawer
@@ -452,7 +562,7 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.recaps-page {
+.recaps-view {
   padding: 24px;
   max-width: 1200px;
   margin: 0 auto;
