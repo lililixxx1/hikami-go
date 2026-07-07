@@ -32,6 +32,73 @@ components:
       description: |
         管理员令牌。`admin_token` 为空时(loopback)中间件放行;绑非 loopback 时强制。
         兼容 `Authorization: Bearer <token>`。缺失/错误 → 401 `{error: "missing or invalid admin token"}`。
+  parameters:
+    ChannelID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: 频道 ID
+    SessionID:
+      name: sid
+      in: path
+      required: true
+      schema:
+        type: string
+      description: 场次 ID
+    TaskID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: 任务 ID
+    LiveChannelID:
+      name: channel_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: 频道 ID
+    AccountID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+      description: 账号 ID
+    QRSessionID:
+      name: session_id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: QR 登录会话 ID
+    SecretKey:
+      name: key
+      in: path
+      required: true
+      schema:
+        type: string
+      description: 密钥 env 名(限 KnownKeys 白名单)
+    GlossaryEntryID:
+      name: eid
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+      description: 词条 ID
+    GlossaryCandidateID:
+      name: cid
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+      description: 候选词 ID
 tags:
   - name: 系统
     description: healthz / runtime 状态 / onboarding
@@ -174,3 +241,203 @@ paths:
             application/json:
               schema:
                 $ref: 'components/schemas/common.yaml#/Error'
+
+  # ───────── 频道域(T2)─────────
+  /api/channels:
+    get:
+      tags: [频道]
+      operationId: listChannels
+      summary: 列出所有频道
+      description: "返回全部频道(无分页)。响应 {items: [Channel]}。"
+      responses:
+        '200':
+          description: 频道列表
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/channel.yaml#/ChannelsListResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    post:
+      tags: [频道]
+      operationId: createChannel
+      summary: 创建频道
+      description: |
+        新建频道。请求体 UpsertChannelInput。
+        **注意 `auto_recap` 三态**:字段缺席=默认 false;传 true/false 显式设置。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/channel.yaml#/UpsertChannelInput'
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/channel.yaml#/Channel'
+        '400':
+          description: 请求体非法(JSON 解析失败)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/channels/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    put:
+      tags: [频道]
+      operationId: updateChannel
+      summary: 更新频道
+      description: |
+        全量更新(presence-aware:未传的字段保持原值)。
+        `auto_recap`/`download_account_id` 三态语义见 schema。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/channel.yaml#/UpsertChannelInput'
+      responses:
+        '200':
+          description: 更新后的频道
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/channel.yaml#/Channel'
+        '400':
+          description: 请求体非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    delete:
+      tags: [频道]
+      operationId: deleteChannel
+      summary: 删除频道
+      description: |
+        删除频道。若有关联场次(`channel.ErrInUse`)→ 409 + `{error, session_count}`。
+      responses:
+        '200':
+          description: "已删除(后端返回 {message: ok} 或类似)"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '409':
+          description: 频道有关联场次,不能删除
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/ErrorWithSessionCount'
+
+  /api/channels/identify:
+    post:
+      tags: [频道]
+      operationId: identifyChannel
+      summary: 识别主播(不保存)
+      description: |
+        根据 input 字符串(房间号/URL/UID)查询 B 站 API 获取频道信息,**不写库**。
+        识别失败(网络错误、B站 -352 风控等)→ 500/502。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/channel.yaml#/IdentifyInput'
+      responses:
+        '200':
+          description: 识别结果(未保存)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/channel.yaml#/IdentifyResult'
+        '400':
+          description: 请求体非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/channels/identify/save:
+    post:
+      tags: [频道]
+      operationId: saveIdentifiedChannel
+      summary: 识别并保存主播
+      description: |
+        识别后直接写库(已存在则更新,不存在则创建)。
+        created=true → **201**;created=false → **200**。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/channel.yaml#/IdentifyInput'
+      responses:
+        '200':
+          description: 已更新(created=false)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/channel.yaml#/IdentifySaveResult'
+        '201':
+          description: 已创建(created=true)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/channel.yaml#/IdentifySaveResult'
+        '400':
+          description: 请求体非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
+  /api/channels/{id}/copy-config:
+    parameters:
+      - $ref: '#/components/parameters/ChannelID'
+    post:
+      tags: [频道]
+      operationId: copyChannelConfig
+      summary: 复制频道配置到另一频道
+      description: |
+        把源频道(路径参数 `id`)的术语表/模板/发布配置/自动化/回顾模型
+        复制到目标频道(请求体 target_channel_id)。
+        target_channel_id 必填,空串→400。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/channel.yaml#/CopyConfigRequest'
+      responses:
+        '200':
+          description: 复制结果(字段按请求的 copy_* 选择性出现)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/channel.yaml#/CopyConfigResponse'
+        '400':
+          description: target_channel_id 缺失或请求体非法
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'

@@ -1,0 +1,311 @@
+# 频道域 schema
+# 真相源:internal/channel/channel.go:28 Channel(值类型)/ :63 UpsertInput(请求类型)
+#         internal/channel/identify.go:20/26/31 IdentifyInput/Result/SaveResult
+
+Channel:
+  type: object
+  description: |
+    频道(主播)实体。所有字段为值类型(string/bool/int),无 omitempty
+    (除 download_account_id 为 `*int64` + omitempty)。
+  required:
+    - id
+    - name
+    - uid
+    - live_room_id
+    - replay_source_url
+    - space_url
+    - title_prefix
+    - cookie_file
+    - download_cookie_file
+    - enabled
+    - auto_record
+    - auto_asr
+    - auto_recap
+    - record_danmaku
+    - source_mode
+    - discover_limit
+    - publish_enabled
+    - publish_mode
+    - publish_category_id
+    - publish_list_id
+    - publish_private_pub
+    - publish_original
+    - auto_publish
+    - publish_aigc
+    - publish_timer_pub_time
+    - publish_cover_url
+    - publish_topics
+    - recap_model
+    - max_continuations
+    - created_at
+    - updated_at
+  properties:
+    id:
+      type: string
+      description: 频道 ID(字符串形式的 slug)
+    name:
+      type: string
+      description: 主播名
+    uid:
+      type: integer
+      format: int64
+      description: B 站 UID
+    live_room_id:
+      type: integer
+      format: int64
+    replay_source_url:
+      type: string
+      description: 回放源 URL(回放下载模式用)
+    space_url:
+      type: string
+      description: B 站个人空间 URL
+    title_prefix:
+      type: string
+      description: 回顾标题前缀
+    cookie_file:
+      type: string
+      description: 发布 cookie 文件路径
+    download_cookie_file:
+      type: string
+      description: 下载 cookie 文件路径(历史字段,新逻辑用 download_account_id)
+    download_account_id:
+      type: integer
+      format: int64
+      description: 关联的下载账号 ID(omitempty,nil=未绑定)
+    enabled:
+      type: boolean
+      description: 频道是否启用
+    auto_record:
+      type: boolean
+      description: 自动录制
+    auto_asr:
+      type: boolean
+      description: 自动转写
+    auto_recap:
+      type: boolean
+      description: 自动生成回顾
+    record_danmaku:
+      type: boolean
+    source_mode:
+      type: string
+      description: 录制源模式
+    discover_limit:
+      type: integer
+      description: 自动发现回放的最大数
+    publish_enabled:
+      type: boolean
+    publish_mode:
+      type: string
+      description: 发布模式(draft/publish)
+    publish_category_id:
+      type: integer
+    publish_list_id:
+      type: integer
+    publish_private_pub:
+      type: integer
+    publish_original:
+      type: integer
+    auto_publish:
+      type: boolean
+      description: 录制结束后自动发布(与 auto_recap 区分)
+    publish_aigc:
+      type: integer
+    publish_timer_pub_time:
+      type: integer
+      format: int64
+      description: 定时发布时间戳(秒)
+    publish_cover_url:
+      type: string
+    publish_topics:
+      type: string
+      description: 发布话题(逗号分隔或 JSON)
+    recap_model:
+      type: string
+      description: 回顾专用模型(空则用全局)
+    max_continuations:
+      type: integer
+      description: 回顾多轮续写上限
+    created_at:
+      type: string
+      description: 创建时间(本地时区 RFC3339,见 AGENTS.md 时区约定)
+    updated_at:
+      type: string
+      description: 更新时间(本地时区 RFC3339)
+
+UpsertChannelInput:
+  type: object
+  description: |
+    创建/更新频道请求。对应 `channel.UpsertInput`。
+    注意:全字段用值类型(bool/int/string),后端用反射/SQL 处理零值;
+    唯一特殊字段:
+    - `auto_recap`:`*bool` 三态。字段**可缺席**(nil=默认 false,见 channel.go resolveAutoRecap);
+      传 true/false 显式设置。**不写 nullable**(后端是字段缺席语义)。
+    - `download_account_id`:`*int64`,字段可缺席(nil=不绑定下载账号)。**无 omitempty**(传 null 显式清空绑定)。
+  properties:
+    id:
+      type: string
+      description: 创建时一般留空,更新时由 path 提供
+    name:
+      type: string
+    uid:
+      type: integer
+      format: int64
+    live_room_id:
+      type: integer
+      format: int64
+    replay_source_url:
+      type: string
+    space_url:
+      type: string
+    title_prefix:
+      type: string
+    cookie_file:
+      type: string
+    download_cookie_file:
+      type: string
+    download_account_id:
+      type: integer
+      format: int64
+      nullable: true
+      description: |
+        绑定的下载账号 ID。无 json omitempty:
+        - 字段缺席(请求体不含此 key)= 不修改
+        - 字段值 null = 显式清空绑定
+    enabled:
+      type: boolean
+    auto_record:
+      type: boolean
+    auto_asr:
+      type: boolean
+    auto_recap:
+      type: boolean
+      description: |
+        三态(`*bool`)。字段**可缺席**:缺席=nil=默认 false(channel.go resolveAutoRecap);
+        显式传 true/false 则设置对应值。
+    record_danmaku:
+      type: boolean
+    source_mode:
+      type: string
+    discover_limit:
+      type: integer
+    publish_enabled:
+      type: boolean
+    publish_mode:
+      type: string
+    publish_category_id:
+      type: integer
+    publish_list_id:
+      type: integer
+    publish_private_pub:
+      type: integer
+    publish_original:
+      type: integer
+    auto_publish:
+      type: boolean
+    publish_aigc:
+      type: integer
+    publish_timer_pub_time:
+      type: integer
+      format: int64
+    publish_cover_url:
+      type: string
+    publish_topics:
+      type: string
+    recap_model:
+      type: string
+    max_continuations:
+      type: integer
+
+ChannelsListResponse:
+  type: object
+  required: [items]
+  properties:
+    items:
+      type: array
+      items:
+        $ref: 'channel.yaml#/Channel'
+
+IdentifyInput:
+  type: object
+  description: |
+    识别主播请求。input(房间号/URL/UID 任一)+ 可选 uid/live_room_id。
+    后端按 input 字符串智能解析。
+  properties:
+    input:
+      type: string
+      description: 输入字符串(房间号、URL、UID 等任一形式)
+    uid:
+      type: integer
+      format: int64
+    live_room_id:
+      type: integer
+      format: int64
+
+IdentifyResult:
+  type: object
+  description: 识别结果(未保存)。POST /api/channels/identify 响应。
+  required: [channel, source]
+  properties:
+    channel:
+      $ref: 'channel.yaml#/UpsertChannelInput'
+    source:
+      type: string
+      description: 识别来源(如 "room_info")
+
+IdentifySaveResult:
+  type: object
+  description: |
+    识别并保存结果。POST /api/channels/identify/save 响应。
+    created=true 时 HTTP 201;created=false(更新已存在)时 HTTP 200。
+  required: [channel, source, created]
+  properties:
+    channel:
+      $ref: 'channel.yaml#/Channel'
+    source:
+      type: string
+    created:
+      type: boolean
+      description: 是否新建(created=true→HTTP 201;false→HTTP 200 更新)
+
+CopyConfigRequest:
+  type: object
+  description: |
+    复制源频道配置到目标频道。POST /api/channels/{id}/copy-config。
+    target_channel_id 必填,其余 copy_* 控制复制哪几组配置。
+  required: [target_channel_id]
+  properties:
+    target_channel_id:
+      type: string
+      description: 目标频道 ID(必填,空串→400)
+    copy_glossary:
+      type: boolean
+      description: 复制术语表
+    copy_template:
+      type: boolean
+      description: 复制回顾模板
+    copy_publish:
+      type: boolean
+      description: 复制发布配置
+    copy_automation:
+      type: boolean
+      description: 复制自动化配置(auto_asr/auto_publish/auto_recap)
+    copy_recap:
+      type: boolean
+      description: 复制回顾模型配置(recap_model/max_continuations)
+
+CopyConfigResponse:
+  type: object
+  description: |
+    复制结果。所有字段均**可选出现**(取决于请求的 copy_* 选择):
+    - glossary_copied / template_copied(int,复制条数,仅 copy_glossary/copy_template)
+    - channel_updated(bool,仅 copy_publish/copy_automation/copy_recap 任一)
+  properties:
+    glossary_copied:
+      type: integer
+      description: 复制的术语条数(仅 copy_glossary=true 时出现)
+    template_copied:
+      type: integer
+      description: 复制的模板条数(仅 copy_template=true 时出现)
+    channel_updated:
+      type: boolean
+      description: 是否更新了目标频道(仅 copy_publish/automation/recap 时出现)
