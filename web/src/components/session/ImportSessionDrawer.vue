@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
 import type { FormInstance, UploadFile, UploadFiles } from 'element-plus'
 import { ArrowRight, Upload } from '@element-plus/icons-vue'
 import { useChannelsStore } from '@/stores/channels'
@@ -84,7 +84,7 @@ async function handleSubmit(): Promise<void> {
   }
 
   if (mediaFiles.value.length === 0) {
-    ElMessage.warning('请上传媒体文件')
+    HMessage.warning('请上传媒体文件')
     return
   }
 
@@ -105,7 +105,7 @@ async function handleSubmit(): Promise<void> {
     const task = await importSession(formData)
     submittedTask.value = task
     emit('submitted', task)
-    ElMessage.success('导入任务已提交')
+    HMessage.success('导入任务已提交')
   } finally {
     submitting.value = false
   }

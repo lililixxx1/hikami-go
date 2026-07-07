@@ -2,7 +2,7 @@
 import { ref, watch } from 'vue'
 import { identifyChannel, identifyAndSave } from '@/api/channels'
 import type { IdentifyResult } from '@/api/types'
-import { ElMessage } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
 
 const props = defineProps<{
   visible: boolean
@@ -37,7 +37,7 @@ function reset(): void {
 async function handleIdentify(): Promise<void> {
   const text = inputText.value.trim()
   if (!text) {
-    ElMessage.warning('请输入直播链接、空间链接或 UID')
+    HMessage.warning('请输入直播链接、空间链接或 UID')
     return
   }
   loading.value = true
@@ -57,7 +57,7 @@ async function handleSave(): Promise<void> {
   loading.value = true
   try {
     await identifyAndSave({ input: inputText.value.trim() })
-    ElMessage.success('主播保存成功')
+    HMessage.success('主播保存成功')
     emit('success')
   } catch {
     // error handled by API client

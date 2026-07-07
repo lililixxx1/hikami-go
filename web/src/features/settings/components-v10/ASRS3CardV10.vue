@@ -7,7 +7,7 @@
 -->
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
 import { HCard, HButton, HInput, HSwitch, HCheckbox, HPill } from '@/components/ui'
 import { getASRS3Config, updateASRS3Config } from '@/api/settings'
 import { useRuntimeStore } from '@/stores/runtime'
@@ -50,7 +50,7 @@ async function save() {
     config.value = await updateASRS3Config(payload)
     accessKeySecret.value = ''
     clearSecret.value = false
-    ElMessage.success('对象存储设置已保存')
+    HMessage.success('对象存储设置已保存')
     await runtimeStore.fetchRuntime(true)
     emit('saved')
   } finally {

@@ -8,7 +8,8 @@
  * 抽到这里集中分发,组件只调用统一入口。
  */
 import { computed, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
+import { HConfirm } from '@/components/ui/HConfirm'
 import {
   batchDeleteChannelEntries,
   batchDeleteGlobalEntries,
@@ -99,19 +100,15 @@ export function useGlossaryEntries(options: UseGlossaryEntriesOptions) {
 
   // 删(单条,带确认)
   async function deleteEntry(entry: GlossaryEntry): Promise<boolean> {
-    try {
-      await ElMessageBox.confirm(`确定要删除词条「${entry.term}」吗？`, '删除确认', {
-        confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning',
-      })
-    } catch {
-      return false
-    }
+    if (!(await HConfirm(`确定要删除词条「${entry.term}」吗？`, {
+      title: '删除确认', confirmText: '删除', cancelText: '取消', type: 'warning',
+    }))) return false
     if (scope() === 'global') {
       await deleteGlobalEntry(entry.id)
     } else {
       await deleteChannelEntry(channelId(), entry.id)
     }
-    ElMessage.success('已删除')
+    HMessage.success('已删除')
     await fetchData()
     return true
   }
@@ -127,42 +124,32 @@ export function useGlossaryEntries(options: UseGlossaryEntriesOptions) {
 
   // 批量切换(带确认)
   async function batchToggle(ids: number[], enabled: boolean): Promise<boolean> {
-    try {
-      await ElMessageBox.confirm(
-        `确定要${enabled ? '启用' : '禁用'}选中的 ${ids.length} 条词条吗？`,
-        '批量操作确认',
-        { confirmButtonText: '确认', cancelButtonText: '取消', type: 'warning' },
-      )
-    } catch {
-      return false
-    }
+    if (!(await HConfirm(
+      `确定要${enabled ? '启用' : '禁用'}选中的 ${ids.length} 条词条吗？`,
+      { title: '批量操作确认', confirmText: '确认', cancelText: '取消', type: 'warning' },
+    ))) return false
     if (scope() === 'global') {
       await batchToggleGlobalEntries(ids, enabled)
     } else {
       await batchToggleChannelEntries(channelId(), ids, enabled)
     }
-    ElMessage.success('操作成功')
+    HMessage.success('操作成功')
     await fetchData()
     return true
   }
 
   // 批量删除(带确认)
   async function batchDelete(ids: number[]): Promise<boolean> {
-    try {
-      await ElMessageBox.confirm(
-        `确定要删除选中的 ${ids.length} 条词条吗？`,
-        '批量删除确认',
-        { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
-      )
-    } catch {
-      return false
-    }
+    if (!(await HConfirm(
+      `确定要删除选中的 ${ids.length} 条词条吗？`,
+      { title: '批量删除确认', confirmText: '删除', cancelText: '取消', type: 'warning' },
+    ))) return false
     if (scope() === 'global') {
       await batchDeleteGlobalEntries(ids)
     } else {
       await batchDeleteChannelEntries(channelId(), ids)
     }
-    ElMessage.success('删除成功')
+    HMessage.success('删除成功')
     await fetchData()
     return true
   }
@@ -177,7 +164,7 @@ export function useGlossaryEntries(options: UseGlossaryEntriesOptions) {
         : type === 'markdown'
           ? await importChannelMarkdown(channelId(), content)
           : await importChannelJSON(channelId(), content)
-    ElMessage.success(`成功导入 ${result.imported} 条词条`)
+    HMessage.success(`成功导入 ${result.imported} 条词条`)
     await fetchData()
     return result.imported
   }

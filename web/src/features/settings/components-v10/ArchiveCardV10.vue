@@ -7,7 +7,7 @@
 -->
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
 import { HCard, HButton, HSwitch, HSelect, HPill } from '@/components/ui'
 import { getArchiveConfig, updateArchiveConfig } from '@/api/settings'
 import { useRuntimeStore } from '@/stores/runtime'
@@ -48,7 +48,7 @@ async function save() {
   saving.value = true
   try {
     config.value = await updateArchiveConfig(config.value)
-    ElMessage.success('归档设置已保存')
+    HMessage.success('归档设置已保存')
     await runtimeStore.fetchRuntime(true)
     emit('saved')
   } finally {

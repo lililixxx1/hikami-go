@@ -11,7 +11,8 @@
  * 保留「全部下载」按钮调旧的 discoverSessions()（一键行为，等于改版前的流程）。
  */
 import { computed, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
+import { HConfirm } from '@/components/ui/HConfirm'
 import {
   discoverSessions,
   previewDiscoverSessions,
@@ -114,11 +115,11 @@ watch(
       phase.value = 'preview'
       const errorCount = result.items.filter((i) => i.error).length
       if (validNew.length > 0) {
-        ElMessage.info(`预览到 ${validNew.length} 条新回放，请勾选后下载`)
+        HMessage.info(`预览到 ${validNew.length} 条新回放，请勾选后下载`)
       } else if (errorCount > 0) {
-        ElMessage.warning(`部分主播发现失败（${errorCount} 条错误），其余回放均已处理`)
+        HMessage.warning(`部分主播发现失败（${errorCount} 条错误），其余回放均已处理`)
       } else {
-        ElMessage.info('未发现新回放（全部已处理）')
+        HMessage.info('未发现新回放（全部已处理）')
       }
     } finally {
       // previewDiscoverSessions 失败由 client.ts 拦截器统一 toast；
@@ -141,26 +142,23 @@ async function handleExecuteSelected(): Promise<void> {
     }
   }
   if (picks.length === 0) {
-    ElMessage.warning('请先勾选要下载的回放')
+    HMessage.warning('请先勾选要下载的回放')
     return
   }
-  try {
-    await ElMessageBox.confirm(`确定下载选中的 ${picks.length} 个回放？将自动开始下载。`, '下载确认', {
-      confirmButtonText: '下载',
-      cancelButtonText: '取消',
-      type: 'warning',
-    })
-  } catch {
-    return // 用户取消
-  }
+  if (!(await HConfirm(`确定下载选中的 ${picks.length} 个回放？将自动开始下载。`, {
+    title: '下载确认',
+    confirmText: '下载',
+    cancelText: '取消',
+    type: 'warning',
+  }))) return // 用户取消
   executing.value = true
   try {
     const result = await executeDiscoverSessions(picks)
     doneItems.value = result.items
     phase.value = 'done'
     const created = result.items.filter((i) => i.created && !i.error).length
-    if (created > 0) ElMessage.success(`已开始下载 ${created} 个新回放`)
-    else ElMessage.info('选中项均已处理，无新下载')
+    if (created > 0) HMessage.success(`已开始下载 ${created} 个新回放`)
+    else HMessage.info('选中项均已处理，无新下载')
     emit('executed')
   } finally {
     executing.value = false
@@ -168,23 +166,20 @@ async function handleExecuteSelected(): Promise<void> {
 }
 
 async function handleDownloadAll(): Promise<void> {
-  try {
-    await ElMessageBox.confirm('将立即下载所有新回放（不经过勾选），确定继续？', '全部下载', {
-      confirmButtonText: '全部下载',
-      cancelButtonText: '取消',
-      type: 'warning',
-    })
-  } catch {
-    return
-  }
+  if (!(await HConfirm('将立即下载所有新回放（不经过勾选），确定继续？', {
+    title: '全部下载',
+    confirmText: '全部下载',
+    cancelText: '取消',
+    type: 'warning',
+  }))) return
   executing.value = true
   try {
     const result = await discoverSessions()
     doneItems.value = result.items
     phase.value = 'done'
     const created = result.items.filter((i) => i.created && !i.error).length
-    if (created > 0) ElMessage.success(`已开始下载 ${created} 个新回放`)
-    else ElMessage.info('未发现新回放')
+    if (created > 0) HMessage.success(`已开始下载 ${created} 个新回放`)
+    else HMessage.info('未发现新回放')
     emit('executed')
   } finally {
     executing.value = false

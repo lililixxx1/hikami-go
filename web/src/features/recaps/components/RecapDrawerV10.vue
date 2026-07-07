@@ -10,7 +10,7 @@
 import { computed, ref, watch } from 'vue'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-import { ElMessage } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
 import { HButton, HTextarea } from '@/components/ui'
 import { getFriendlySessionStatus } from '@/utils/friendlyStatus'
 import { formatDateTime } from '@/utils/format'
@@ -89,7 +89,7 @@ function handlePartial(): void {
   const start = toSeconds(rangeStart.value)
   const end = toSeconds(rangeEnd.value)
   if (start === null || end === null || end <= start) {
-    ElMessage.warning('请输入有效的开始/结束时间(HH:MM:SS)')
+    HMessage.warning('请输入有效的开始/结束时间(HH:MM:SS)')
     return
   }
   emit('partial-range', start, end)
@@ -112,7 +112,7 @@ async function saveEdit(): Promise<void> {
     // 直接调 PUT recap/content(就近复用),保存后退出编辑态。
     const { updateRecapContent } = await import('@/api/sessions')
     await updateRecapContent(props.session.id, draft.value)
-    ElMessage.success('回顾内容已保存')
+    HMessage.success('回顾内容已保存')
     editing.value = false
   } finally {
     saving.value = false

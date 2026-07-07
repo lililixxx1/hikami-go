@@ -7,8 +7,8 @@
 // EP 组件(ChannelIdentifyDialog / BiliQRCodeLoginDialog)Phase 6 统一换为 H* 实现。
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-// TODO Phase 6:替换为 H* toast/dialog。ElMessage/ElMessageBox 现仍经 ep-theme-bridge 工作,本阶段保留。
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
+import { HConfirm } from '@/components/ui/HConfirm'
 import { Plus, Search } from '@element-plus/icons-vue'
 import { useChannelsStore } from '@/stores/channels'
 import { useSessionsStore } from '@/stores/sessions'
@@ -155,14 +155,12 @@ async function onSaveCover(value: string) {
 async function onDelete() {
   const c = selectedChannel.value
   if (!c) return
-  try {
-    await ElMessageBox.confirm('确定删除该主播?相关场次数据不会被删除。', '删除主播', {
-      confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning',
-    })
-  } catch { return }
+  if (!(await HConfirm('确定删除该主播?相关场次数据不会被删除。', {
+    title: '删除主播', confirmText: '删除', cancelText: '取消', type: 'warning',
+  }))) return
   try {
     await handleDelete()
-    ElMessage.success('已删除')
+    HMessage.success('已删除')
     selectedChannelId.value = null
     await channelsStore.fetchChannels()
   } catch { /* handled */ }
@@ -183,7 +181,7 @@ watch(
       const channel = await channelsStore.getByIdAfterLoad(String(id))
       if (channel) {
         selectedChannelId.value = channel.id
-        ElMessage.info('已跳转至主播详情')
+        HMessage.info('已跳转至主播详情')
       }
     }
   },
@@ -246,7 +244,7 @@ onMounted(async () => {
       v-if="showQRDialog"
       v-model:visible="showQRDialog"
       :channel-id="qrChannelId"
-      @saved="() => { ElMessage.success('Cookie 已更新'); channelsStore.fetchChannels() }"
+      @saved="() => { HMessage.success('Cookie 已更新'); channelsStore.fetchChannels() }"
     />
   </div>
 </template>

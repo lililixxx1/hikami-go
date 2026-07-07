@@ -6,12 +6,12 @@
   - 高级参数折叠(speaker_count/asr_url/tasks_url/vocabulary_id/api_key_env/diarization_enabled)。
   - 保存 PUT → fetchRuntime(true) → emit saved。
   UI 替换:el-card→HCard, el-input→HInput, el-select→HSelect, el-switch→HSwitch,
-  el-checkbox→HCheckbox, el-button→HButton, el-tag→HPill。保留 ElMessage toast。
+  el-checkbox→HCheckbox, el-button→HButton, el-tag→HPill。toast 用 HMessage。
   L3 视觉验证,无单测。
 -->
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
 import { HCard, HButton, HInput, HSelect, HSwitch, HCheckbox, HPill } from '@/components/ui'
 import { getDashScopeConfig, updateDashScopeConfig } from '@/api/settings'
 import { useRuntimeStore } from '@/stores/runtime'
@@ -72,7 +72,7 @@ async function save() {
     config.value = await updateDashScopeConfig(payload)
     apiKey.value = ''
     clearKey.value = false
-    ElMessage.success('ASR 设置已保存')
+    HMessage.success('ASR 设置已保存')
     await runtimeStore.fetchRuntime(true)
     emit('saved')
   } finally {

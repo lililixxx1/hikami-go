@@ -6,7 +6,8 @@
 // 14 张卡均为「受控展示」或「自加载卡」;壳只负责 runtime + accounts + QR 状态机 + 滚动 + reload。
 import '@/features/settings/components-v10/settings-v10.css'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
+import { HConfirm, HAlert } from '@/components/ui/HConfirm'
 import { useRoute } from 'vue-router'
 import { useRuntimeStore } from '@/stores/runtime'
 import { useExpertMode } from '@/composables/useExpertMode'
@@ -143,7 +144,7 @@ async function saveQR(nickname: string) {
   qrSaving.value = true
   try {
     await saveQRCodeToAccount(qrSession.value.session_id, nickname || undefined)
-    ElMessage.success('账号已保存')
+    HMessage.success('账号已保存')
     stopPollTimer()
     qrSession.value = null
     pollResult.value = null
@@ -163,16 +164,13 @@ async function onSetDefault(id: number, usage: 'download' | 'publish') {
 
 async function onDeleteAccount(id: number) {
   const acc = accounts.value.find(a => a.id === id)
-  try {
-    await ElMessageBox.confirm(
-      `确认删除账号「${acc?.nickname || String(acc?.uid ?? id)}」？`,
-      '删除账号',
-      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
-    )
-  } catch { return }
+  if (!(await HConfirm(
+    `确认删除账号「${acc?.nickname || String(acc?.uid ?? id)}」？`,
+    { title: '删除账号', confirmText: '删除', cancelText: '取消', type: 'warning' },
+  ))) return
   try {
     await deleteBiliAccount(id)
-    ElMessage.success('已删除')
+    HMessage.success('已删除')
     await fetchAccounts()
   } catch { /* error shown by interceptor */ }
 }
@@ -206,11 +204,10 @@ async function onImported() {
 function showASRBackendHint() {
   const reason = capabilities.value?.reason || ''
   const needYtDlp = reason.includes('yt-dlp')
-  ElMessageBox.alert(
+  HAlert(
     `ASR 密钥已配置，但转写还需要以下配置才能工作：\n\n${needYtDlp ? '① yt-dlp（下载 B站回放音频）：\n   pip install yt-dlp    （Windows: winget install yt-dlp）\n\n' : ''}② 临时音频发布后端（三选一，DashScope 需通过公网 URL 拉取音频）：\n\n方案 A：本地 HTTP 服务（需公网 IP，服务自动检测）\nasr_temp:\n  enabled: true\n  listen: ":6335"\n  local_dir: "./output/asr-temp"\n\n方案 B：S3 兼容对象存储（推荐，阿里云 OSS / MinIO）\nasr_s3:\n  endpoint: "https://oss-cn-xxx.aliyuncs.com"\n  bucket: "your-bucket"\n  access_key_id: "xxx"\n  access_key_secret: "xxx"\n  public_url_prefix: "https://your-bucket.xxx.aliyuncs.com/asr"\n\n方案 C：rclone 回退\nasr_temp:\n  rclone_remote: "your-remote:"\n  base_path: "asr/"\n  public_base_url: "https://你的公网URL/asr"\n\n修改 config.yaml 后重启服务生效。`,
-    '配置 ASR 后端',
-    { confirmButtonText: '我知道了', type: 'info' },
-  ).catch(() => { /* 用户关闭弹窗 */ })
+    { title: '配置 ASR 后端', confirmText: '我知道了', type: 'info' },
+  )
 }
 
 onMounted(async () => {

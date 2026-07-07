@@ -9,7 +9,7 @@
 -->
 <script setup lang="ts">
 import { ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
 import { HCard, HButton, HSelect, HDialog } from '@/components/ui'
 import { exportConfig, importConfig } from '@/api/settings'
 
@@ -37,7 +37,7 @@ async function handleExport() {
     a.download = `hikami-config-${new Date().toISOString().slice(0, 10)}.json`
     a.click()
     URL.revokeObjectURL(url)
-    ElMessage.success('配置已导出')
+    HMessage.success('配置已导出')
   } catch { /* error shown by interceptor */ }
   finally { exportLoading.value = false }
 }
@@ -56,16 +56,16 @@ function handleFileChange(event: Event) {
 
 async function handleImport() {
   if (!selectedFile.value) {
-    ElMessage.warning('请选择配置文件')
+    HMessage.warning('请选择配置文件')
     return
   }
   importing.value = true
   try {
     const text = await selectedFile.value.text()
     const result = await importConfig(text, strategy.value)
-    ElMessage.success(`配置导入成功(策略:${strategy.value === 'merge' ? '合并' : '覆盖'})`)
+    HMessage.success(`配置导入成功(策略:${strategy.value === 'merge' ? '合并' : '覆盖'})`)
     if (result.warnings?.length) {
-      result.warnings.forEach((w) => ElMessage.warning({ message: w, duration: 5000 }))
+      result.warnings.forEach((w) => HMessage.warning(w, 5000))
     }
     importDialogVisible.value = false
     emit('imported')

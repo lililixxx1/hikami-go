@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
 import { Delete, Download, Plus, Upload } from '@element-plus/icons-vue'
 import {
   useGlossaryEntries,
@@ -68,13 +68,13 @@ function handleSelectionChange(rows: GlossaryEntry[]): void {
 
 async function handleAddEntry(): Promise<void> {
   if (!newTerm.value.trim() || !newCanonical.value.trim()) {
-    ElMessage.warning('请填写错误写法和正确写法')
+    HMessage.warning('请填写错误写法和正确写法')
     return
   }
   adding.value = true
   try {
     await addEntry(newTerm.value.trim(), newCanonical.value.trim(), newCategory.value.trim())
-    ElMessage.success('词条已添加')
+    HMessage.success('词条已添加')
     newTerm.value = ''
     newCanonical.value = ''
     newCategory.value = ''
@@ -91,18 +91,18 @@ function showAddDialog(): void {
 async function handleDialogAddEntry(): Promise<void> {
   const term = addForm.value.term.trim()
   if (!term) {
-    ElMessage.warning('请填写词条')
+    HMessage.warning('请填写词条')
     return
   }
   const canonical = addForm.value.canonical.trim() || term
   addDialogSaving.value = true
   try {
     await addEntry(term, canonical, addForm.value.category.trim())
-    ElMessage.success('热词已添加')
+    HMessage.success('热词已添加')
     addDialogVisible.value = false
   } catch (error) {
     if (isDuplicateError(error)) {
-      ElMessage.warning('词条已存在')
+      HMessage.warning('词条已存在')
       return
     }
     throw error
@@ -147,7 +147,7 @@ function showImportDialog(type: 'markdown' | 'json'): void {
 
 async function handleImport(): Promise<void> {
   if (!importContent.value.trim()) {
-    ElMessage.warning('请输入内容')
+    HMessage.warning('请输入内容')
     return
   }
   importing.value = true

@@ -8,7 +8,7 @@
 -->
 <script setup lang="ts">
 import { ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
 import { HCard, HButton, HInput, HPill } from '@/components/ui'
 import { useAdminToken } from '@/composables/useAdminToken'
 
@@ -19,18 +19,18 @@ const tokenInput = ref('')
 function handleSave() {
   const trimmed = tokenInput.value.trim()
   if (!trimmed) {
-    ElMessage.warning('请输入令牌')
+    HMessage.warning('请输入令牌')
     return
   }
   setToken(trimmed)
   tokenInput.value = ''
-  ElMessage.success('管理员令牌已保存')
+  HMessage.success('管理员令牌已保存')
 }
 
 function handleClear() {
   clearToken()
   tokenInput.value = ''
-  ElMessage.success('已清除管理员令牌')
+  HMessage.success('已清除管理员令牌')
 }
 </script>
 

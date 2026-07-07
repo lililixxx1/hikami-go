@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
 import type { FormInstance } from 'element-plus'
 import { ArrowRight } from '@element-plus/icons-vue'
 import { useChannelsStore } from '@/stores/channels'
@@ -58,7 +58,7 @@ async function handleSubmit(): Promise<void> {
   try {
     const task = await downloadSessionByURL(form.value.channel_id, form.value.url.trim())
     emit('submitted', task)
-    ElMessage.success('下载任务已提交')
+    HMessage.success('下载任务已提交')
     drawerVisible.value = false
   } finally {
     submitting.value = false

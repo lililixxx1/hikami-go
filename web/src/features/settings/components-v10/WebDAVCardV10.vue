@@ -7,7 +7,7 @@
 -->
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { HMessage } from '@/components/ui/message'
 import { HCard, HButton, HInput, HCheckbox, HPill } from '@/components/ui'
 import { getWebDAVConfig, updateWebDAVConfig } from '@/api/settings'
 import { useRuntimeStore } from '@/stores/runtime'
@@ -53,7 +53,7 @@ async function save() {
       clear_password: false,
     }
     clearPassword.value = false
-    ElMessage.success('WebDAV 设置已保存')
+    HMessage.success('WebDAV 设置已保存')
     await runtimeStore.fetchRuntime(true)
     emit('saved')
   } finally {
