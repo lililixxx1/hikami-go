@@ -1,5 +1,5 @@
 import { get, post, put, del, delJson } from './client'
-import type { Session, SessionDetail, Task, ListResponse, DiscoverResult, DiscoverPickItem, RecapContent } from './types'
+import type { Session, SessionDetail, Task, ListResponse, DiscoverResult, DiscoverPickItem, RecapContent } from './types-derived'
 
 // discoverSessions 是「一键全部下载」入口（旧两步式发现的行为：建场次 + 入队下载）。
 // 保留作为抽屉「全部下载」快捷按钮的后端调用。

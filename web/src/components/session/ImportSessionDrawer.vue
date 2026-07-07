@@ -7,7 +7,7 @@ import { useChannelsStore } from '@/stores/channels'
 import { useRuntimeStore } from '@/stores/runtime'
 import { importSession } from '@/api/sessions'
 import { formatFileSize } from '@/utils/format'
-import type { Task } from '@/api/types'
+import type { Task } from '@/api/types-derived'
 
 const props = defineProps<{
   visible: boolean

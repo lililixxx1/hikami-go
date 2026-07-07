@@ -21,7 +21,7 @@ import {
 import type { Session, RecapContent, Capabilities, Channel } from '@/api/types-derived'
 // sessionActions.ts 消费旧手写 types.ts 的 Session/Capabilities(全必填),与 generated 派生类型在
 // TS 层不完全兼容(Phase 6 统一迁移)。状态机仅读 status/local_available,运行时安全;调用边界窄化。
-import type { Session as LooseSession, Capabilities as LooseCapabilities } from '@/api/types'
+import type { Session as LooseSession, Capabilities as LooseCapabilities } from '@/api/types-derived'
 
 const props = defineProps<{
   visible: boolean

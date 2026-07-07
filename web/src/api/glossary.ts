@@ -1,5 +1,5 @@
 import { get, post, put, del } from './client'
-import type { GlossaryEntry, GlossaryNote, GlossaryCandidate } from './types'
+import type { GlossaryEntry, GlossaryNote, GlossaryCandidate } from './types-derived'
 
 // Global glossary
 

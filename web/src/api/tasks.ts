@@ -1,5 +1,5 @@
 import { get, post, del, delJson } from './client'
-import type { Task, ListResponse } from './types'
+import type { Task, ListResponse } from './types-derived'
 
 export function listTasks(): Promise<ListResponse<Task>> {
   return get('/api/tasks')

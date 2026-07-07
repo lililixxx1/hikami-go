@@ -16,7 +16,7 @@ import { useWebSocket, useEventBus } from '@/composables/useWebSocket'
 import { usePolling } from '@/composables/usePolling'
 import { useTasksStore } from '@/stores/tasks'
 import { useSessionsStore } from '@/stores/sessions'
-import type { TaskProgressEvent } from '@/api/types'
+import type { TaskProgressEvent } from '@/api/types-derived'
 
 // 任务终态(到达后需刷新 sessions,因为 session 状态随任务推进变化)
 const TERMINAL_STATUSES = ['succeeded', 'failed', 'cancelled']

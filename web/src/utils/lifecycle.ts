@@ -1,4 +1,4 @@
-import type { Capabilities } from '@/api/types'
+import type { Capabilities } from '@/api/types-derived'
 
 export type LifecycleStepKey = 'source' | 'media' | 'asr' | 'recap' | 'upload' | 'publish'
 export type SessionActionName =

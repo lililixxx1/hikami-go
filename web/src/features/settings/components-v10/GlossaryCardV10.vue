@@ -17,7 +17,7 @@ import { HCard, HButton, HInput, HCheckbox, HPill, HDialog, HEmpty } from '@/com
 import { useGlossaryEntries, isDuplicateError } from '@/features/channel/useGlossaryEntries'
 import { listGlobalCandidates, approveGlobalCandidate, rejectGlobalCandidate } from '@/api/glossary'
 import { getGlobalNote, updateGlobalNote } from '@/api/glossary'
-import type { GlossaryEntry, GlossaryCandidate } from '@/api/types'
+import type { GlossaryEntry, GlossaryCandidate } from '@/api/types-derived'
 
 const emit = defineEmits<{ saved: [] }>()
 

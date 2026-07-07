@@ -5,7 +5,7 @@ import type {
   QRCodePollResult,
   QRCodeSaveRequest,
   QRCodeSaveResponse,
-} from './types'
+} from './types-derived'
 
 export function createQRCodeSession(): Promise<QRCodeSession> {
   return post('/api/bili/login/qrcode')

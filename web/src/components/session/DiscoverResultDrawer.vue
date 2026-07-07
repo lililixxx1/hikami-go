@@ -19,7 +19,7 @@ import {
   previewDiscoverSessions,
   executeDiscoverSessions,
 } from '@/api/sessions'
-import type { DiscoverResult, DiscoverPickItem } from '@/api/types'
+import type { DiscoverResult, DiscoverPickItem } from '@/api/types-derived'
 
 type Phase = 'loading' | 'preview' | 'done'
 
@@ -138,7 +138,7 @@ async function handleExecuteSelected(): Promise<void> {
         channel_id: item.channel_id,
         source_id: item.source_id,
         title: item.title,
-        source_url: item.source_url,
+        source_url: item.source_url ?? '',
       })
     }
   }

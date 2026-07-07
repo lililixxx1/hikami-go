@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import type { Session } from '@/api/types'
+import type { Session } from '@/api/types-derived'
 import { listSessions } from '@/api/sessions'
 
 export const useSessionsStore = defineStore('sessions', () => {

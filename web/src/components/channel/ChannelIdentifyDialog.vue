@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { identifyChannel, identifyAndSave } from '@/api/channels'
-import type { IdentifyResult } from '@/api/types'
+import type { IdentifyResult } from '@/api/types-derived'
 import { HMessage } from '@/components/ui/message'
 import { HDialog, HButton, HInput, HDescriptions } from '@/components/ui'
 

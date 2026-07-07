@@ -11,7 +11,7 @@ import { HMessage } from '@/components/ui/message'
 import { HCard, HButton, HInput, HSwitch, HCheckbox, HPill } from '@/components/ui'
 import { getASRS3Config, updateASRS3Config } from '@/api/settings'
 import { useRuntimeStore } from '@/stores/runtime'
-import type { ASRS3Config } from '@/api/types'
+import type { ASRS3Config } from '@/api/types-derived'
 
 const emit = defineEmits<{ saved: [] }>()
 const runtimeStore = useRuntimeStore()

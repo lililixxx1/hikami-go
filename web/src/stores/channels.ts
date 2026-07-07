@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import type { Channel, UpsertChannelInput } from '@/api/types'
+import type { Channel, UpsertChannelInput } from '@/api/types-derived'
 import { listChannels, createChannel, updateChannel, deleteChannel as apiDelete } from '@/api/channels'
 import { HMessage } from '@/components/ui/message'
 

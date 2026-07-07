@@ -19,7 +19,7 @@ import {
   upsertGlobalRecapTemplate,
   deleteChannelRecapTemplate,
 } from '@/api/recap-templates'
-import type { RecapTemplate, ResolvedRecapTemplate, TemplatePreset } from '@/api/types'
+import type { RecapTemplate, ResolvedRecapTemplate, TemplatePreset } from '@/api/types-derived'
 
 export interface UseRecapTemplateEditorOptions {
   scope: () => 'global' | 'channel'

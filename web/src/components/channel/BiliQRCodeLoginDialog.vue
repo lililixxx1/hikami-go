@@ -7,7 +7,7 @@ import type {
   BiliCookieAccount,
   Channel,
   QRCodeCookieUsage,
-} from '@/api/types'
+} from '@/api/types-derived'
 
 const props = withDefaults(defineProps<{
   visible: boolean

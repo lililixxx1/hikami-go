@@ -1,5 +1,5 @@
 import client, { get, put } from './client'
-import type { ASRS3Config, ArchiveConfig, BiliSeries, BiliTopic, ConfigImportResult, SecretEntry, DashScopeConfig, PublishConfig, RecapConfig, RecapModelOption, WebDAVConfig } from './types'
+import type { ASRS3Config, ArchiveConfig, BiliSeries, BiliTopic, ConfigImportResult, SecretEntry, DashScopeConfig, PublishConfig, RecapConfig, RecapModelOption, WebDAVConfig } from './types-derived'
 
 export interface SecretsResponse {
   items: SecretEntry[]

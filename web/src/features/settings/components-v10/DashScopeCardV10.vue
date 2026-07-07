@@ -15,7 +15,7 @@ import { HMessage } from '@/components/ui/message'
 import { HCard, HButton, HInput, HSelect, HSwitch, HCheckbox, HPill } from '@/components/ui'
 import { getDashScopeConfig, updateDashScopeConfig } from '@/api/settings'
 import { useRuntimeStore } from '@/stores/runtime'
-import type { DashScopeConfig } from '@/api/types'
+import type { DashScopeConfig } from '@/api/types-derived'
 
 const emit = defineEmits<{ saved: [] }>()
 const runtimeStore = useRuntimeStore()

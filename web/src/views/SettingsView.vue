@@ -21,7 +21,7 @@ import {
   saveQRCodeToAccount,
   updateBiliAccount,
 } from '@/api/bili'
-import type { BiliCookieAccount, QRCodePollResult, QRCodeSession, ToolStatus } from '@/api/types'
+import type { BiliCookieAccount, QRCodePollResult, QRCodeSession, ToolStatus } from '@/api/types-derived'
 import Sidebar from '@/features/settings/components-v10/Sidebar.vue'
 import PipelineBar from '@/features/settings/components-v10/PipelineBar.vue'
 import OverviewCard from '@/features/settings/components-v10/OverviewCard.vue'

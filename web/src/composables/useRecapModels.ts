@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue'
 import { getRecapModels } from '@/api/settings'
-import type { RecapModelOption } from '@/api/types'
+import type { RecapModelOption } from '@/api/types-derived'
 
 /**
  * 加载后端推荐的回顾模型列表（GET /api/config/recap/models），并按厂商分组。

@@ -1,5 +1,5 @@
 import { get, post, put, del } from './client'
-import type { RecapTemplate, ChannelRecapTemplateResponse, TemplatePreset } from './types'
+import type { RecapTemplate, ChannelRecapTemplateResponse, TemplatePreset } from './types-derived'
 
 export function listGlobalRecapTemplates(): Promise<{ items: RecapTemplate[] }> {
   return get('/api/recap/templates')

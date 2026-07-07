@@ -11,7 +11,7 @@ import { HMessage } from '@/components/ui/message'
 import { HCard, HButton, HSwitch, HSelect, HPill } from '@/components/ui'
 import { getArchiveConfig, updateArchiveConfig } from '@/api/settings'
 import { useRuntimeStore } from '@/stores/runtime'
-import type { ArchiveConfig } from '@/api/types'
+import type { ArchiveConfig } from '@/api/types-derived'
 
 const emit = defineEmits<{ saved: [] }>()
 const runtimeStore = useRuntimeStore()

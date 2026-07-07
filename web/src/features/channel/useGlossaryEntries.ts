@@ -30,7 +30,7 @@ import {
   upsertChannelEntry,
   upsertGlobalEntry,
 } from '@/api/glossary'
-import type { GlossaryEntry } from '@/api/types'
+import type { GlossaryEntry } from '@/api/types-derived'
 
 export interface UseGlossaryEntriesOptions {
   scope: () => 'global' | 'channel'

@@ -55,7 +55,7 @@ import type {
   DiscoverPickItem,
   Session,
   Task,
-} from '@/api/types'
+} from '@/api/types-derived'
 
 const router = useRouter()
 const route = useRoute()

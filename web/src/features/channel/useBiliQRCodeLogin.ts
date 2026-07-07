@@ -24,7 +24,7 @@ import type {
   QRCodeLoginStatus,
   QRCodePollResult,
   QRCodeSession,
-} from '@/api/types'
+} from '@/api/types-derived'
 
 export type DialogState =
   | 'loading'

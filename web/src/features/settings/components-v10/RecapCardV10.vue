@@ -15,7 +15,7 @@ import { HCard, HButton, HInput, HSelect, HSwitch, HCheckbox, HPill } from '@/co
 import { getRecapConfig, updateRecapConfig } from '@/api/settings'
 import { useRecapModels } from '@/composables/useRecapModels'
 import { useRuntimeStore } from '@/stores/runtime'
-import type { RecapConfig } from '@/api/types'
+import type { RecapConfig } from '@/api/types-derived'
 
 const emit = defineEmits<{ saved: [] }>()
 const runtimeStore = useRuntimeStore()

@@ -6,7 +6,7 @@ import {
   useGlossaryEntries,
   isDuplicateError,
 } from '@/features/channel/useGlossaryEntries'
-import type { GlossaryEntry } from '@/api/types'
+import type { GlossaryEntry } from '@/api/types-derived'
 
 const props = withDefaults(defineProps<{
   scope: 'global' | 'channel'

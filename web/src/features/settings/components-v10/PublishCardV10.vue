@@ -17,7 +17,7 @@ import { HMessage } from '@/components/ui/message'
 import { HCard, HButton, HInput, HSelect, HSwitch } from '@/components/ui'
 import { getPublishConfig, updatePublishConfig, searchBiliTopics, listBiliSeries } from '@/api/settings'
 import { useRuntimeStore } from '@/stores/runtime'
-import type { PublishConfig, BiliTopic, BiliSeries } from '@/api/types'
+import type { PublishConfig, BiliTopic, BiliSeries } from '@/api/types-derived'
 
 const props = defineProps<{ isExpert?: boolean }>()
 const emit = defineEmits<{ saved: [] }>()

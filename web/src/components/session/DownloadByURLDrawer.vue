@@ -5,7 +5,7 @@ import { HDrawer, HButton, HInput, HSelect, HPill } from '@/components/ui'
 import { useChannelsStore } from '@/stores/channels'
 import { useRuntimeStore } from '@/stores/runtime'
 import { downloadSessionByURL } from '@/api/sessions'
-import type { Task } from '@/api/types'
+import type { Task } from '@/api/types-derived'
 
 const props = defineProps<{
   visible: boolean

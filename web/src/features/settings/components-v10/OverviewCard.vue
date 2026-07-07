@@ -7,7 +7,7 @@
 <script setup lang="ts">
 import { HCard, HButton, HPill } from '@/components/ui'
 import { useSettingsOverview } from '@/features/settings/composables/useSettingsOverview'
-import type { Capabilities, ConfigStatus } from '@/api/types'
+import type { Capabilities, ConfigStatus } from '@/api/types-derived'
 
 const props = defineProps<{
   capabilities: Capabilities | null

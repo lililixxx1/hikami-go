@@ -1,5 +1,5 @@
 import { get, post } from './client'
-import type { LiveStatus, ListResponse } from './types'
+import type { LiveStatus, ListResponse } from './types-derived'
 
 export function checkAllLive(): Promise<ListResponse<LiveStatus>> {
   return post('/api/live/check')

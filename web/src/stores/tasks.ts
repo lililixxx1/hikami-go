@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { Task, TaskProgressEvent } from '@/api/types'
+import type { Task, TaskProgressEvent } from '@/api/types-derived'
 import { listTasks } from '@/api/tasks'
 
 export const useTasksStore = defineStore('tasks', () => {

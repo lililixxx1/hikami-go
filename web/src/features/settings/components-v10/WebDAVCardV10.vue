@@ -11,7 +11,7 @@ import { HMessage } from '@/components/ui/message'
 import { HCard, HButton, HInput, HCheckbox, HPill } from '@/components/ui'
 import { getWebDAVConfig, updateWebDAVConfig } from '@/api/settings'
 import { useRuntimeStore } from '@/stores/runtime'
-import type { WebDAVConfig } from '@/api/types'
+import type { WebDAVConfig } from '@/api/types-derived'
 
 const emit = defineEmits<{ saved: [] }>()
 const runtimeStore = useRuntimeStore()
