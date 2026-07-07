@@ -1,164 +1,208 @@
 <script setup lang="ts">
-import '@/features/settings/components/settings-cards.css'
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+// V10 设置页(Phase 5 Task 5.5)。
+// 旧 EP 版(436 行,el-collapse 4 分组 + 内联总览卡 + 表格)重写为 V10 壳:
+// 左 Sidebar + 右 content(PipelineBar + 14 张 V10 卡)。业务逻辑全保留——
+// runtime 拉取/能力派生、?section 滚动、配置导入 reload、ASR 后端 hint、B站 QR 登录状态机。
+// 14 张卡均为「受控展示」或「自加载卡」;壳只负责 runtime + accounts + QR 状态机 + 滚动 + reload。
+import '@/features/settings/components-v10/settings-v10.css'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Refresh, CircleCheck, CircleClose } from '@element-plus/icons-vue'
 import { useRoute } from 'vue-router'
 import { useRuntimeStore } from '@/stores/runtime'
 import { useExpertMode } from '@/composables/useExpertMode'
-import type { Capabilities, ToolStatus } from '@/api/types'
-import GlossaryEditor from '@/components/channel/GlossaryEditor.vue'
-import RecapTemplateEditor from '@/components/channel/RecapTemplateEditor.vue'
-import PublishSettingsCard from '@/features/settings/components/PublishSettingsCard.vue'
-import DashScopeSettingsCard from '@/features/settings/components/DashScopeSettingsCard.vue'
-import ASRS3SettingsCard from '@/features/settings/components/ASRS3SettingsCard.vue'
-import RecapSettingsCard from '@/features/settings/components/RecapSettingsCard.vue'
-import WebDAVSettingsCard from '@/features/settings/components/WebDAVSettingsCard.vue'
-import ArchiveSettingsCard from '@/features/settings/components/ArchiveSettingsCard.vue'
-import AdminTokenCard from '@/features/settings/components/AdminTokenCard.vue'
-import BiliAccountsCard from '@/features/settings/components/BiliAccountsCard.vue'
-import ConfigBackupCard from '@/features/settings/components/ConfigBackupCard.vue'
+import { usePolling } from '@/composables/usePolling'
+import {
+  cancelQRCodeSession,
+  createQRCodeSession,
+  deleteBiliAccount,
+  listBiliAccounts,
+  pollQRCodeSession,
+  saveQRCodeToAccount,
+  updateBiliAccount,
+} from '@/api/bili'
+import type { BiliCookieAccount, QRCodePollResult, QRCodeSession, ToolStatus } from '@/api/types'
+import Sidebar from '@/features/settings/components-v10/Sidebar.vue'
+import PipelineBar from '@/features/settings/components-v10/PipelineBar.vue'
+import OverviewCard from '@/features/settings/components-v10/OverviewCard.vue'
+import DashScopeCardV10 from '@/features/settings/components-v10/DashScopeCardV10.vue'
+import ASRS3CardV10 from '@/features/settings/components-v10/ASRS3CardV10.vue'
+import RecapCardV10 from '@/features/settings/components-v10/RecapCardV10.vue'
+import WebDAVCardV10 from '@/features/settings/components-v10/WebDAVCardV10.vue'
+import PublishCardV10 from '@/features/settings/components-v10/PublishCardV10.vue'
+import ArchiveCardV10 from '@/features/settings/components-v10/ArchiveCardV10.vue'
+import TemplateCardV10 from '@/features/settings/components-v10/TemplateCardV10.vue'
+import GlossaryCardV10 from '@/features/settings/components-v10/GlossaryCardV10.vue'
+import AccountsCardV10 from '@/features/settings/components-v10/AccountsCardV10.vue'
+import AdminTokenCardV10 from '@/features/settings/components-v10/AdminTokenCardV10.vue'
+import BackupCardV10 from '@/features/settings/components-v10/BackupCardV10.vue'
+import ToolsCardV10 from '@/features/settings/components-v10/ToolsCardV10.vue'
+
+interface SidebarSection {
+  id: string
+  label: string
+  group: string
+  done?: boolean
+}
 
 const route = useRoute()
 const runtimeStore = useRuntimeStore()
 const { isExpert } = useExpertMode()
 
-// 顶层折叠分组(默认展开 overview + pipeline,收起 accounts + advanced)
-// name 加 grp- 前缀避免与子卡片内部 collapse-item 常用的 name="advanced" 混淆
-const activeGroups = ref<string[]>(['grp-overview', 'grp-pipeline'])
-
-type CapActionType = 'section' | 'hint'
-
-const toolsList = computed(() => {
-  if (!runtimeStore.status?.tools) return []
-  return Object.values(runtimeStore.status.tools) as ToolStatus[]
-})
-
 const capabilities = computed(() => runtimeStore.status?.capabilities ?? null)
 const configStatus = computed(() => runtimeStore.status?.config_status ?? null)
+const toolsList = computed<ToolStatus[]>(() => {
+  if (!runtimeStore.status?.tools) return []
+  return Object.values(runtimeStore.status.tools)
+})
 
-// 配置卡子组件引用(供配置导入后 reload)
-const publishCard = ref<{ reload: () => Promise<void> } | null>(null)
-const dashScopeCard = ref<{ reload: () => Promise<void> } | null>(null)
-const asrS3Card = ref<{ reload: () => Promise<void> } | null>(null)
-const recapCard = ref<{ reload: () => Promise<void> } | null>(null)
-const webdavCard = ref<{ reload: () => Promise<void> } | null>(null)
-const archiveCard = ref<{ reload: () => Promise<void> } | null>(null)
-const biliAccountsCard = ref<{ reload: () => Promise<void> } | null>(null)
-
-// 子配置卡保存后重拉 runtime,使总览卡的能力状态同步刷新
-function onConfigSaved() {
-  runtimeStore.fetchRuntime(true)
-}
-
-// 统一总览项(合并原"配置进度"+"系统状态")。每项含完成度 + 能力红绿灯 + 跳转动作。
-const overviewItems = computed(() => {
-  const caps = capabilities.value
+// ── Sidebar sections(4 分组,done 派生自 config_status / accounts) ──
+// PipelineBar 的 navigate target 与本处 id 对齐(accounts/dashscope/asr-s3/recap/webdav/publish)。
+const sections = computed<SidebarSection[]>(() => {
   const cs = configStatus.value
-  if (!caps) return []
   return [
-    {
-      key: 'asr' as const,
-      label: 'ASR 转写',
-      done: !!cs?.dashscope_key_set,
-      ok: caps.asr_submit,
-      reason: capReason('asr_submit', caps),
-      // 密钥已配但能力仍红,根因通常是缺临时音频后端/yt-dlp,指向 hint 而非跳卡片
-      ...(cs?.dashscope_key_set
-        ? { actionLabel: '配置 ASR 后端', actionType: 'hint' as CapActionType, actionTarget: 'asr_backend' }
-        : { actionLabel: '配置', actionType: 'section' as CapActionType, actionTarget: 'dashscope' }),
-    },
-    {
-      key: 'recap' as const,
-      label: '回顾 AI',
-      done: !!caps.recap_generate,
-      ok: caps.recap_generate,
-      reason: capReason('recap_generate', caps),
-      actionLabel: '配置',
-      actionType: 'section' as CapActionType,
-      actionTarget: 'recap',
-    },
-    {
-      key: 'webdav' as const,
-      label: 'WebDAV 上传',
-      done: !!cs?.webdav_configured,
-      ok: caps.webdav_upload,
-      reason: capReason('webdav_upload', caps),
-      actionLabel: '配置',
-      actionType: 'section' as CapActionType,
-      actionTarget: 'webdav',
-    },
-    {
-      key: 'publish' as const,
-      label: 'B站发布',
-      done: !!cs?.publish_enabled,
-      ok: caps.publish_opus,
-      reason: capReason('publish_opus', caps),
-      actionLabel: '配置',
-      actionType: 'section' as CapActionType,
-      actionTarget: 'publish',
-    },
+    { id: 'overview', label: '能力总览', group: '总览' },
+    { id: 'dashscope', label: 'ASR 转写', group: '流水线配置', done: !!cs?.dashscope_key_set },
+    { id: 'asr-s3', label: '临时音频', group: '流水线配置', done: !!cs?.asr_temp_configured },
+    { id: 'recap', label: '回顾 AI', group: '流水线配置', done: !!cs?.recap_key_set },
+    { id: 'webdav', label: 'WebDAV 上传', group: '流水线配置', done: !!cs?.webdav_configured },
+    { id: 'publish', label: 'B站发布', group: '流水线配置', done: !!cs?.publish_enabled },
+    { id: 'archive', label: '归档', group: '流水线配置' },
+    { id: 'template', label: '回顾模板', group: '流水线配置' },
+    { id: 'glossary', label: '全局术语表', group: '流水线配置', done: !!cs?.glossary_configured },
+    { id: 'accounts', label: 'B站账号', group: '账号与备份', done: accounts.value.length > 0 },
+    { id: 'admin-token', label: '管理员令牌', group: '账号与备份' },
+    { id: 'backup', label: '配置备份', group: '账号与备份' },
+    { id: 'tools', label: '外部工具', group: '高级' },
   ]
 })
 
-const overviewDoneCount = computed(() => overviewItems.value.filter(i => i.done).length)
+// 当前激活 section(点击 sidebar 后高亮)
+const activeSection = ref<string>('overview')
 
-function capReason(key: keyof Capabilities, caps: Capabilities): string {
-  if (caps[key]) return ''
-  if (key === 'asr_submit') return configStatus.value?.dashscope_key_set ? caps.reason : 'ASR 密钥未配置'
-  if (key === 'recap_generate') return configStatus.value?.recap_key_set ? caps.reason : 'AI 密钥未配置'
-  if (key === 'webdav_upload') return configStatus.value?.webdav_configured ? caps.reason : 'WebDAV 未配置'
-  if (key === 'publish_opus') return configStatus.value?.publish_enabled ? caps.reason : '发布未启用'
-  return caps.reason
-}
-
-onMounted(async () => {
-  // 各配置卡在子组件 onMounted 自加载;壳只负责 runtime
-  await runtimeStore.fetchRuntime()
-})
-
-// Handle /health redirect -> ?section=runtime:系统状态已并入 overview 分组,展开它即可
-watch(
-  () => route.query.section,
-  (section) => {
-    if (section === 'runtime' && !activeGroups.value.includes('grp-overview')) {
-      activeGroups.value = [...activeGroups.value, 'grp-overview']
-    }
-  },
-  { immediate: true },
-)
-
-// scroll 目标 → 所属折叠分组(用于跨分组跳转前自动展开)
-const groupOf: Record<string, string> = {
-  dashscope: 'grp-pipeline',
-  'asr-s3': 'grp-pipeline',
-  recap: 'grp-pipeline',
-  webdav: 'grp-pipeline',
-  publish: 'grp-pipeline',
-  archive: 'grp-pipeline',
-}
-
-async function scrollToSection(section: string) {
-  const group = groupOf[section]
-  if (group && !activeGroups.value.includes(group)) {
-    activeGroups.value = [...activeGroups.value, group]
-    await nextTick()
-    // el-collapse 展开有 ~300ms 高度过渡,nextTick 只等 DOM patch 不等 transitionend;
-    // 不等的话 scrollIntoView 在目标高度 0→auto 过渡中会定位偏。
-    await new Promise(r => setTimeout(r, 320))
-  }
-  document.querySelector(`[data-section="${section}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-}
-
-function handleOverviewAction(item: { actionType: CapActionType; actionTarget: string }) {
-  if (item.actionType === 'hint') {
-    if (item.actionTarget === 'asr_backend') showASRBackendHint()
+// ── 滚动到 section(PipelineBar / OverviewCard / Sidebar 共用) ──
+// OverviewCard 的 hint 情况会 emit navigate('asr_backend'):此时不滚动,弹 ASR 后端配置提示。
+async function scrollToSection(id: string) {
+  activeSection.value = id
+  if (id === 'asr_backend') {
+    showASRBackendHint()
     return
   }
-  scrollToSection(item.actionTarget)
+  document.querySelector(`[data-section="${id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
-// ASR 转写能力红但密钥已配时,提示用户需配置临时音频发布后端(DashScope 通过 URL 拉取音频)+ yt-dlp
+// ── B站账号(壳持有列表,AccountsCardV10 受控展示) ──
+const accounts = ref<BiliCookieAccount[]>([])
+
+async function fetchAccounts() {
+  try {
+    accounts.value = await listBiliAccounts()
+  } catch { /* error shown by interceptor */ }
+}
+
+// ── B站 QR 登录状态机(壳持有;AccountsCardV10 受控,emit 驱动) ──
+// 不复用 useBiliQRCodeLogin:其为 dialog 驱动(watch visible→startLogin + onSessionReady canvas 回调),
+// 与 AccountsCardV10 的「自带 canvas + emit generate-qr/poll/save-qr」契约不匹配,故在此用 bili API +
+// usePolling 复刻状态机(session/pollResult/2s 轮询/账号保存)。逻辑等价,接口更贴合受控组件。
+const qrSession = ref<QRCodeSession | null>(null)
+const pollResult = ref<QRCodePollResult | null>(null)
+const qrLoading = ref(false)
+const qrSaving = ref(false)
+
+const { start: startPollTimer, stop: stopPollTimer } = usePolling(() => pollQR(), {
+  interval: 2000,
+  immediate: false,
+})
+
+async function generateQR() {
+  qrLoading.value = true
+  try {
+    stopPollTimer()
+    qrSession.value = await createQRCodeSession()
+    pollResult.value = null
+    await pollQR()
+    startPollTimer()
+  } catch { /* error shown by interceptor */ }
+  finally {
+    qrLoading.value = false
+  }
+}
+
+async function pollQR() {
+  if (!qrSession.value) return
+  if (new Date(qrSession.value.expires_at).getTime() <= Date.now()) {
+    stopPollTimer()
+    return
+  }
+  try {
+    pollResult.value = await pollQRCodeSession(qrSession.value.session_id)
+  } catch { /* error shown by interceptor */ }
+}
+
+async function saveQR(nickname: string) {
+  if (!qrSession.value || pollResult.value?.status !== 'succeeded') return
+  qrSaving.value = true
+  try {
+    await saveQRCodeToAccount(qrSession.value.session_id, nickname || undefined)
+    ElMessage.success('账号已保存')
+    stopPollTimer()
+    qrSession.value = null
+    pollResult.value = null
+    await fetchAccounts()
+  } catch { /* error shown by interceptor */ }
+  finally {
+    qrSaving.value = false
+  }
+}
+
+async function onSetDefault(id: number, usage: 'download' | 'publish') {
+  try {
+    await updateBiliAccount(id, usage === 'download' ? { is_default_download: true } : { is_default_publish: true })
+    await fetchAccounts()
+  } catch { /* error shown by interceptor */ }
+}
+
+async function onDeleteAccount(id: number) {
+  const acc = accounts.value.find(a => a.id === id)
+  try {
+    await ElMessageBox.confirm(
+      `确认删除账号「${acc?.nickname || String(acc?.uid ?? id)}」？`,
+      '删除账号',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch { return }
+  try {
+    await deleteBiliAccount(id)
+    ElMessage.success('已删除')
+    await fetchAccounts()
+  } catch { /* error shown by interceptor */ }
+}
+
+// 离开页面:停止轮询 + 尽力取消未完成会话(防 session 泄漏)
+onBeforeUnmount(() => {
+  stopPollTimer()
+  const current = qrSession.value
+  qrSession.value = null
+  if (current && pollResult.value?.status !== 'succeeded') {
+    cancelQRCodeSession(current.session_id).catch(() => { /* 尽力而为 */ })
+  }
+})
+
+// ── 配置卡 saved:重拉 runtime,使总览卡/PipelineBar 能力状态同步刷新 ──
+function onSaved() {
+  runtimeStore.fetchRuntime(true)
+}
+
+// ── 配置导入 reload:re-key 所有「onMounted 自加载」配置卡 → 强制重挂 → 重新拉取 ──
+// 比逐卡调用 reload() ref 更可靠(无需为每卡维护模板 ref);AccountsCardV10 受控,直接重拉 accounts。
+const reloadKey = ref(0)
+
+async function onImported() {
+  await runtimeStore.fetchRuntime(true)
+  await fetchAccounts()
+  reloadKey.value++
+}
+
+// ASR 转写能力红但密钥已配时,提示用户需配置临时音频发布后端 + yt-dlp(移植自旧 SettingsView)
 function showASRBackendHint() {
   const reason = capabilities.value?.reason || ''
   const needYtDlp = reason.includes('yt-dlp')
@@ -169,268 +213,110 @@ function showASRBackendHint() {
   ).catch(() => { /* 用户关闭弹窗 */ })
 }
 
-function copyInstallHint(hint: string) {
-  navigator.clipboard.writeText(hint).then(() => ElMessage.success('已复制安装命令')).catch(() => ElMessage.error('复制失败'))
-}
-
-// 配置导入后(ConfigBackupCard emit imported)重拉 runtime + 各配置卡
-async function onConfigImported() {
+onMounted(async () => {
+  // 配置卡各自 onMounted 自加载;壳负责 runtime + accounts
   await Promise.all([
-    runtimeStore.fetchRuntime(true),
-    publishCard.value?.reload(),
-    dashScopeCard.value?.reload(),
-    asrS3Card.value?.reload(),
-    recapCard.value?.reload(),
-    webdavCard.value?.reload(),
-    archiveCard.value?.reload(),
-    biliAccountsCard.value?.reload(),
+    runtimeStore.fetchRuntime(),
+    fetchAccounts(),
   ])
-}
+})
+
+// ?section=xxx → 滚动到对应 section(保留旧路由跳转能力)
+watch(
+  () => route.query.section,
+  (section) => {
+    if (section) scrollToSection(String(section))
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
-  <div class="settings-page">
-    <div class="page-header">
-      <h2>设置</h2>
-      <el-button size="small" :loading="runtimeStore.loading" @click="runtimeStore.fetchRuntime(true)">
-        <el-icon><Refresh /></el-icon> 刷新状态
-      </el-button>
-    </div>
+  <div class="settings-v10">
+    <Sidebar :sections="sections" :active-id="activeSection" @navigate="scrollToSection" />
 
-    <el-collapse v-model="activeGroups" class="settings-groups">
-      <!-- 分组 1: 总览(默认展开) -->
-      <el-collapse-item name="grp-overview" title="总览">
-        <div class="settings-card overview-card">
-          <div class="card-header-row">
-            <h3>配置进度</h3>
-            <el-tag size="small" :type="overviewDoneCount === overviewItems.length ? 'success' : 'warning'">
-              {{ overviewDoneCount }}/{{ overviewItems.length }}
-            </el-tag>
-          </div>
+    <main class="settings-content">
+      <PipelineBar :capabilities="capabilities" :config-status="configStatus" @navigate="scrollToSection" />
 
-          <div class="cap-grid">
-            <div v-for="item in overviewItems" :key="item.key" class="cap-item" :class="item.ok ? 'ok' : 'off'">
-              <el-icon :size="18"><CircleCheck v-if="item.ok" /><CircleClose v-else /></el-icon>
-              <div class="cap-text">
-                <strong>{{ item.label }}</strong>
-                <span>{{ item.ok ? '可用' : item.reason || '不可用' }}</span>
-              </div>
-              <el-button v-if="!item.ok" link :type="item.ok ? 'primary' : 'danger'" size="small" @click="handleOverviewAction(item)">
-                {{ item.actionLabel }}
-              </el-button>
-            </div>
-          </div>
+      <section data-section="overview">
+        <OverviewCard :capabilities="capabilities" :config-status="configStatus" @navigate="scrollToSection" />
+      </section>
 
-          <div v-if="runtimeStore.status?.disk_usage?.length" class="disk-info">
-            <span v-for="d in runtimeStore.status.disk_usage" :key="d.path" class="disk-item">
-              {{ d.path }}: {{ d.used_percent.toFixed(0) }}%
-            </span>
-          </div>
+      <section data-section="dashscope">
+        <DashScopeCardV10 :key="`dashscope-${reloadKey}`" @saved="onSaved" />
+      </section>
+      <section data-section="asr-s3">
+        <ASRS3CardV10 :key="`asrs3-${reloadKey}`" @saved="onSaved" />
+      </section>
+      <section data-section="recap">
+        <RecapCardV10 :key="`recap-${reloadKey}`" @saved="onSaved" />
+      </section>
+      <section data-section="webdav">
+        <WebDAVCardV10 :key="`webdav-${reloadKey}`" @saved="onSaved" />
+      </section>
+      <section data-section="publish">
+        <PublishCardV10 :key="`publish-${reloadKey}`" :is-expert="isExpert" @saved="onSaved" />
+      </section>
+      <section data-section="archive">
+        <ArchiveCardV10 :key="`archive-${reloadKey}`" @saved="onSaved" />
+      </section>
+      <section data-section="template">
+        <TemplateCardV10 :key="`template-${reloadKey}`" @saved="onSaved" />
+      </section>
+      <section data-section="glossary">
+        <GlossaryCardV10 :key="`glossary-${reloadKey}`" @saved="onSaved" />
+      </section>
 
-          <!-- 专家段:仍门控,不泄露给非专家 -->
-          <template v-if="isExpert">
-            <el-divider content-position="left" class="expert-divider">配置状态</el-divider>
-            <el-descriptions :column="2" border size="small">
-              <el-descriptions-item label="DashScope">
-                <el-tag :type="configStatus?.dashscope_key_set ? 'success' : 'danger'" size="small">
-                  {{ configStatus?.dashscope_key_set ? '已配置' : '未配置' }}
-                </el-tag>
-              </el-descriptions-item>
-              <el-descriptions-item label="回顾 Provider">
-                {{ configStatus?.recap_provider || '-' }}
-              </el-descriptions-item>
-              <el-descriptions-item label="AI Key">
-                <el-tag :type="configStatus?.recap_key_set ? 'success' : 'danger'" size="small">
-                  {{ configStatus?.recap_key_set ? '已配置' : '未配置' }}
-                </el-tag>
-              </el-descriptions-item>
-              <el-descriptions-item label="WebDAV">
-                <el-tag :type="configStatus?.webdav_configured ? 'success' : 'danger'" size="small">
-                  {{ configStatus?.webdav_configured ? '已配置' : '未配置' }}
-                </el-tag>
-              </el-descriptions-item>
-            </el-descriptions>
-          </template>
-        </div>
-      </el-collapse-item>
+      <section data-section="accounts">
+        <AccountsCardV10
+          :accounts="accounts"
+          :qr-session="qrSession"
+          :poll-result="pollResult"
+          :qr-loading="qrLoading"
+          :qr-saving="qrSaving"
+          @generate-qr="generateQR"
+          @poll="pollQR"
+          @save-qr="saveQR"
+          @set-default="onSetDefault"
+          @delete="onDeleteAccount"
+          @reload="fetchAccounts"
+        />
+      </section>
+      <section data-section="admin-token">
+        <AdminTokenCardV10 />
+      </section>
+      <section data-section="backup">
+        <BackupCardV10 @imported="onImported" />
+      </section>
 
-      <!-- 分组 2: 流水线配置(默认展开) -->
-      <el-collapse-item name="grp-pipeline" title="流水线配置">
-        <DashScopeSettingsCard ref="dashScopeCard" @saved="onConfigSaved" />
-        <ASRS3SettingsCard ref="asrS3Card" @saved="onConfigSaved" />
-        <RecapSettingsCard ref="recapCard" @saved="onConfigSaved" />
-        <WebDAVSettingsCard ref="webdavCard" @saved="onConfigSaved" />
-        <PublishSettingsCard ref="publishCard" :is-expert="isExpert" @saved="onConfigSaved" />
-        <ArchiveSettingsCard ref="archiveCard" :is-expert="isExpert" @saved="onConfigSaved" />
-      </el-collapse-item>
-
-      <!-- 分组 3: 账号与备份(默认收起) -->
-      <el-collapse-item name="grp-accounts" title="账号与备份">
-        <BiliAccountsCard ref="biliAccountsCard" />
-        <AdminTokenCard />
-        <ConfigBackupCard @imported="onConfigImported" />
-      </el-collapse-item>
-
-      <!-- 分组 4: 高级(默认收起) -->
-      <el-collapse-item name="grp-advanced" title="高级设置">
-        <div class="settings-card">
-          <h3>全局术语表</h3>
-          <GlossaryEditor scope="global" />
-        </div>
-        <div class="settings-card">
-          <h3>回顾模板</h3>
-          <RecapTemplateEditor scope="global" />
-        </div>
-
-        <!-- Expert: tools -->
-        <template v-if="isExpert">
-          <div class="settings-card">
-            <h3>外部工具</h3>
-            <el-table :data="toolsList" size="small" stripe>
-              <el-table-column prop="name" label="工具" width="140" />
-              <el-table-column prop="path" label="路径" min-width="200" show-overflow-tooltip />
-              <el-table-column label="状态" width="100">
-                <template #default="{ row }">
-                  <el-tag :type="row.available ? 'success' : 'danger'" size="small">
-                    {{ row.available ? '可用' : '缺失' }}
-                  </el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column v-if="toolsList.some((t) => t.install_hint)" label="安装提示" min-width="220">
-                <template #default="{ row }">
-                  <div v-if="!row.available && row.install_hint" class="install-hint">
-                    <el-text type="info" size="small" style="font-family: monospace">
-                      {{ row.install_hint }}
-                    </el-text>
-                    <el-button link size="small" type="primary" @click="copyInstallHint(row.install_hint)">
-                      复制
-                    </el-button>
-                  </div>
-                </template>
-              </el-table-column>
-            </el-table>
-          </div>
-        </template>
-      </el-collapse-item>
-    </el-collapse>
+      <section data-section="tools">
+        <ToolsCardV10 :tools="toolsList" />
+      </section>
+    </main>
   </div>
 </template>
 
 <style scoped>
-.settings-page {
-  padding: 24px;
-  max-width: 960px;
-  margin: 0 auto;
-}
-
-.page-header {
+/* V10 页面结构:左侧 sidebar(固定宽,由 settings-v10.css 定样式)+ 右侧 content。
+   settings-v10.css 只定义 sidebar/pipeline/card 内部类,这里补顶层 flex 分栏。 */
+.settings-v10 {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
+  align-items: flex-start;
+  min-height: 100%;
 }
 
-.page-header h2 {
-  margin: 0;
-  font-size: 22px;
-  color: #303133;
-}
-
-/* 顶层折叠分组容器 */
-.settings-groups {
-  border-top: none;
-  border-bottom: none;
-}
-
-/* 分组项之间留白 */
-.settings-groups :deep(.el-collapse-item) {
-  margin-bottom: 8px;
-}
-
-/* 分组标题:比卡片内 collapse 更醒目 */
-.settings-groups :deep(.el-collapse-item__header) {
-  font-size: 15px;
-  font-weight: 600;
-  color: #303133;
-  height: 44px;
-  line-height: 44px;
-  padding: 0 4px;
-}
-
-.settings-groups :deep(.el-collapse-item__wrap) {
-  background: transparent;
-}
-
-/* 分组内容区:卡片之间纵向间距 */
-.settings-groups :deep(.el-collapse-item__content) {
-  padding: 12px 4px 8px;
-  display: grid;
-  gap: 16px;
-}
-
-/* Capability grid(总览卡内) */
-.cap-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
-}
-
-.cap-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px;
-  border-radius: 8px;
-  border: 1px solid #ebeef5;
-}
-
-.cap-item.ok { background: #f0f9eb; }
-.cap-item.off { background: #fef0f0; }
-
-.cap-text {
+.settings-content {
+  flex: 1;
+  min-width: 0;
+  padding: 24px 28px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  flex: 1;
+  gap: 20px;
 }
 
-.cap-text strong { font-size: 14px; }
-.cap-text span { font-size: 12px; color: #909399; }
-.cap-item.ok .cap-text strong { color: #67c23a; }
-.cap-item.off .cap-text strong { color: #f56c6c; }
-
-.disk-info {
-  margin-top: 12px;
-  display: flex;
-  gap: 16px;
-  font-size: 13px;
-  color: #909399;
-}
-
-.expert-divider {
-  margin: 16px 0 12px;
-}
-
-.install-hint {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-@media (max-width: 600px) {
-  .settings-page {
+@media (max-width: 860px) {
+  .settings-content {
     padding: 16px;
-  }
-
-  .page-header {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 10px;
-  }
-
-  .cap-grid {
-    grid-template-columns: 1fr;
   }
 }
 </style>
