@@ -482,6 +482,21 @@ paths:
           schema:
             type: string
           description: 按状态过滤(可选,未传则返回全部)
+        - name: channel_id
+          in: query
+          schema:
+            type: string
+          description: 按频道精确过滤(可选,未传则不按频道过滤)
+        - name: source
+          in: query
+          schema:
+            type: string
+          description: 按 source_type 过滤(live/download/import,可选)
+        - name: search
+          in: query
+          schema:
+            type: string
+          description: 按 title/source_id/id 模糊搜索(可选,大小写不敏感)
       responses:
         '200':
           description: 场次列表

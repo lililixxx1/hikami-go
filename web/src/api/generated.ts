@@ -2731,6 +2731,12 @@ export interface components {
             archived_at?: string;
             /** @description 发布目标(omitempty,如 opus id) */
             publish_target?: string;
+            /**
+             * @description 主播显示名(由 List JOIN channels 填充)。
+             *     omitempty。Get/GetBySource 不填(空字符串);List 返回 COALESCE(c.name,'')。
+             *     孤儿 session(channel 已删)为空字符串。
+             */
+            channel_name?: string;
             created_at: string;
             updated_at: string;
         };
@@ -2797,6 +2803,12 @@ export interface components {
              *     omitempty。用于"重新生成回顾"等非推进型任务(published/recap_done 下重跑 recap 失败不打回)。
              */
             bypass_fail_state?: boolean;
+            /**
+             * @description 主播显示名(由 List JOIN channels 填充)。
+             *     omitempty。Get/ListRunning/ListPending 不填(空字符串);List 返回 COALESCE(c.name,'')。
+             *     孤儿 task(channel 已删)为空字符串。
+             */
+            channel_name?: string;
         };
         DownloadByURLRequest: {
             /** @description 归属主播 ID */
@@ -4270,6 +4282,12 @@ export interface operations {
             query?: {
                 /** @description 按状态过滤(可选,未传则返回全部) */
                 status?: string;
+                /** @description 按频道精确过滤(可选,未传则不按频道过滤) */
+                channel_id?: string;
+                /** @description 按 source_type 过滤(live/download/import,可选) */
+                source?: string;
+                /** @description 按 title/source_id/id 模糊搜索(可选,大小写不敏感) */
+                search?: string;
             };
             header?: never;
             path?: never;
