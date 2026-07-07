@@ -1,0 +1,169 @@
+/*
+ * V10 设置页共享结构样式(Phase 5,非 scoped 全局生效)。
+ *
+ * HCard/HInput/HSelect/HSwitch/HCheckbox/HPill 等 H* 组件自带样式(见 ui.css),
+ * 此处仅补 V10 设置页特有的结构类:sidebar / pipeline / form-row-inline / card-actions /
+ * secret-block / capability-grid / account-row / glossary / tool-table 等。
+ * 来源:V10 设计稿「V10 Hikami-Go 全页面重设计.html」#page-settings 段。
+ * 卡内仍可写组件内 scoped 样式覆盖细节。
+ */
+
+/* ── Sidebar ── */
+.settings-v10 .sidebar {
+  width: 228px; min-width: 228px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding: 16px 12px;
+  overflow-y: auto;
+}
+.settings-v10 .sidebar-group { margin-bottom: 4px; }
+.settings-v10 .sidebar-group-header {
+  font-size: 11px; font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.5px;
+  padding: 10px 12px 6px;
+}
+.settings-v10 .sidebar-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; border-radius: var(--radius-md);
+  font-size: 13.5px; color: var(--text-secondary);
+  cursor: pointer; transition: background 0.15s, color 0.15s;
+}
+.settings-v10 .sidebar-item:hover { background: var(--surface-warm); color: var(--text); }
+.settings-v10 .sidebar-item.active { background: var(--accent-bg); color: var(--accent); font-weight: 530; }
+.settings-v10 .sb-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--text-muted); }
+.settings-v10 .sb-dot.done { background: var(--success); }
+.settings-v10 .sb-dot.pending { background: var(--text-muted); }
+.settings-v10 .sb-dot.warning { background: var(--warning); }
+
+/* ── Pipeline ── */
+.settings-v10 .pipeline {
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  background: var(--canvas); border: 1px solid var(--border);
+  border-radius: var(--radius-xl); padding: 16px 20px; margin-bottom: 24px;
+  box-shadow: var(--shadow-card);
+}
+.settings-v10 .pipeline-stage { display: flex; align-items: center; gap: 10px; }
+.settings-v10 .pipeline-dot {
+  width: 28px; height: 28px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12.5px; font-weight: 600; flex-shrink: 0;
+  background: var(--surface-warm); color: var(--text-muted);
+}
+.settings-v10 .pipeline-dot.done { background: var(--accent-bg); color: var(--accent); }
+.settings-v10 .pipeline-dot.partial { background: rgba(221,91,0,0.1); color: var(--warning); }
+.settings-v10 .pipeline-dot.pending { background: var(--surface-warm); color: var(--text-muted); }
+.settings-v10 .pipeline-info { display: flex; flex-direction: column; min-width: 0; }
+.settings-v10 .pipeline-name { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; }
+.settings-v10 .pipeline-status { font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
+.settings-v10 .pipeline-connector {
+  flex: 1; min-width: 24px; height: 2px; background: var(--border-light);
+  border-radius: 1px; margin: 0 6px;
+}
+.settings-v10 .pipeline-connector.done { background: var(--success); opacity: 0.4; }
+.settings-v10 .pipeline-clickable { cursor: pointer; padding: 4px 8px; border-radius: var(--radius-md); }
+.settings-v10 .pipeline-clickable:hover { background: var(--surface-warm); }
+
+/* ── Form rows (inline label + field) ── */
+.settings-v10 .form-row-inline {
+  display: flex; align-items: flex-start; gap: 16px;
+  padding: 14px 0; border-bottom: 1px solid var(--border-light);
+}
+.settings-v10 .form-row-inline:last-child { border-bottom: none; }
+.settings-v10 .form-row-inline > .form-label {
+  min-width: 130px; padding-top: 9px;
+  font-size: 13.5px; font-weight: 580; color: var(--text);
+}
+.settings-v10 .form-field { flex: 1; min-width: 0; }
+.settings-v10 .form-field .input,
+.settings-v10 .form-field .select { max-width: 380px; }
+.settings-v10 .form-hint { font-size: 12.5px; color: var(--text-muted); margin-top: 6px; line-height: 1.5; }
+.settings-v10 .input-group { display: flex; align-items: center; gap: 12px; }
+.settings-v10 .card-actions { display: flex; justify-content: flex-end; gap: 10px; padding-top: 18px; }
+.settings-v10 .card-actions.start { justify-content: flex-start; }
+
+/* ── Secret three-state block ── */
+.settings-v10 .secret-block { display: flex; flex-direction: column; gap: 6px; }
+.settings-v10 .secret-configured { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary); }
+
+/* ── Overview capability grid ── */
+.settings-v10 .cap-grid {
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;
+}
+.settings-v10 .cap-card {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 14px 16px; border: 1px solid var(--border-light);
+  border-radius: var(--radius-md); background: var(--surface-warm);
+}
+.settings-v10 .cap-card.done { border-color: var(--border); background: var(--canvas); }
+.settings-v10 .cap-head { display: flex; align-items: center; gap: 8px; }
+.settings-v10 .cap-title { font-size: 14px; font-weight: 600; color: var(--text); flex: 1; }
+.settings-v10 .cap-reason { font-size: 12.5px; color: var(--text-muted); line-height: 1.5; min-height: 1.5em; }
+.settings-v10 .cap-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.settings-v10 .cap-dot.ok { background: var(--success); }
+.settings-v10 .cap-dot.bad { background: var(--danger); }
+
+/* ── Account rows ── */
+.settings-v10 .account-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 14px; background: var(--surface-warm);
+  border-radius: var(--radius-md); margin-bottom: 8px;
+}
+.settings-v10 .account-row:last-child { margin-bottom: 0; }
+.settings-v10 .account-avatar {
+  width: 32px; height: 32px; border-radius: 50%;
+  background: var(--accent); color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 600; flex-shrink: 0;
+}
+.settings-v10 .account-avatar.muted { background: var(--text-muted); }
+.settings-v10 .account-info { flex: 1; min-width: 0; }
+.settings-v10 .account-name { font-size: 13.5px; font-weight: 550; color: var(--text); }
+.settings-v10 .account-meta { font-size: 12px; color: var(--text-muted); margin-top: 2px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.settings-v10 .account-ops { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
+/* ── Collapse (V10 inline trigger, 不依赖 HCollapse) ── */
+.settings-v10 .collapse-trigger {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 13px; font-weight: 500; color: var(--accent);
+  cursor: pointer; padding: 8px 0 4px; user-select: none;
+  border: none; background: none; font-family: inherit;
+}
+.settings-v10 .collapse-trigger:hover { text-decoration: underline; }
+.settings-v10 .collapse-content { padding-top: 4px; }
+.settings-v10 .collapse-arrow { transition: transform 0.2s; display: inline-block; }
+.settings-v10 .collapse-arrow.open { transform: rotate(90deg); }
+
+/* ── Tool table ── */
+.settings-v10 .tool-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.settings-v10 .tool-table th {
+  text-align: left; font-weight: 550; color: var(--text-muted);
+  font-size: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border);
+}
+.settings-v10 .tool-table td {
+  padding: 9px 12px; border-bottom: 1px solid var(--border-light);
+  color: var(--text-secondary);
+}
+.settings-v10 .tool-table tr:last-child td { border-bottom: none; }
+
+/* ── Extra vars / KV editor ── */
+.settings-v10 .kv-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+.settings-v10 .kv-row .input { max-width: 200px; }
+
+/* ── Glossary ── */
+.settings-v10 .glossary-toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.settings-v10 .candidate-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; background: var(--surface-warm);
+  border-radius: var(--radius-md); margin-bottom: 6px; font-size: 13px;
+}
+.settings-v10 .candidate-row .term { font-weight: 550; color: var(--text); }
+.settings-v10 .candidate-row .count { color: var(--text-muted); font-size: 12px; }
+.settings-v10 .note-block { font-size: 12.5px; color: var(--text-muted); padding: 8px 0; }
+
+/* ── Responsive ── */
+@media (max-width: 860px) {
+  .settings-v10 .sidebar { display: none; }
+  .settings-v10 .form-row-inline { flex-direction: column; gap: 6px; }
+  .settings-v10 .form-row-inline > .form-label { min-width: auto; padding-top: 0; }
+  .settings-v10 .cap-grid { grid-template-columns: 1fr; }
+}
