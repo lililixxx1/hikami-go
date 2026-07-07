@@ -407,6 +407,28 @@ export interface GlossaryNote {
   note: string
 }
 
+// GlossaryCandidate 是回顾生成的术语候选词(待人工审批加入术语表)。
+// GET /api/glossary/candidates(可选 status 过滤)、POST .../candidates/{cid}/approve|reject。
+export interface GlossaryCandidate {
+  id: number
+  channel_id: string
+  term: string
+  canonical: string
+  category: string
+  status: 'pending' | 'approved' | 'rejected'
+  confidence: number
+  score: number
+  occurrence_count: number
+  session_count: number
+  first_session_id: string
+  last_session_id: string
+  reason: string
+  normalized_key: string
+  created_at: string
+  updated_at: string
+  reviewed_at?: string
+}
+
 // ---------- Recap ----------
 
 export interface RecapContent {
