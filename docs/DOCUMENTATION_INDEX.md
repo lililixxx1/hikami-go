@@ -39,7 +39,7 @@
 | [BUSINESS_FLOW.md](BUSINESS_FLOW.md) | 业务流程 |
 | [FRONTEND_ARCHITECTURE.md](FRONTEND_ARCHITECTURE.md) | 前端架构（重构后权威状态） |
 | [BILI_OPUS_CAPTURE_GUIDE.md](BILI_OPUS_CAPTURE_GUIDE.md) | B 站专栏抓包/诊断指南 |
-| [api/](api/) | **后端接口 OpenAPI 3.0 规范**（121 端点 + WebSocket，手写 YAML）。主文件 `openapi.yaml`（paths 内联）+ 15 个 `components/schemas/*.yaml` + `index.html`（Swagger UI）+ `api-gap-analysis.md`（V10 模板 vs 后端对照）+ `README.md`。查看 `make api-docs`，校验 `make api-lint`。 |
+| [api/](api/) | **后端接口 OpenAPI 3.0 规范**（121 端点 + WebSocket，手写 YAML）。主文件 `openapi.yaml`（paths 内联）+ 14 个 `components/schemas/*.yaml` + `index.html`（Swagger UI）+ `api-gap-analysis.md`（V10 模板 vs 后端对照）+ `README.md`。查看 `make api-docs`，校验 `make api-lint`。 |
 
 ## 五、活跃计划（plans/）
 
