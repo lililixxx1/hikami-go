@@ -37,6 +37,29 @@ describe('HDialog', () => {
     await overlay.click()
     expect(wrapper.emitted('update:visible')?.[0]).toEqual([false])
   })
+  it('does not close when clicking dialog content (@click.self on overlay)', async () => {
+    // 嵌套结构 + @click.self:点 dialog 内部(body/footer)不应冒泡触发关闭。
+    // .self 修饰符只在 event.target === overlay 自身时触发,点击子元素不触发。
+    const wrapper = mount(HDialog, {
+      props: { visible: true },
+      slots: { default: 'content' },
+      attachTo: document.body,
+    })
+    const body = document.body.querySelector('.dialog-body') as HTMLElement
+    await body.click()
+    expect(wrapper.emitted('update:visible')).toBeUndefined()
+  })
+  it('dialog is a child of overlay (flex centering requires nesting)', () => {
+    // 验证 DOM 嵌套结构:dialog 必须是 overlay 的子元素,
+    // overlay 的 display:flex;align-items:center;justify-content:center 才能居中 dialog。
+    mount(HDialog, {
+      props: { visible: true },
+      slots: { default: 'x' },
+      attachTo: document.body,
+    })
+    const overlay = document.body.querySelector('.dialog-overlay') as HTMLElement
+    expect(overlay.querySelector('.dialog')).not.toBeNull()
+  })
   it('renders footer slot when provided', () => {
     mount(HDialog, {
       props: { visible: true },
