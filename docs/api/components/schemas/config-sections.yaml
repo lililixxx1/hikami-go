@@ -47,7 +47,8 @@ PublishConfigResponse:
       type: integer
     private_pub:
       type: integer
-      enum: [1, 2]
+      enum: [0, 1, 2]
+      description: 0=未设置/沿用 B 站默认;1=仅自己可见;2=可见范围。允许 0 以保证 GET/PUT round-trip。
     summary_len:
       type: integer
       minimum: 0
@@ -96,7 +97,8 @@ PublishConfigRequest:
       type: integer
     private_pub:
       type: integer
-      enum: [1, 2]
+      enum: [0, 1, 2]
+      description: 0=未设置/沿用 B 站默认;1=仅自己可见;2=可见范围。允许 0 以保证 GET/PUT round-trip。
     summary_len:
       type: integer
       minimum: 0

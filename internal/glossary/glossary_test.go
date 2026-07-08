@@ -695,6 +695,70 @@ func TestImportJSONMissingFields(t *testing.T) {
 	}
 }
 
+// TestImportJSONArrayInput 校验裸数组 body(前端 importGlobalJSON 的典型形态)能被正确导入。
+// 回归 bug 报告 #1:前端 JSON.parse([{...}]) 直接 POST,后端原只接受 GlossaryExport 对象 → 导入永久失败。
+func TestImportJSONArrayInput(t *testing.T) {
+	database := openTestDB(t)
+	store := NewStore(database)
+	ctx := context.Background()
+
+	// 前端实际发送的裸数组形态
+	arrayBody := []byte(`[
+		{"term":"AI","canonical":"人工智能","category":"技术"},
+		{"term":"LLM","canonical":"大语言模型","category":"AI"},
+		{"term":"","canonical":"空term应被跳过"}
+	]`)
+
+	count, err := store.ImportJSON(ctx, "", arrayBody)
+	if err != nil {
+		t.Fatalf("array body should import without error, got: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected 2 valid entries imported, got %d", count)
+	}
+
+	entries, err := store.ListGlobal(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 stored entries, got %d", len(entries))
+	}
+}
+
+// TestImportJSONSingleObjectNoEntries 记录现有契约:单个 GlossaryItem 对象
+// {"term":...} 会作为未知字段被 GlossaryExport 静默忽略(无 ErrInvalidJSON,但 count=0)。
+// 这是 json.Unmarshal 对未知字段的默认行为;不在本修复范围扩展(前端不发此形态)。
+func TestImportJSONSingleObjectNoEntries(t *testing.T) {
+	database := openTestDB(t)
+	store := NewStore(database)
+	ctx := context.Background()
+
+	single := []byte(`{"term":"AI","canonical":"人工智能","category":"技术"}`)
+	count, err := store.ImportJSON(ctx, "", single)
+	if err != nil {
+		t.Fatalf("single object should not error (ignored as unknown fields), got: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("single object imports 0 entries (ignored by GlossaryExport), got %d", count)
+	}
+}
+
+// TestImportJSONInvalidReturnsSentinel 校验非法 JSON 返回 ErrInvalidJSON 哨兵(handler 据此映射 400)。
+func TestImportJSONInvalidReturnsSentinel(t *testing.T) {
+	database := openTestDB(t)
+	store := NewStore(database)
+	ctx := context.Background()
+
+	_, err := store.ImportJSON(ctx, "", []byte("not json at all"))
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+	if !errors.Is(err, ErrInvalidJSON) {
+		t.Fatalf("expected ErrInvalidJSON sentinel, got: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // DeleteByIDs
 // ---------------------------------------------------------------------------

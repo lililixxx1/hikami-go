@@ -317,6 +317,26 @@ paths:
   /api/channels/{id}:
     parameters:
       - $ref: '#/components/parameters/ChannelID'
+    get:
+      tags: [频道]
+      operationId: getChannel
+      summary: 获取单个频道详情
+      description: 返回单个频道的完整字段。序列化形态与 listChannels 的单元素一致。
+      responses:
+        '200':
+          description: 频道详情
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/channel.yaml#/Channel'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 频道不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
     put:
       tags: [频道]
       operationId: updateChannel
@@ -1636,7 +1656,7 @@ paths:
               schema:
                 $ref: 'components/schemas/config-sections.yaml#/PublishConfigResponse'
         '400':
-          description: 字段值非法(如 private_pub 非 1/2,timer_pub_time 超区间)
+          description: 字段值非法(如 private_pub 非 0/1/2,timer_pub_time 超区间)
           content:
             application/json:
               schema:
@@ -2292,8 +2312,9 @@ paths:
       operationId: importGlobalGlossaryJSON
       summary: 从 JSON 导入全局词条
       description: |
-        请求体是 **raw JSON**(GlossaryExport 结构),非 application/json wrapper。
-        后端 io.ReadAll(ctx.Request.Body) 直接读。
+        请求体是 **raw JSON**,非 application/json wrapper。后端 io.ReadAll(ctx.Request.Body) 直接读。
+        支持两种格式:① GlossaryExport 对象 `{"entries":[...],"note":""}`(ExportJSON 产出);
+        ② 裸数组 `[{...},{...}]`(前端 JSON.parse 典型形态)。非法 JSON 返回 400。
       requestBody:
         required: true
         content:

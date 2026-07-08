@@ -4,6 +4,12 @@
 >
 > 生成时间:2026-07-07。基于 openapi.yaml tag 分布:场次 22 / 术语表 28 / 配置 15 / B站账号 14 / 运行时 10 / 回顾模板 10 / 频道 8 / 任务 7 / 系统 4 / 密钥 2 / WebSocket 1。
 
+> **2026-07-08 更新**(bug 报告修复,branch `fix/bug-report-2026-07-08`):
+> - **术语表 import/json**:支持裸数组 `[{...}]` + GlossaryExport 对象双格式;非法 JSON 返回 400(原 500)。
+> - **publish.private_pub**:接受 `0`(未设置/沿用默认),原仅 `1/2` → 干净默认配置 GET/PUT round-trip 失败。
+> - **新增 GET /api/channels/{id}**:单频道详情路由(原仅列表 + PUT/DELETE)。
+> - **核实澄清**:bug 报告 #1 的"服务崩溃/HTTP 000"不成立(实测返回 500,Gin Recovery 不崩);#2 的"topic_name 非法 UTF-8"不成立(默认空串,脏数据在该用户 DB);#5 的"cover_url 默认 /home/cc"不成立(仓库无此默认值)。
+
 ## 状态图例
 
 | 标记 | 含义 |

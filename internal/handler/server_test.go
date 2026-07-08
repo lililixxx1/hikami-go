@@ -83,6 +83,96 @@ func TestChannelRoutes(t *testing.T) {
 	}
 }
 
+// TestGetChannelByID 回归 bug 报告 #4:GET /api/channels/:id 之前未注册(404)。
+// 验证单频道详情路由可返回 200 + 字段,不存在 id 返回 404。
+func TestGetChannelByID(t *testing.T) {
+	server := newTestServer(t)
+
+	// 先创建一个频道
+	createBody := `{"id":"huize","name":"灰泽满Hikami","uid":1298779265,"enabled":true}`
+	create := performRequest(server, http.MethodPost, "/api/channels", createBody)
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body = %s", create.Code, create.Body.String())
+	}
+
+	// GET 单频道详情
+	get := performRequest(server, http.MethodGet, "/api/channels/huize", "")
+	if get.Code != http.StatusOK {
+		t.Fatalf("get by id status = %d, body = %s", get.Code, get.Body.String())
+	}
+	if !strings.Contains(get.Body.String(), `"id":"huize"`) || !strings.Contains(get.Body.String(), `"uid":1298779265`) {
+		t.Fatalf("get by id body missing fields: %s", get.Body.String())
+	}
+
+	// 不存在的 id → 404
+	notFound := performRequest(server, http.MethodGet, "/api/channels/does_not_exist", "")
+	if notFound.Code != http.StatusNotFound {
+		t.Fatalf("get non-existent id expected 404, got %d", notFound.Code)
+	}
+}
+
+// TestImportGlossaryJSONAcceptsArrayBody 回归 bug 报告 #1:
+// 前端 importGlobalJSON 发裸数组 body,后端原只接受 GlossaryExport 对象 → 导入永久失败。
+// 验证数组 body 被接受(200 + imported 计数),非法 JSON 返回 400(回归原 500)。
+func TestImportGlossaryJSONAcceptsArrayBody(t *testing.T) {
+	server := newTestServer(t)
+
+	arrayBody := `[{"term":"AI","canonical":"人工智能"},{"term":"LLM","canonical":"大语言模型"}]`
+	rec := performRequest(server, http.MethodPost, "/api/glossary/import/json", arrayBody)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("array body import status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var result map[string]int
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal response: %v, body=%s", err, rec.Body.String())
+	}
+	if result["imported"] != 2 {
+		t.Fatalf("expected imported=2, got %d", result["imported"])
+	}
+
+	// 对象格式仍兼容(ExportJSON 产出的形态)
+	objectBody := `{"entries":[{"term":"GPU","canonical":"图形处理器"}],"note":""}`
+	rec2 := performRequest(server, http.MethodPost, "/api/glossary/import/json", objectBody)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("object body import status = %d, body = %s", rec2.Code, rec2.Body.String())
+	}
+}
+
+// TestImportGlossaryJSONInvalidReturns400 回归 bug 报告 #1 次要问题:
+// 非 JSON 输入应返回 400(客户端错误),而非原走通用 writeError 的 500。
+func TestImportGlossaryJSONInvalidReturns400(t *testing.T) {
+	server := newTestServer(t)
+
+	rec := performRequest(server, http.MethodPost, "/api/glossary/import/json", "not json at all")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid JSON expected 400, got %d (body=%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestPublishConfigRoundTripAcceptsZeroPrivatePub 回归 bug 报告 #2:
+// GET 默认返回 private_pub=0,但 PUT 校验拒绝 0 → 干净默认配置 round-trip 失败。
+// 验证 GET 默认 body 原样 PUT 回去 → 200。
+func TestPublishConfigRoundTripAcceptsZeroPrivatePub(t *testing.T) {
+	server := newTestServer(t)
+
+	// 1. GET 默认发布配置
+	getRec := performRequest(server, http.MethodGet, "/api/config/publish", "")
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET status = %d", getRec.Code)
+	}
+	body := getRec.Body.String()
+	// 确认默认状态确实包含 private_pub:0(round-trip 失败的前提)
+	if !strings.Contains(body, `"private_pub":0`) {
+		t.Fatalf("expected default body to contain private_pub:0, got: %s", body)
+	}
+
+	// 2. 原样 PUT 回去
+	putRec := performRequest(server, http.MethodPut, "/api/config/publish", body)
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("round-trip PUT expected 200, got %d (body=%s)", putRec.Code, putRec.Body.String())
+	}
+}
+
 func TestGetRecapModels(t *testing.T) {
 	server := newTestServer(t)
 

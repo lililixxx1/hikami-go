@@ -135,6 +135,8 @@
 }
 ```
 
+> **ImportJSON 双格式**(2026-07-08):除上述 `GlossaryExport` 对象外,也接受**裸数组** `[{...},{...}]`(前端 `importGlobalJSON` 的 `JSON.parse` 典型形态)。两种格式都解析失败时返回 `ErrInvalidJSON` 哨兵(handler 层 `writeError` 映射为 400,而非通用 500)。范式与 `internal/recap/template.go` 的 `ImportJSON` 对称。
+
 ## 关键依赖与配置
 
 - 依赖 `database/sql`（SQLite）
@@ -201,7 +203,7 @@
   - 备注: GetNoteEmpty、SetAndGetNote
   - 计数: CountGlobal
   - Markdown 导入: ImportMarkdownBasic、ImportMarkdownMultiVariant、ImportMarkdownCategory、ImportMarkdownSkipHeaders、ImportMarkdownSkipIdentical、ImportMarkdownEmpty、ImportMarkdownOnlyHeadings
-  - JSON 导入/导出: ExportImportJSON（往返测试）、ImportJSONInvalid、ImportJSONMissingFields
+  - JSON 导入/导出: ExportImportJSON（往返测试）、ImportJSONInvalid、ImportJSONMissingFields、ImportJSONArrayInput（裸数组格式,2026-07-08）、ImportJSONSingleObjectNoEntries、ImportJSONInvalidReturnsSentinel（400 哨兵）
   - 批量删除: DeleteByIDs、DeleteByIDsEmpty、DeleteByIDsChannelScope
   - 批量切换: ToggleByIDs、ToggleByIDsEmpty、ToggleByIDsChannelScope
 

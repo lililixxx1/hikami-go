@@ -14,8 +14,9 @@ import (
 
 // Sentinel errors.
 var (
-	ErrNotFound  = errors.New("glossary entry not found")
-	ErrDuplicate = errors.New("glossary entry already exists")
+	ErrNotFound    = errors.New("glossary entry not found")
+	ErrDuplicate   = errors.New("glossary entry already exists")
+	ErrInvalidJSON = errors.New("invalid glossary JSON")
 )
 
 // nowRFC3339 返回本地时区的 RFC3339 时间字符串，与 sessions/tasks 表的时间字段
@@ -466,10 +467,21 @@ func (s *Store) ExportJSON(ctx context.Context, channelID string) ([]byte, error
 // ImportJSON imports glossary entries from a JSON document.
 // Validates that each entry has non-empty term and canonical fields.
 // Returns the number of entries imported.
+//
+// 支持两种输入格式(与 internal/recap/template.go ImportJSON 对称):
+//  1. GlossaryExport 对象(ExportJSON 的产出):{"channel_id":"","entries":[...],"note":""}
+//  2. 裸数组(前端 JSON.parse 典型形态):[{"term":"a","canonical":"b"}, ...]
+//
+// 两种格式都解析失败时返回 ErrInvalidJSON(handler 层映射为 400,而非通用 500)。
 func (s *Store) ImportJSON(ctx context.Context, channelID string, data []byte) (int, error) {
 	var export GlossaryExport
 	if err := json.Unmarshal(data, &export); err != nil {
-		return 0, fmt.Errorf("invalid JSON: %w", err)
+		// 回退:尝试把 body 当作裸 entries 数组解析(前端 importGlobalJSON 的常见形态)。
+		var entries []GlossaryItem
+		if arrErr := json.Unmarshal(data, &entries); arrErr != nil {
+			return 0, fmt.Errorf("%w: %v", ErrInvalidJSON, err)
+		}
+		export.Entries = entries
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)

@@ -287,6 +287,7 @@ func (s *Server) routes() {
 	p.POST("/api/onboarding/dismiss", s.handleOnboardingDismiss)
 
 	p.GET("/api/channels", s.listChannels)
+	p.GET("/api/channels/:id", s.getChannel)
 	p.POST("/api/channels/identify", s.identifyChannel)
 	p.POST("/api/channels/identify/save", s.saveIdentifiedChannel)
 	p.POST("/api/channels", s.createChannel)
@@ -512,6 +513,16 @@ func (s *Server) listChannels(ctx *gin.Context) {
 		return
 	}
 	ctx.JSON(http.StatusOK, gin.H{"items": channels})
+}
+
+// getChannel 返回单个频道详情。序列化形态与 listChannels 的单元素一致。
+func (s *Server) getChannel(ctx *gin.Context) {
+	ch, err := s.channels.Get(ctx.Request.Context(), ctx.Param("id"))
+	if err != nil {
+		writeError(ctx, err) // ErrNotFound → 404(已有映射)
+		return
+	}
+	ctx.JSON(http.StatusOK, ch)
 }
 
 func (s *Server) identifyChannel(ctx *gin.Context) {
@@ -1547,6 +1558,8 @@ func writeError(ctx *gin.Context, err error) {
 		ctx.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 	case errors.Is(err, session.ErrInvalid):
 		writeBadRequest(ctx, err.Error())
+	case errors.Is(err, glossary.ErrInvalidJSON):
+		writeBadRequest(ctx, err.Error())
 	case errors.Is(err, asr.ErrSessionNotReady):
 		ctx.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 	case errors.Is(err, asr.ErrAudioMissing):
@@ -2047,8 +2060,11 @@ func (s *Server) updatePublishConfig(ctx *gin.Context) {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "summary_len must be >= 0"})
 		return
 	}
-	if input.PrivatePub != nil && *input.PrivatePub != 1 && *input.PrivatePub != 2 {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "private_pub must be 1 or 2"})
+	// private_pub 允许 0(未设置/沿用 B 站默认)、1(仅自己可见)、2(可见范围)。
+	// 允许 0 是为了保证 round-trip:GET 在默认/未配置状态返回 0,PUT 必须能原样接回,
+	// 否则干净的默认配置无法保存(详见 bug 报告 #2 核实)。
+	if input.PrivatePub != nil && *input.PrivatePub != 0 && *input.PrivatePub != 1 && *input.PrivatePub != 2 {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "private_pub must be 0, 1 or 2"})
 		return
 	}
 	if input.Original != nil && *input.Original != 0 && *input.Original != 1 {
