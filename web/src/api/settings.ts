@@ -65,6 +65,21 @@ export function updateArchiveConfig(config: ArchiveConfig): Promise<ArchiveConfi
   return put('/api/config/archive', config)
 }
 
+// tools 段(yt_dlp/rclone 路径)。generated.ts 尚未含此端点(OpenAPI spec 待同步生成),
+// 过渡期手写内联类型;openapi-typescript 重新生成后改走 types-derived 派生类型。
+export interface ToolsConfig {
+  yt_dlp: string
+  rclone: string
+}
+
+export function getToolsConfig(): Promise<ToolsConfig> {
+  return get('/api/config/tools')
+}
+
+export function updateToolsConfig(config: Partial<ToolsConfig>): Promise<ToolsConfig> {
+  return put('/api/config/tools', config)
+}
+
 export function getOnboardingStatus(): Promise<{
   needed: boolean
   has_tools: boolean

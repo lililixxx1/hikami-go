@@ -287,7 +287,7 @@ watch(
       </section>
 
       <section data-section="tools">
-        <ToolsCardV10 :tools="toolsList" />
+        <ToolsCardV10 :key="`tools-${reloadKey}`" :tools="toolsList" @saved="onSaved" />
       </section>
     </main>
   </div>

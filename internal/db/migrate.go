@@ -201,6 +201,19 @@ ALTER TABLE channels ADD COLUMN publish_topics TEXT NOT NULL DEFAULT '';`,
 	// 仅写 last_error 不降级 session 主状态（避免 published/recap_done 被打成 failed）。
 	// 与 worker.WithBypassFailState（类型级）叠加：syncSessionState 取 task.BypassFailState || 类型级。
 	`ALTER TABLE tasks ADD COLUMN bypass_fail_state INTEGER NOT NULL DEFAULT 0;`,
+	// v35: runtime_settings 表 CHECK 约束扩展 +tools 段。
+	// 新增 tools 段(yt_dlp/rclone 路径,见 config.ToolsSectionDTO)。SQLite 不支持直接改 CHECK,
+	// 用标准 12 步表重建模式(临时表→复制→DROP→CREATE 新表→回灌→DROP 临时表)。
+	// 关键:新表 CHECK 白名单扩到 7 段,旧表数据全量回灌(publish/asr_s3/dashscope/recap_ai/webdav/archive 无损)。
+	`CREATE TABLE runtime_settings_v35 (
+			section TEXT NOT NULL CHECK (section IN ('publish','asr_s3','dashscope','recap_ai','webdav','archive','tools')),
+			data TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(data)),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+			PRIMARY KEY (section)
+		);`,
+	`INSERT INTO runtime_settings_v35 (section, data, updated_at) SELECT section, data, updated_at FROM runtime_settings;`,
+	`DROP TABLE runtime_settings;`,
+	`ALTER TABLE runtime_settings_v35 RENAME TO runtime_settings;`,
 }
 
 func Migrate(database *sql.DB) error {

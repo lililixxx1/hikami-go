@@ -407,6 +407,8 @@ func baseCfg() *Config {
 	return &Config{
 		OutputRoot: "./data",
 		DBPath:     "./hikami.db",
+		YTDLP:      "yt-dlp",
+		Rclone:     "rclone",
 		Worker:     WorkerConfig{Num: 2},
 		LiveRecord: LiveRecordConfig{AudioContainer: "m4a"},
 		Publish: PublishConfig{
@@ -545,6 +547,58 @@ func TestApplyOverrides_InjectsWebDAVTombstone(t *testing.T) {
 	// 注入后 EffectivePassword 不回落明文
 	if got := cfg.WebDAV.EffectivePassword(); got != "" {
 		t.Fatalf("after managed injection, EffectivePassword should be empty, got %q", got)
+	}
+}
+
+// tools section(yt_dlp/rclone 路径)覆盖测试。
+func TestApplyOverrides_OverridesToolsFields(t *testing.T) {
+	cfg := baseCfg()
+	ytdlp := "/custom/yt-dlp"
+	rclone := "/usr/bin/rclone"
+	overrides := map[string]json.RawMessage{
+		"tools": rawJSON(t, ToolsSectionDTO{YTDLP: &ytdlp, Rclone: &rclone}),
+	}
+	if err := ApplyOverrides(cfg, overrides); err != nil {
+		t.Fatalf("ApplyOverrides: %v", err)
+	}
+	if cfg.YTDLP != "/custom/yt-dlp" || cfg.Rclone != "/usr/bin/rclone" {
+		t.Fatalf("tools not overridden: yt_dlp=%q rclone=%q", cfg.YTDLP, cfg.Rclone)
+	}
+}
+
+// presence-aware:nil 字段(未传 rclone)保留基线。
+func TestApplyOverrides_ToolsPresenceAware(t *testing.T) {
+	cfg := baseCfg()
+	ytdlp := "/custom/yt-dlp"
+	overrides := map[string]json.RawMessage{
+		"tools": rawJSON(t, ToolsSectionDTO{YTDLP: &ytdlp}), // rclone 字段为 nil
+	}
+	if err := ApplyOverrides(cfg, overrides); err != nil {
+		t.Fatalf("ApplyOverrides: %v", err)
+	}
+	if cfg.YTDLP != "/custom/yt-dlp" {
+		t.Fatalf("YTDLP should be overridden, got %q", cfg.YTDLP)
+	}
+	if cfg.Rclone != "rclone" {
+		t.Fatalf("Rclone should retain baseline, got %q", cfg.Rclone)
+	}
+}
+
+// presence-aware:空字符串 "" 被覆盖为空(probe 会降级,符合"清空回退默认探测"语义)。
+func TestApplyOverrides_ToolsEmptyStringClears(t *testing.T) {
+	cfg := baseCfg()
+	empty := ""
+	overrides := map[string]json.RawMessage{
+		"tools": rawJSON(t, ToolsSectionDTO{YTDLP: &empty}),
+	}
+	if err := ApplyOverrides(cfg, overrides); err != nil {
+		t.Fatalf("ApplyOverrides: %v", err)
+	}
+	if cfg.YTDLP != "" {
+		t.Fatalf("YTDLP should be cleared to empty, got %q", cfg.YTDLP)
+	}
+	if cfg.Rclone != "rclone" {
+		t.Fatalf("Rclone should retain baseline, got %q", cfg.Rclone)
 	}
 }
 

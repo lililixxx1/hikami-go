@@ -195,6 +195,58 @@ func TestPublishConfigRoundTripNormalizesZeroPrivatePub(t *testing.T) {
 	}
 }
 
+// TestToolsConfigRoundTrip 验证 yt-dlp/rclone 路径的 GET/PUT 往返。
+// PUT 后持久化到 runtime_settings,GET 回读一致;保存后 cfg.YTDLP/Rclone 已更新
+// (refreshRuntimeStatus 会重新 Probe,这里只验证配置写入,不验证 Probe 副作用)。
+func TestToolsConfigRoundTrip(t *testing.T) {
+	server := newTestServer(t)
+
+	// 1. GET 初始值(newTestServer 用 viper 默认,通常解析到 "yt-dlp"/"rclone" 命令名)
+	getRec := performRequest(server, http.MethodGet, "/api/config/tools", "")
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET tools status = %d, body=%s", getRec.Code, getRec.Body.String())
+	}
+
+	// 2. PUT 自定义路径 → 200 + 持久化
+	putBody := `{"yt_dlp":"/custom/yt-dlp","rclone":"/usr/local/bin/rclone"}`
+	putRec := performRequest(server, http.MethodPut, "/api/config/tools", putBody)
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("PUT tools status = %d, body=%s", putRec.Code, putRec.Body.String())
+	}
+	if !strings.Contains(putRec.Body.String(), `"yt_dlp":"/custom/yt-dlp"`) {
+		t.Fatalf("expected PUT response yt_dlp=/custom/yt-dlp, got: %s", putRec.Body.String())
+	}
+	if !strings.Contains(putRec.Body.String(), `"rclone":"/usr/local/bin/rclone"`) {
+		t.Fatalf("expected PUT response rclone=/usr/local/bin/rclone, got: %s", putRec.Body.String())
+	}
+
+	// 3. GET 回读一致(round-trip 幂等)
+	getRec2 := performRequest(server, http.MethodGet, "/api/config/tools", "")
+	if getRec2.Code != http.StatusOK {
+		t.Fatalf("GET tools after PUT status = %d", getRec2.Code)
+	}
+	if !strings.Contains(getRec2.Body.String(), `"yt_dlp":"/custom/yt-dlp"`) {
+		t.Fatalf("GET after PUT should reflect persisted yt_dlp, got: %s", getRec2.Body.String())
+	}
+
+	// 4. presence-aware:只传 yt_dlp,rclone 保持上次值(不被清空)
+	putPartial := `{"yt_dlp":"/other/ytdlp"}`
+	putRec3 := performRequest(server, http.MethodPut, "/api/config/tools", putPartial)
+	if putRec3.Code != http.StatusOK {
+		t.Fatalf("PUT tools partial status = %d", putRec3.Code)
+	}
+	if !strings.Contains(putRec3.Body.String(), `"rclone":"/usr/local/bin/rclone"`) {
+		t.Fatalf("partial PUT should retain rclone, got: %s", putRec3.Body.String())
+	}
+
+	// 5. runtime_settings 表持久化了 tools section
+	var section string
+	err := server.runtimeCfg.DB().QueryRow("SELECT section FROM runtime_settings WHERE section='tools'").Scan(&section)
+	if err != nil {
+		t.Fatalf("tools section not persisted in runtime_settings: %v", err)
+	}
+}
+
 func TestGetRecapModels(t *testing.T) {
 	server := newTestServer(t)
 

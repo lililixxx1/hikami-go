@@ -349,6 +349,8 @@ func (s *Server) routes() {
 	p.PUT("/api/config/webdav", s.updateWebDAVConfig)
 	p.GET("/api/config/archive", s.getArchiveConfig)
 	p.PUT("/api/config/archive", s.updateArchiveConfig)
+	p.GET("/api/config/tools", s.getToolsConfig)
+	p.PUT("/api/config/tools", s.updateToolsConfig)
 	p.GET("/api/config/export", s.handleExportConfig)
 	p.POST("/api/config/import", s.handleImportConfig)
 
@@ -2992,6 +2994,81 @@ func archiveConfigToDTO(a config.ArchiveConfig) config.ArchiveSectionDTO {
 		AutoAfterPublish: &a.AutoAfterPublish,
 		CleanupPolicy:    &a.CleanupPolicy,
 	}
+}
+
+// --- Tools config handlers (yt-dlp / rclone 路径) ---
+// 只暴露软依赖工具(见 config.ToolsSectionDTO 注释);ffmpeg/ffprobe 仍只能改 config.yaml。
+// 保存后 refreshRuntimeStatus 会重新 Probe,前端 onSaved 重拉 runtime 即看到新的工具状态。
+
+type toolsConfigResponse struct {
+	YTDLP  string `json:"yt_dlp"`
+	Rclone string `json:"rclone"`
+}
+
+func newToolsConfigResponse(cfg config.Config) toolsConfigResponse {
+	return toolsConfigResponse{
+		YTDLP:  cfg.YTDLP,
+		Rclone: cfg.Rclone,
+	}
+}
+
+func (s *Server) getToolsConfig(ctx *gin.Context) {
+	s.publishMu.RLock()
+	resp := newToolsConfigResponse(*s.cfg)
+	s.publishMu.RUnlock()
+	ctx.JSON(http.StatusOK, resp)
+}
+
+func (s *Server) updateToolsConfig(ctx *gin.Context) {
+	var input struct {
+		YTDLP  *string `json:"yt_dlp"`
+		Rclone *string `json:"rclone"`
+	}
+	if err := ctx.ShouldBindJSON(&input); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid json body"})
+		return
+	}
+	// trim 空白(presence-aware:nil=不改该字段,""=清空,probe 会降级)。
+	if input.YTDLP != nil {
+		v := strings.TrimSpace(*input.YTDLP)
+		input.YTDLP = &v
+	}
+	if input.Rclone != nil {
+		v := strings.TrimSpace(*input.Rclone)
+		input.Rclone = &v
+	}
+
+	s.publishMu.Lock()
+	nextYTDLP := s.cfg.YTDLP
+	nextRclone := s.cfg.Rclone
+	if input.YTDLP != nil {
+		nextYTDLP = *input.YTDLP
+	}
+	if input.Rclone != nil {
+		nextRclone = *input.Rclone
+	}
+	dto := config.ToolsSectionDTO{
+		YTDLP:  &nextYTDLP,
+		Rclone: &nextRclone,
+	}
+	if err := runtimeconfig.WithTx(ctx.Request.Context(), s.runtimeCfg.DB(), func(tx *sql.Tx) error {
+		return s.persistSectionTx(ctx.Request.Context(), tx, "tools", dto)
+	}); err != nil {
+		s.publishMu.Unlock()
+		slog.Warn("persist tools config failed", "error", err)
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist tools config"})
+		return
+	}
+	s.cfg.YTDLP = nextYTDLP
+	s.cfg.Rclone = nextRclone
+	resp := newToolsConfigResponse(*s.cfg)
+	cfgSnapshot := *s.cfg
+	gen := s.bumpConfigGen()
+	s.publishMu.Unlock()
+
+	s.refreshRuntimeStatus(cfgSnapshot, gen)
+
+	ctx.JSON(http.StatusOK, resp)
 }
 
 // --- Global glossary handlers ---
