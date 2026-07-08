@@ -15,6 +15,13 @@
   border-right: 1px solid var(--border);
   padding: 16px 12px;
   overflow-y: auto;
+  /* sticky:让 sidebar 在 .main-content(AppLayout 的滚动容器)滚动时钉在视口顶部。
+     配合 max-height(视口减去 topbar 高度)+ 已有的 overflow-y:auto,
+     sidebar 内容超长时自身可独立滚动,不再随右侧 content 上滚消失。 */
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+  max-height: calc(100vh - var(--topbar-h));
 }
 .settings-v10 .sidebar-group { margin-bottom: 4px; }
 .settings-v10 .sidebar-group-header {
