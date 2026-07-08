@@ -149,27 +149,49 @@ func TestImportGlossaryJSONInvalidReturns400(t *testing.T) {
 	}
 }
 
-// TestPublishConfigRoundTripAcceptsZeroPrivatePub 回归 bug 报告 #2:
-// GET 默认返回 private_pub=0,但 PUT 校验拒绝 0 → 干净默认配置 round-trip 失败。
-// 验证 GET 默认 body 原样 PUT 回去 → 200。
-func TestPublishConfigRoundTripAcceptsZeroPrivatePub(t *testing.T) {
+// TestPublishConfigRoundTripNormalizesZeroPrivatePub 回归 bug 报告 #2:
+// 原先 GET 默认/未配置状态返回 private_pub=0,但 PUT 校验拒绝 0 → round-trip 失败。
+// 修复:全局段 0 无"继承"语义(区别于频道级),PUT 把 0 规范化为 viper 默认 2(公开),
+// 既保证 round-trip 幂等,又避免 publisher 收到 0 原样发给 B 站专栏 API。
+func TestPublishConfigRoundTripNormalizesZeroPrivatePub(t *testing.T) {
 	server := newTestServer(t)
 
-	// 1. GET 默认发布配置
+	// 1. PUT 一个 private_pub=0 的 body → 应被规范化为 2 后接受(200)
+	zeroBody := `{"private_pub":0}`
+	putRec := performRequest(server, http.MethodPut, "/api/config/publish", zeroBody)
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("PUT with private_pub=0 expected 200 (normalized to 2), got %d (body=%s)", putRec.Code, putRec.Body.String())
+	}
+	if !strings.Contains(putRec.Body.String(), `"private_pub":2`) {
+		t.Fatalf("expected response private_pub=2 after normalization, got: %s", putRec.Body.String())
+	}
+
+	// 2. GET 现在 returns 2(规范化后持久化),round-trip 幂等
 	getRec := performRequest(server, http.MethodGet, "/api/config/publish", "")
 	if getRec.Code != http.StatusOK {
 		t.Fatalf("GET status = %d", getRec.Code)
 	}
-	body := getRec.Body.String()
-	// 确认默认状态确实包含 private_pub:0(round-trip 失败的前提)
-	if !strings.Contains(body, `"private_pub":0`) {
-		t.Fatalf("expected default body to contain private_pub:0, got: %s", body)
+	if !strings.Contains(getRec.Body.String(), `"private_pub":2`) {
+		t.Fatalf("expected GET to return private_pub=2 after normalization, got: %s", getRec.Body.String())
+	}
+	// 原样 PUT 回去必然通过
+	putRec2 := performRequest(server, http.MethodPut, "/api/config/publish", getRec.Body.String())
+	if putRec2.Code != http.StatusOK {
+		t.Fatalf("round-trip PUT after normalization expected 200, got %d", putRec2.Code)
 	}
 
-	// 2. 原样 PUT 回去
-	putRec := performRequest(server, http.MethodPut, "/api/config/publish", body)
-	if putRec.Code != http.StatusOK {
-		t.Fatalf("round-trip PUT expected 200, got %d (body=%s)", putRec.Code, putRec.Body.String())
+	// 3. 合法值 1/2 直接接受
+	for _, v := range []string{`{"private_pub":1}`, `{"private_pub":2}`} {
+		rec := performRequest(server, http.MethodPut, "/api/config/publish", v)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("PUT %s expected 200, got %d", v, rec.Code)
+		}
+	}
+
+	// 4. 非法值(如 3)仍拒绝
+	bad := performRequest(server, http.MethodPut, "/api/config/publish", `{"private_pub":3}`)
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("PUT private_pub=3 expected 400, got %d", bad.Code)
 	}
 }
 

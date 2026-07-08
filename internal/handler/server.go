@@ -2060,12 +2060,20 @@ func (s *Server) updatePublishConfig(ctx *gin.Context) {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "summary_len must be >= 0"})
 		return
 	}
-	// private_pub 允许 0(未设置/沿用 B 站默认)、1(仅自己可见)、2(可见范围)。
-	// 允许 0 是为了保证 round-trip:GET 在默认/未配置状态返回 0,PUT 必须能原样接回,
-	// 否则干净的默认配置无法保存(详见 bug 报告 #2 核实)。
-	if input.PrivatePub != nil && *input.PrivatePub != 0 && *input.PrivatePub != 1 && *input.PrivatePub != 2 {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "private_pub must be 0, 1 or 2"})
-		return
+	// private_pub:B 站专栏可见范围,1=仅自己可见、2=公开(默认)。
+	// 全局配置段没有"继承上层"的语义(区别于频道级 PublishPrivatePub 用 0 表示"继承全局"),
+	// 因此全局 0 无意义 —— 规范化为 viper 默认 2(公开),保证:
+	//   ① GET/PUT round-trip 幂等(GET 拿到的值原样 PUT 回去必然通过校验);
+	//   ② publisher 永远不会收到 0(publisher.go:62 的 fallback 把频道级 0 回落到本全局值,
+	//      若全局也是 0 会原样发给 B 站专栏 API 导致发布失败)。
+	if input.PrivatePub != nil && *input.PrivatePub != 1 && *input.PrivatePub != 2 {
+		if *input.PrivatePub == 0 {
+			two := 2
+			input.PrivatePub = &two
+		} else {
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": "private_pub must be 1 or 2"})
+			return
+		}
 	}
 	if input.Original != nil && *input.Original != 0 && *input.Original != 1 {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "original must be 0 or 1"})

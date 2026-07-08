@@ -6,7 +6,7 @@
 
 > **2026-07-08 更新**(bug 报告修复,branch `fix/bug-report-2026-07-08`):
 > - **术语表 import/json**:支持裸数组 `[{...}]` + GlossaryExport 对象双格式;非法 JSON 返回 400(原 500)。
-> - **publish.private_pub**:接受 `0`(未设置/沿用默认),原仅 `1/2` → 干净默认配置 GET/PUT round-trip 失败。
+> - **publish.private_pub**:全局段 PUT 把 `0` 规范化为 viper 默认 `2`(公开),原仅 `1/2` 导致 GET(默认/未配置返回 0)/PUT round-trip 失败。规范化(而非放宽接受 0)既保证 round-trip 幂等,又避免 publisher 把 0 原样发给 B 站专栏 API。
 > - **新增 GET /api/channels/{id}**:单频道详情路由(原仅列表 + PUT/DELETE)。
 > - **核实澄清**:bug 报告 #1 的"服务崩溃/HTTP 000"不成立(实测返回 500,Gin Recovery 不崩);#2 的"topic_name 非法 UTF-8"不成立(默认空串,脏数据在该用户 DB);#5 的"cover_url 默认 /home/cc"不成立(仓库无此默认值)。
 

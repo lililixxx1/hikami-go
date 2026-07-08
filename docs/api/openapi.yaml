@@ -1656,7 +1656,7 @@ paths:
               schema:
                 $ref: 'components/schemas/config-sections.yaml#/PublishConfigResponse'
         '400':
-          description: 字段值非法(如 private_pub 非 0/1/2,timer_pub_time 超区间)
+          description: 字段值非法(如 private_pub 非 0/1/2,且 0 会被规范化为 2;timer_pub_time 超区间)
           content:
             application/json:
               schema:

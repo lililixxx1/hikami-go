@@ -47,8 +47,8 @@ PublishConfigResponse:
       type: integer
     private_pub:
       type: integer
-      enum: [0, 1, 2]
-      description: 0=未设置/沿用 B 站默认;1=仅自己可见;2=可见范围。允许 0 以保证 GET/PUT round-trip。
+      enum: [1, 2]
+      description: 'B 站专栏可见范围:1=仅自己可见,2=公开(默认)。全局段传入 0 会被规范化为 2(全局段无"继承上层"语义;区别于频道级 publish_private_pub 用 0 表示继承全局)。'
     summary_len:
       type: integer
       minimum: 0
@@ -97,8 +97,8 @@ PublishConfigRequest:
       type: integer
     private_pub:
       type: integer
-      enum: [0, 1, 2]
-      description: 0=未设置/沿用 B 站默认;1=仅自己可见;2=可见范围。允许 0 以保证 GET/PUT round-trip。
+      enum: [1, 2]
+      description: 'B 站专栏可见范围:1=仅自己可见,2=公开(默认)。全局段传入 0 会被规范化为 2(全局段无"继承上层"语义;区别于频道级 publish_private_pub 用 0 表示继承全局)。'
     summary_len:
       type: integer
       minimum: 0
