@@ -31,7 +31,7 @@
 
 配置结构体对应 `config.example.yaml` 的所有字段。主要分组：
 
-- **全局**: `output_root`, `db_path`, `log_format`, `ffmpeg`, `ffprobe`, `yt_dlp`, `rclone`, `cookie_encryption_key`
+- **全局**: `output_root`(默认 `hikami-go`,2026-07-08 从 `huizeman` 改名), `db_path`, `log_format`, `ffmpeg`, `ffprobe`, `yt_dlp`, `rclone`(后两者 2026-07-08 起可通过 web `/api/config/tools` 修改,持久化到 runtime_settings tools 段), `cookie_encryption_key`
 - **Web**: `web.enabled`（默认 true）, `web.listen`（默认 `:6334`）
 - **Worker**: `worker.num`（唯一并发旋钮；原 `worker.live_record_num` 已删除——调度器从不读它，现走共享 `worker.num` 池）
 - **Cron**: `cron.discovery`, `cron.live_check`
@@ -163,7 +163,7 @@
 
 ## 测试与质量
 
-- `config_test.go`: 31 个测试用例，覆盖：
+- `config_test.go`: 45 个测试用例，覆盖：
   - 默认值: TestLoad_DefaultValues（Web/Worker/DashScope/RecapAI 全部默认值验证）
   - 校验: TestValidate_MissingOutputRoot、TestValidate_MissingDbPath、TestValidate_Success、TestValidate_WorkerNumZero、TestValidate_PublishModeInvalid、TestValidate_DownloaderBackend、**TestValidate_ArchiveCleanupPolicy**（archive.cleanup_policy 合法值校验）
   - 日志级别: TestLogLevel_Default、TestLogLevel_Explicit（6 种输入映射）
@@ -172,7 +172,7 @@
   - 覆盖: TestLoad_ExplicitOverrides（Web.Listen / RecapAI.Model / RecapAI.MaxTokens）
   - 下载后端 helper: TestDownloaderConfigHelpers、TestNativeConfigured_RequiresPassword
   - **Effective\* 默认值**：TestRecapAIEffectiveDefaults、TestDashScopeEffectiveAPIKeyEnv、TestASRS3EffectiveAccessKeyEnv、TestEffectivePasswordEnv_DefaultFallback、TestEffectivePassword_Managed*（true 不回退 / false 回退 Yaml）、TestEffectiveAccessKey_ManagedDoesNotFallBack
-  - **ApplyOverrides（runtimeconfig 持久化覆盖）**：TestApplyOverrides_OverridesPublishFields、_MissingSectionRetainsBaseline、_EmptyObjectRetainsBaseline、_CorruptJSONSkippedNotFatal、_DoesNotFreezeHiddenRecapFields、_InjectsWebDAVTombstone
+  - **ApplyOverrides（runtimeconfig 持久化覆盖）**：TestApplyOverrides_OverridesPublishFields、_MissingSectionRetainsBaseline、_EmptyObjectRetainsBaseline、_CorruptJSONSkippedNotFatal、_DoesNotFreezeHiddenRecapFields、_InjectsWebDAVTombstone、**_OverridesToolsFields / _ToolsPresenceAware / _ToolsEmptyStringClears（2026-07-08 新增 tools 段：全覆盖 / nil 保留基线 / 空串清空）**
   - **向后兼容**：TestLoadConfigBackcompatLiveRecordNumRemoved（旧配置含已删的 `worker.live_record_num` 字段，viper 静默忽略不报错）
 
 ## 常见问题 (FAQ)

@@ -1903,6 +1903,43 @@ paths:
         '401':
           $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
 
+  /api/config/tools:
+    get:
+      tags: [配置]
+      operationId: getToolsConfig
+      summary: 获取外部工具路径配置(yt-dlp / rclone)
+      responses:
+        '200':
+          description: 工具路径配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/ToolsConfigResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    put:
+      tags: [配置]
+      operationId: updateToolsConfig
+      summary: 更新外部工具路径配置
+      description: |
+        全字段可选(presence-aware)。保存后重新 Probe 刷新能力状态(无需重启)。
+        只暴露 yt-dlp/rclone(软依赖,改错仅降级);ffmpeg/ffprobe 为硬依赖不在此暴露。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/config-sections.yaml#/ToolsConfigRequest'
+      responses:
+        '200':
+          description: 更新后的工具路径配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/ToolsConfigResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
   /api/config/export:
     get:
       tags: [配置]

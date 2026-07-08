@@ -64,11 +64,12 @@
    - 唯一索引: `(channel_id, normalized_key)`
    - 索引: `(channel_id, status, score DESC, updated_at DESC)`, `(last_session_id)`
 
-10. **runtime_settings** -- 全局运行时配置覆盖（v33 新增）
+10. **runtime_settings** -- 全局运行时配置覆盖（v33 新增,v35 CHECK 白名单扩展 +tools 段）
    - `section TEXT PK`, `data TEXT NOT NULL DEFAULT '{}'`, `updated_at TEXT NOT NULL DEFAULT (datetime('now'))`
-   - `CHECK(section IN ('publish','asr_s3','dashscope','recap_ai','webdav','archive'))` 白名单限定 6 个全局段
+   - `CHECK(section IN ('publish','asr_s3','dashscope','recap_ai','webdav','archive','tools'))` 白名单限定 7 个全局段（v35 加 tools）
    - `CHECK(json_valid(data))` 保证 JSON 完整性
    - config.yaml 降级为只读基线，UI 改动按段存此表；启动时 `config.ApplyOverrides` 用本表覆盖 viper 基线（详见 `internal/runtimeconfig/CLAUDE.md`）
+   - **v35 迁移**:SQLite 不支持直接改 CHECK,用标准表重建模式（建 runtime_settings_v35 → INSERT 复制 → DROP 旧表 → RENAME）。旧库 6 段数据全量回灌无损升级。
 
 **迁移版本：**
 
@@ -136,7 +137,7 @@ A: `recap_templates` 表中的 `system_prompt` 和 `user_format` 字段使用 `_
 ## 相关文件清单
 
 - `db.go` -- 数据库打开
-- `migrate.go` -- 迁移定义与执行（34 个版本）
+- `migrate.go` -- 迁移定义与执行（35 个版本）
 - `migrate_test.go` -- 迁移测试（9 个用例）
 
 ## 变更记录 (Changelog)

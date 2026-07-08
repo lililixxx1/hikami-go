@@ -435,6 +435,33 @@ ArchiveConfigRequest:
       type: string
       enum: [none, temp, generated, all]
 
+ToolsConfigResponse:
+  type: object
+  required: [yt_dlp, rclone]
+  description: |
+    GET /api/config/tools 响应。yt_dlp/rclone 可执行文件路径或命令名。
+    留空时 probe 走 exec.LookPath 默认探测(降级为 unavailable,不阻止启动)。
+    仅暴露软依赖工具;ffmpeg/ffprobe 为硬依赖(改错会 fatal 阻止启动),
+    仍需在 config.yaml 修改,不在此暴露。
+  properties:
+    yt_dlp:
+      type: string
+      description: yt-dlp 可执行文件路径或命令名(留空走 PATH 探测)
+    rclone:
+      type: string
+      description: rclone 可执行文件路径或命令名(留空走 PATH 探测)
+
+ToolsConfigRequest:
+  type: object
+  description: |
+    PUT /api/config/tools 请求。全字段可选(presence-aware):
+    字段缺席=不改,空串 "" =清空(回退 PATH 探测)。保存后重新 Probe 刷新能力状态。
+  properties:
+    yt_dlp:
+      type: string
+    rclone:
+      type: string
+
 # ───── Export / Import ─────
 ConfigExportBundle:
   type: object
