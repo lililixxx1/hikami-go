@@ -488,6 +488,15 @@ type ArchiveSectionDTO struct {
 	CleanupPolicy    *string `json:"cleanup_policy,omitempty"`
 }
 
+// ToolsSectionDTO 对应 updateToolsConfig 管理的字段。
+// 只含软依赖工具路径(yt_dlp/rclone);ffmpeg/ffprobe 不在此暴露
+// (其 required=true,改错路径会导致下次启动 fatal,web 不可达无法纠正,
+//  风险过高;仍只能通过 config.yaml 修改)。
+type ToolsSectionDTO struct {
+	YTDLP  *string `json:"yt_dlp,omitempty"`
+	Rclone *string `json:"rclone,omitempty"`
+}
+
 // ApplyOverrides 用 runtime_settings 的 per-section JSON 覆盖 cfg 的对应段。
 //
 // 语义：
@@ -693,6 +702,17 @@ func ApplyOverrides(cfg *Config, overrides map[string]json.RawMessage) error {
 		}
 	}
 
+	if raw, ok := overrides["tools"]; ok && len(raw) > 0 {
+		var dto ToolsSectionDTO
+		apply("tools", &dto)
+		if dto.YTDLP != nil {
+			cfg.YTDLP = *dto.YTDLP
+		}
+		if dto.Rclone != nil {
+			cfg.Rclone = *dto.Rclone
+		}
+	}
+
 	return cfg.Validate()
 }
 
@@ -721,7 +741,7 @@ func Load(path string) (*Config, error) {
 }
 
 func setDefaults(v *viper.Viper) {
-	v.SetDefault("output_root", "huizeman")
+	v.SetDefault("output_root", "hikami-go")
 	v.SetDefault("db_path", "hikami.db")
 	v.SetDefault("ffmpeg", defaultCommandPath("ffmpeg"))
 	v.SetDefault("ffprobe", defaultCommandPath("ffprobe"))

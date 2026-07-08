@@ -819,7 +819,7 @@ flowchart TB
 
 ### 默认值与校验
 
-- 默认输出目录为 `huizeman`，默认数据库为 `hikami.db`。
+- 默认输出目录为 `hikami-go`，默认数据库为 `hikami.db`。
 - 默认命令：`ffmpeg`、`ffprobe`、`yt-dlp`、`rclone`。
 - 默认监听 `:8080`，worker 数为 3。
 - 默认定时：回放发现 `@every 20m`，直播检查 `@every 30s`。
