@@ -1114,6 +1114,7 @@ func TestStatsOverviewAndCostUseCorrectPrice(t *testing.T) {
 }
 
 // TestRecapContentRoundTrip 验证 PUT recap/content 写入后 GET 能读到更新内容（slug 清洗一致性）。
+// 使用含空格的 slug 验证 safeRecapName 在 GET 和 PUT 路径一致生效。
 func TestRecapContentRoundTrip(t *testing.T) {
 	server := newTestServer(t)
 
@@ -1132,13 +1133,21 @@ func TestRecapContentRoundTrip(t *testing.T) {
 		t.Fatalf("create download session: %v", err)
 	}
 
+	// 直接在 DB 中设置含空格的 slug，模拟 sanitizeSlug 之前的异常历史数据。
+	// safeRecapName 会把空格替换为下划线：GET 和 PUT 必须使用相同的清洗后文件名。
+	if _, err := server.sessions.DB().Exec(
+		`UPDATE sessions SET slug = 'test slug with space' WHERE id = ?`, sess.ID,
+	); err != nil {
+		t.Fatalf("update slug: %v", err)
+	}
+
 	// Mark local_available = true（PUT handler 检查 LocalAvailable）
 	if err := server.sessions.SetLocalAvailable(context.Background(), sess.ID, true); err != nil {
 		t.Fatalf("set local available: %v", err)
 	}
 
 	// Create recap directory to ensure file can be written
-	recapDir := filepath.Join(server.cfg.OutputRoot, sess.ChannelID, sess.Slug, "recap")
+	recapDir := filepath.Join(server.cfg.OutputRoot, sess.ChannelID, "test slug with space", "recap")
 	if err := os.MkdirAll(recapDir, 0o755); err != nil {
 		t.Fatalf("mkdir recap dir: %v", err)
 	}
@@ -1170,7 +1179,7 @@ func TestRecapContentRoundTrip(t *testing.T) {
 		t.Fatalf("markdown not string: %T", result["markdown"])
 	}
 	if markdown != newContent {
-		t.Errorf("markdown = %q, want %q", markdown, newContent)
+		t.Errorf("markdown = %q, want %q (slug cleaning mismatch between GET and PUT?)", markdown, newContent)
 	}
 }
 

@@ -108,14 +108,16 @@ function startEdit(): void {
 
 async function saveEdit(): Promise<void> {
   if (!props.session) return
+  // 在 await 前捕获稳定的 session ID，防止保存期间切换场次导致 emit 错误 ID
+  const sessionId = props.session.id
   saving.value = true
   try {
     // 直接调 PUT recap/content(就近复用),保存后退出编辑态。
     const { updateRecapContent } = await import('@/api/sessions')
-    await updateRecapContent(props.session.id, draft.value)
+    await updateRecapContent(sessionId, draft.value)
     HMessage.success('回顾内容已保存')
     editing.value = false
-    emit('saved', props.session.id)
+    emit('saved', sessionId)
   } catch {
     // 错误 toast 由 client.ts 拦截器统一处理；保持编辑态让用户可重试
   } finally {

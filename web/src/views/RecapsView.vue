@@ -236,15 +236,23 @@ async function openRecap(s: DerivedSession) {
 
 // 回顾内容编辑保存后重新拉取，使预览区域显示最新内容。
 // 竞态保护：保存期间用户可能切换了 session，只在 sessionID 匹配时更新。
+// 二次保护：请求返回后再次检查，防止切换后旧响应覆盖新 session 内容。
 async function onRecapSaved(sessionId: string) {
   if (!selectedSession.value || selectedSession.value.id !== sessionId) return
   recapLoading.value = true
   try {
-    recapContent.value = (await getRecapContent(sessionId)) as unknown as DerivedRecapContent
+    const fresh = (await getRecapContent(sessionId)) as unknown as DerivedRecapContent
+    // 请求返回后再次检查：若期间用户切换了 session，不覆盖新 session 的内容
+    if (selectedSession.value?.id === sessionId) {
+      recapContent.value = fresh
+    }
   } catch {
     // 刷新失败由 client.ts 拦截器提示；保持旧内容
   } finally {
-    recapLoading.value = false
+    // 只在仍是同一 session 时清除 loading（切换后的 session 有自己的 loading 生命周期）
+    if (selectedSession.value?.id === sessionId) {
+      recapLoading.value = false
+    }
   }
 }
 
