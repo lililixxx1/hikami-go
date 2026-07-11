@@ -26,6 +26,13 @@ type Lister interface {
 	List(ctx context.Context, sourceURL string, cookieFile string) ([]Entry, error)
 }
 
+// TitleResolver 按 channelID + sourceID 解析视频真实标题。
+// 空标题时 discover 调用它取真实标题；失败时实现应返回 sourceID 作为兜底。
+// 由 download.Handler 实现，通过 WithTitleResolver option 注入。
+type TitleResolver interface {
+	ResolveDownloadTitle(ctx context.Context, channelID, sourceID string) string
+}
+
 type YTDLPLister struct {
 	Command string
 }
@@ -72,10 +79,20 @@ func (l YTDLPLister) List(ctx context.Context, sourceURL string, cookieFile stri
 }
 
 type Manager struct {
-	channels *channel.Store
-	sessions *session.Store
-	workers  *worker.Pool
-	lister   Lister
+	channels      *channel.Store
+	sessions      *session.Store
+	workers       *worker.Pool
+	lister        Lister
+	titleResolver TitleResolver // 可选，nil 时不解析空标题
+}
+
+// Option 配置 Manager 的可选依赖。
+type Option func(*Manager)
+
+// WithTitleResolver 注入标题解析器，使 discover 在 yt-dlp --flat-playlist
+// 返回空标题时通过 B站 view API 取真实标题。
+func WithTitleResolver(r TitleResolver) Option {
+	return func(m *Manager) { m.titleResolver = r }
 }
 
 type Result struct {
@@ -101,13 +118,17 @@ type ExecuteItem struct {
 	SourceURL string `json:"source_url"`
 }
 
-func NewManager(channels *channel.Store, sessions *session.Store, workers *worker.Pool, lister Lister) *Manager {
-	return &Manager{
+func NewManager(channels *channel.Store, sessions *session.Store, workers *worker.Pool, lister Lister, options ...Option) *Manager {
+	m := &Manager{
 		channels: channels,
 		sessions: sessions,
 		workers:  workers,
 		lister:   lister,
 	}
+	for _, opt := range options {
+		opt(m)
+	}
+	return m
 }
 
 func (m *Manager) DiscoverAll(ctx context.Context) ([]Result, error) {
@@ -227,15 +248,16 @@ func (m *Manager) PreviewAll(ctx context.Context) ([]Result, error) {
 func (m *Manager) Execute(ctx context.Context, items []ExecuteItem) []Result {
 	results := make([]Result, 0, len(items))
 	for _, item := range items {
+		title := m.resolveTitle(ctx, item.ChannelID, item.SourceID, item.Title)
 		result := Result{
 			ChannelID: item.ChannelID,
 			SourceID:  item.SourceID,
-			Title:     item.Title,
+			Title:     title,
 		}
 		createdSession, created, err := m.sessions.CreateDownload(ctx, session.CreateDownloadInput{
 			ChannelID: item.ChannelID,
 			SourceID:  item.SourceID,
-			Title:     item.Title,
+			Title:     title,
 			SourceURL: item.SourceURL,
 		})
 		if err != nil {
@@ -262,7 +284,7 @@ func (m *Manager) Execute(ctx context.Context, items []ExecuteItem) []Result {
 		} else {
 			result.TaskID = task.ID
 		}
-		slog.Info("discover execute accepted replay", "channel_id", item.ChannelID, "source_id", item.SourceID, "session_id", createdSession.ID, "task_id", result.TaskID, "title", item.Title)
+		slog.Info("discover execute accepted replay", "channel_id", item.ChannelID, "source_id", item.SourceID, "session_id", createdSession.ID, "task_id", result.TaskID, "title", title)
 		results = append(results, result)
 	}
 	return results
@@ -319,6 +341,19 @@ func annotateExists(ctx context.Context, sessions *session.Store, results []Resu
 	return nil
 }
 
+// resolveTitle 对空标题做延迟解析：yt-dlp --flat-playlist 下 B站合集/系列的 title 经常为空，
+// 此时通过 TitleResolver（由 download.Handler 实现）调 B站 view API 取真实标题。
+// 无 resolver 时返回 sourceID（与 CreateDownload 的空标题兜底一致）。
+func (m *Manager) resolveTitle(ctx context.Context, channelID, sourceID, currentTitle string) string {
+	if strings.TrimSpace(currentTitle) != "" {
+		return currentTitle
+	}
+	if m.titleResolver == nil {
+		return sourceID
+	}
+	return m.titleResolver.ResolveDownloadTitle(ctx, channelID, sourceID)
+}
+
 func (m *Manager) DiscoverChannel(ctx context.Context, item channel.Channel) ([]Result, error) {
 	entries, err := m.lister.List(ctx, item.ReplaySourceURL, item.DownloadCookieFile)
 	if err != nil {
@@ -329,35 +364,36 @@ func (m *Manager) DiscoverChannel(ctx context.Context, item channel.Channel) ([]
 	createdCount := 0
 	titlePrefix := strings.TrimSpace(item.TitlePrefix)
 	for _, entry := range entries {
-		if titlePrefix != "" && !matchAnyPrefix(entry.Title, titlePrefix) {
-			slog.Info("discover skipped replay", "channel_id", item.ID, "source_id", entry.ID, "reason", "title_prefix_mismatch", "title", entry.Title, "title_prefix", titlePrefix)
+		title := m.resolveTitle(ctx, item.ID, entry.ID, entry.Title)
+		if titlePrefix != "" && !matchAnyPrefix(title, titlePrefix) {
+			slog.Info("discover skipped replay", "channel_id", item.ID, "source_id", entry.ID, "reason", "title_prefix_mismatch", "title", title, "title_prefix", titlePrefix)
 			continue
 		}
 		if item.DiscoverLimit > 0 && createdCount >= item.DiscoverLimit {
-			slog.Info("discover skipped replay", "channel_id", item.ID, "source_id", entry.ID, "reason", "discover_limit_reached", "title", entry.Title, "limit", item.DiscoverLimit)
+			slog.Info("discover skipped replay", "channel_id", item.ID, "source_id", entry.ID, "reason", "discover_limit_reached", "title", title, "limit", item.DiscoverLimit)
 			break
 		}
 		createdSession, created, err := m.sessions.CreateDownload(ctx, session.CreateDownloadInput{
 			ChannelID: item.ID,
 			SourceID:  entry.ID,
-			Title:     entry.Title,
+			Title:     title,
 			SourceURL: entryURL(entry),
 		})
 		result := Result{
 			ChannelID: item.ID,
 			SourceID:  entry.ID,
-			Title:     entry.Title,
+			Title:     title,
 			Created:   created,
 		}
 		if err != nil {
 			result.Error = err.Error()
 			results = append(results, result)
-			slog.Info("discover skipped replay", "channel_id", item.ID, "source_id", entry.ID, "reason", "create_session_failed", "title", entry.Title, "error", err.Error())
+			slog.Info("discover skipped replay", "channel_id", item.ID, "source_id", entry.ID, "reason", "create_session_failed", "title", title, "error", err.Error())
 			continue
 		}
 		result.SessionID = createdSession.ID
 		if !created {
-			slog.Info("discover accepted replay", "channel_id", item.ID, "source_id", entry.ID, "session_id", createdSession.ID, "reason", "already_exists", "title", entry.Title, "created", false)
+			slog.Info("discover accepted replay", "channel_id", item.ID, "source_id", entry.ID, "session_id", createdSession.ID, "reason", "already_exists", "title", title, "created", false)
 		}
 		if created {
 			createdCount++
@@ -375,7 +411,7 @@ func (m *Manager) DiscoverChannel(ctx context.Context, item channel.Channel) ([]
 		}
 		results = append(results, result)
 		if created {
-			slog.Info("discover accepted replay", "channel_id", item.ID, "source_id", entry.ID, "session_id", createdSession.ID, "task_id", result.TaskID, "title", entry.Title, "created", true)
+			slog.Info("discover accepted replay", "channel_id", item.ID, "source_id", entry.ID, "session_id", createdSession.ID, "task_id", result.TaskID, "title", title, "created", true)
 		}
 	}
 	if results == nil {
@@ -394,15 +430,16 @@ func (m *Manager) PreviewChannel(ctx context.Context, item channel.Channel) ([]R
 	results := make([]Result, 0, len(entries))
 	titlePrefix := strings.TrimSpace(item.TitlePrefix)
 	for _, entry := range entries {
-		if titlePrefix != "" && !matchAnyPrefix(entry.Title, titlePrefix) {
-			slog.Info("discover preview skipped replay", "channel_id", item.ID, "source_id", entry.ID, "reason", "title_prefix_mismatch", "title", entry.Title, "title_prefix", titlePrefix)
+		title := m.resolveTitle(ctx, item.ID, entry.ID, entry.Title)
+		if titlePrefix != "" && !matchAnyPrefix(title, titlePrefix) {
+			slog.Info("discover preview skipped replay", "channel_id", item.ID, "source_id", entry.ID, "reason", "title_prefix_mismatch", "title", title, "title_prefix", titlePrefix)
 			continue
 		}
-		slog.Info("discover preview accepted replay", "channel_id", item.ID, "source_id", entry.ID, "title", entry.Title)
+		slog.Info("discover preview accepted replay", "channel_id", item.ID, "source_id", entry.ID, "title", title)
 		results = append(results, Result{
 			ChannelID: item.ID,
 			SourceID:  entry.ID,
-			Title:     entry.Title,
+			Title:     title,
 			SourceURL: entryURL(entry),
 		})
 	}

@@ -474,7 +474,7 @@ func (h *Handler) CreateFromURL(ctx context.Context, channelID, rawURL string) (
 	}
 	sourceID := biliutil.ExtractVideoID(rawURL)
 	cleanURL := biliutil.NormalizeSourceURL(rawURL)
-	title := h.resolveDownloadTitle(ctx, channelID, sourceID)
+	title := h.ResolveDownloadTitle(ctx, channelID, sourceID)
 	createdSession, created, err := h.sessions.CreateDownload(ctx, session.CreateDownloadInput{
 		ChannelID: channelID,
 		SourceID:  sourceID,
@@ -495,11 +495,12 @@ func (h *Handler) CreateFromURL(ctx context.Context, channelID, rawURL string) (
 	})
 }
 
-// resolveDownloadTitle 通过 view API 取视频真实标题并清洗为直播主题（如「晚上好」），
+// ResolveDownloadTitle 通过 view API 取视频真实标题并清洗为直播主题（如「晚上好」），
 // 修复「用官方录播链接导入时标题变成 BV 号」的问题。取标题失败（风控/网络/无 cookie）时
 // 退回 sourceID（BV 号），不阻断导入——与历史兜底行为一致，下游仍可正常跑流水线。
 // cookie 解析复用 HandleTask 的策略：账号池（账号化配置 → 默认下载账号 → legacy 文件）→ 退化到频道配置。
-func (h *Handler) resolveDownloadTitle(ctx context.Context, channelID, sourceID string) string {
+// 导出方法，实现 discover.TitleResolver 接口。
+func (h *Handler) ResolveDownloadTitle(ctx context.Context, channelID, sourceID string) string {
 	cookieHeader := h.downloadCookieHeader(ctx, channelID)
 	info, err := biliutil.FetchVideoInfo(ctx, sourceID, cookieHeader)
 	if err != nil {

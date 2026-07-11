@@ -382,3 +382,180 @@ func TestPreviewAllLimitBreaksAfterExistingItem(t *testing.T) {
 		t.Fatalf("BV5 should be truncated after limit reached: %+v", got)
 	}
 }
+
+// --- Title resolver tests ---
+
+// fakeTitleResolver 记录调用并返回预设标题。
+type fakeTitleResolver struct {
+	titles map[string]string
+	calls  []string
+}
+
+func (r *fakeTitleResolver) ResolveDownloadTitle(_ context.Context, _, sourceID string) string {
+	r.calls = append(r.calls, sourceID)
+	if t, ok := r.titles[sourceID]; ok {
+		return t
+	}
+	return sourceID // 兜底
+}
+
+// emptyTitleLister 模拟 yt-dlp --flat-playlist 下 B站标题为空的场景。
+type emptyTitleLister struct{}
+
+func (emptyTitleLister) List(_ context.Context, _ string, _ string) ([]Entry, error) {
+	return []Entry{
+		{ID: "BV1", Title: "", WebpageURL: "https://www.bilibili.com/video/BV1"},
+		{ID: "BV2", Title: "已有标题", WebpageURL: "https://www.bilibili.com/video/BV2"},
+	}, nil
+}
+
+// TestDiscoverChannelResolvesEmptyTitle 验证 DiscoverChannel 对空标题调 TitleResolver 取真实标题。
+func TestDiscoverChannelResolvesEmptyTitle(t *testing.T) {
+	database := newDiscoverTestDB(t)
+	// 移除 title_prefix 以避免过滤
+	if _, err := database.Exec(`UPDATE channels SET title_prefix = '' WHERE id = 'huize'`); err != nil {
+		t.Fatalf("update channel: %v", err)
+	}
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	resolver := &fakeTitleResolver{titles: map[string]string{"BV1": "真实标题1"}}
+	manager := NewManager(
+		channel.NewStore(database),
+		session.NewStore(database),
+		pool,
+		emptyTitleLister{},
+		WithTitleResolver(resolver),
+	)
+
+	ch, err := channel.NewStore(database).Get(context.Background(), "huize")
+	if err != nil {
+		t.Fatalf("get channel: %v", err)
+	}
+	results, err := manager.DiscoverChannel(context.Background(), ch)
+	if err != nil {
+		t.Fatalf("discover channel: %v", err)
+	}
+
+	// BV1 空标题 → resolver 被调用，返回 "真实标题1"
+	// BV2 有标题 → resolver 不被调用
+	if len(resolver.calls) != 1 || resolver.calls[0] != "BV1" {
+		t.Fatalf("resolver should be called once for BV1, got: %v", resolver.calls)
+	}
+
+	var bv1, bv2 *Result
+	for i := range results {
+		switch results[i].SourceID {
+		case "BV1":
+			bv1 = &results[i]
+		case "BV2":
+			bv2 = &results[i]
+		}
+	}
+	if bv1 == nil || bv1.Title != "真实标题1" {
+		t.Fatalf("BV1 title should be resolved to '真实标题1', got: %+v", bv1)
+	}
+	if bv2 == nil || bv2.Title != "已有标题" {
+		t.Fatalf("BV2 title should remain '已有标题', got: %+v", bv2)
+	}
+}
+
+// TestPreviewChannelResolvesEmptyTitle 验证 PreviewChannel 也解析空标题。
+func TestPreviewChannelResolvesEmptyTitle(t *testing.T) {
+	database := newDiscoverTestDB(t)
+	if _, err := database.Exec(`UPDATE channels SET title_prefix = '' WHERE id = 'huize'`); err != nil {
+		t.Fatalf("update channel: %v", err)
+	}
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	resolver := &fakeTitleResolver{titles: map[string]string{"BV1": "预览标题1"}}
+	manager := NewManager(
+		channel.NewStore(database),
+		session.NewStore(database),
+		pool,
+		emptyTitleLister{},
+		WithTitleResolver(resolver),
+	)
+
+	ch, err := channel.NewStore(database).Get(context.Background(), "huize")
+	if err != nil {
+		t.Fatalf("get channel: %v", err)
+	}
+	results, err := manager.PreviewChannel(context.Background(), ch)
+	if err != nil {
+		t.Fatalf("preview channel: %v", err)
+	}
+
+	if len(resolver.calls) != 1 {
+		t.Fatalf("resolver should be called once for BV1, got: %v", resolver.calls)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if results[0].Title != "预览标题1" {
+		t.Fatalf("BV1 title should be '预览标题1', got %q", results[0].Title)
+	}
+	if results[1].Title != "已有标题" {
+		t.Fatalf("BV2 title should remain '已有标题', got %q", results[1].Title)
+	}
+}
+
+// TestExecuteResolvesEmptyTitle 验证 Execute 对空标题做防御性解析。
+func TestExecuteResolvesEmptyTitle(t *testing.T) {
+	database := newDiscoverTestDB(t)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	resolver := &fakeTitleResolver{titles: map[string]string{"BV1": "执行标题1"}}
+	manager := NewManager(
+		channel.NewStore(database),
+		session.NewStore(database),
+		pool,
+		fakeLister{},
+		WithTitleResolver(resolver),
+	)
+
+	results := manager.Execute(context.Background(), []ExecuteItem{
+		{ChannelID: "huize", SourceID: "BV1", Title: "", SourceURL: "https://www.bilibili.com/video/BV1"},
+		{ChannelID: "huize", SourceID: "BV2", Title: "已有标题", SourceURL: "https://www.bilibili.com/video/BV2"},
+	})
+
+	if len(resolver.calls) != 1 || resolver.calls[0] != "BV1" {
+		t.Fatalf("resolver should be called once for BV1, got: %v", resolver.calls)
+	}
+	if results[0].Title != "执行标题1" {
+		t.Fatalf("BV1 title should be '执行标题1', got %q", results[0].Title)
+	}
+	if results[1].Title != "已有标题" {
+		t.Fatalf("BV2 title should remain '已有标题', got %q", results[1].Title)
+	}
+}
+
+// TestDiscoverNoResolverKeepsOriginalBehavior 验证无 TitleResolver 时保持原行为（空标题兜底 sourceID）。
+func TestDiscoverNoResolverKeepsOriginalBehavior(t *testing.T) {
+	database := newDiscoverTestDB(t)
+	if _, err := database.Exec(`UPDATE channels SET title_prefix = '' WHERE id = 'huize'`); err != nil {
+		t.Fatalf("update channel: %v", err)
+	}
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	manager := NewManager(
+		channel.NewStore(database),
+		session.NewStore(database),
+		pool,
+		emptyTitleLister{},
+		// 无 WithTitleResolver
+	)
+
+	ch, err := channel.NewStore(database).Get(context.Background(), "huize")
+	if err != nil {
+		t.Fatalf("get channel: %v", err)
+	}
+	results, err := manager.DiscoverChannel(context.Background(), ch)
+	if err != nil {
+		t.Fatalf("discover channel: %v", err)
+	}
+
+	// BV1 空标题 → CreateDownload 兜底为 sourceID "BV1"
+	// BV2 有标题 → 保持 "已有标题"
+	if results[0].Title != "BV1" {
+		t.Fatalf("BV1 title should fallback to sourceID 'BV1', got %q", results[0].Title)
+	}
+	if results[1].Title != "已有标题" {
+		t.Fatalf("BV2 title should remain '已有标题', got %q", results[1].Title)
+	}
+}
