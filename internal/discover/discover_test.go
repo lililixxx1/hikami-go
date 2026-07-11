@@ -559,3 +559,91 @@ func TestDiscoverNoResolverKeepsOriginalBehavior(t *testing.T) {
 		t.Fatalf("BV2 title should remain '已有标题', got %q", results[1].Title)
 	}
 }
+
+// TestResolveTitleFallsBackOnEmptyResolverResult 验证 resolver 返回空串时兜底为 sourceID。
+func TestResolveTitleFallsBackOnEmptyResolverResult(t *testing.T) {
+	database := newDiscoverTestDB(t)
+	if _, err := database.Exec(`UPDATE channels SET title_prefix = '' WHERE id = 'huize'`); err != nil {
+		t.Fatalf("update channel: %v", err)
+	}
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	// resolver 对 BV1 返回空串
+	resolver := &fakeTitleResolver{titles: map[string]string{"BV1": ""}}
+	manager := NewManager(
+		channel.NewStore(database),
+		session.NewStore(database),
+		pool,
+		emptyTitleLister{},
+		WithTitleResolver(resolver),
+	)
+
+	ch, err := channel.NewStore(database).Get(context.Background(), "huize")
+	if err != nil {
+		t.Fatalf("get channel: %v", err)
+	}
+	results, err := manager.DiscoverChannel(context.Background(), ch)
+	if err != nil {
+		t.Fatalf("discover channel: %v", err)
+	}
+
+	// BV1 空标题 → resolver 返回空串 → 兜底为 sourceID "BV1"
+	if results[0].Title != "BV1" {
+		t.Fatalf("BV1 title should fallback to sourceID when resolver returns empty, got %q", results[0].Title)
+	}
+}
+
+// TestDiscoverLimitSkipsTitleResolution 验证达到 discover_limit 后不再调用 resolver。
+func TestDiscoverLimitSkipsTitleResolution(t *testing.T) {
+	database := newDiscoverTestDBWithLimit(t, 1)
+	// 移除 title_prefix 以让所有 entry 通过过滤
+	if _, err := database.Exec(`UPDATE channels SET title_prefix = '' WHERE id = 'huize'`); err != nil {
+		t.Fatalf("update channel: %v", err)
+	}
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	resolver := &fakeTitleResolver{titles: map[string]string{
+		"BV1": "标题1", "BV2": "标题2", "BV3": "标题3",
+	}}
+	// 使用返回空标题的 lister，触发 resolver
+	manager := NewManager(
+		channel.NewStore(database),
+		session.NewStore(database),
+		pool,
+		emptyTitleListerMany{},
+		WithTitleResolver(resolver),
+	)
+
+	results, err := manager.DiscoverAll(context.Background())
+	if err != nil {
+		t.Fatalf("discover all: %v", err)
+	}
+
+	// limit=1, emptyTitleListerMany 有 3 个空标题 entry
+	// BV1 → resolveTitle 被调用（返回"标题1"）, created=true, createdCount=1
+	// BV2 → limit check 先于 resolveTitle, break, resolver 不被调用
+	// resolver 应只被调用 1 次（BV1）
+	if len(resolver.calls) != 1 {
+		t.Fatalf("resolver should be called once (only BV1 before limit), got %d calls: %v", len(resolver.calls), resolver.calls)
+	}
+
+	// 结果应该只有 1 个 created
+	createdCount := 0
+	for _, r := range results {
+		if r.Created {
+			createdCount++
+		}
+	}
+	if createdCount != 1 {
+		t.Fatalf("created count = %d, want 1", createdCount)
+	}
+}
+
+// emptyTitleListerMany 模拟多个空标题 entry（用于 limit + resolver 测试）。
+type emptyTitleListerMany struct{}
+
+func (emptyTitleListerMany) List(_ context.Context, _ string, _ string) ([]Entry, error) {
+	return []Entry{
+		{ID: "BV1", Title: "", WebpageURL: "https://www.bilibili.com/video/BV1"},
+		{ID: "BV2", Title: "", WebpageURL: "https://www.bilibili.com/video/BV2"},
+		{ID: "BV3", Title: "", WebpageURL: "https://www.bilibili.com/video/BV3"},
+	}, nil
+}

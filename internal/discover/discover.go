@@ -343,7 +343,7 @@ func annotateExists(ctx context.Context, sessions *session.Store, results []Resu
 
 // resolveTitle 对空标题做延迟解析：yt-dlp --flat-playlist 下 B站合集/系列的 title 经常为空，
 // 此时通过 TitleResolver（由 download.Handler 实现）调 B站 view API 取真实标题。
-// 无 resolver 时返回 sourceID（与 CreateDownload 的空标题兜底一致）。
+// 无 resolver 或 resolver 返回空串时返回 sourceID（与 CreateDownload 的空标题兜底一致）。
 func (m *Manager) resolveTitle(ctx context.Context, channelID, sourceID, currentTitle string) string {
 	if strings.TrimSpace(currentTitle) != "" {
 		return currentTitle
@@ -351,7 +351,11 @@ func (m *Manager) resolveTitle(ctx context.Context, channelID, sourceID, current
 	if m.titleResolver == nil {
 		return sourceID
 	}
-	return m.titleResolver.ResolveDownloadTitle(ctx, channelID, sourceID)
+	resolved := m.titleResolver.ResolveDownloadTitle(ctx, channelID, sourceID)
+	if strings.TrimSpace(resolved) == "" {
+		return sourceID
+	}
+	return resolved
 }
 
 func (m *Manager) DiscoverChannel(ctx context.Context, item channel.Channel) ([]Result, error) {
@@ -364,14 +368,15 @@ func (m *Manager) DiscoverChannel(ctx context.Context, item channel.Channel) ([]
 	createdCount := 0
 	titlePrefix := strings.TrimSpace(item.TitlePrefix)
 	for _, entry := range entries {
+		// limit 检查在标题解析之前：已达上限直接 break，避免无意义的 view API 调用。
+		if item.DiscoverLimit > 0 && createdCount >= item.DiscoverLimit {
+			slog.Info("discover skipped replay", "channel_id", item.ID, "source_id", entry.ID, "reason", "discover_limit_reached", "title", entry.Title, "limit", item.DiscoverLimit)
+			break
+		}
 		title := m.resolveTitle(ctx, item.ID, entry.ID, entry.Title)
 		if titlePrefix != "" && !matchAnyPrefix(title, titlePrefix) {
 			slog.Info("discover skipped replay", "channel_id", item.ID, "source_id", entry.ID, "reason", "title_prefix_mismatch", "title", title, "title_prefix", titlePrefix)
 			continue
-		}
-		if item.DiscoverLimit > 0 && createdCount >= item.DiscoverLimit {
-			slog.Info("discover skipped replay", "channel_id", item.ID, "source_id", entry.ID, "reason", "discover_limit_reached", "title", title, "limit", item.DiscoverLimit)
-			break
 		}
 		createdSession, created, err := m.sessions.CreateDownload(ctx, session.CreateDownloadInput{
 			ChannelID: item.ID,
