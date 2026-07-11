@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -901,6 +902,213 @@ func TestStatsDashboardRouteEmptyDatabase(t *testing.T) {
 	}
 	if data.DanmakuTop == nil {
 		t.Fatalf("danmaku_top is null, want []")
+	}
+}
+
+// TestStatsDashboardCostCalculation 验证 dashboard 成本趋势用正确的 ASR 单价（¥0.792/小时）
+// 和 AI 单价（¥0.1/回顾）计算。创建一条 asr_done 状态、1 小时时长的 session + 一条 recap_done。
+func TestStatsDashboardCostCalculation(t *testing.T) {
+	server := newTestServer(t)
+	ctx := context.Background()
+
+	if _, err := server.channels.Create(ctx, channel.UpsertInput{
+		ID: "test", Name: "Test", UID: 1, Enabled: true,
+	}); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	// 创建 live session（media_ready 状态，有 started_at）
+	sess, err := server.sessions.CreateLive(ctx, session.CreateLiveInput{
+		ChannelID: "test",
+		Title:     "Cost Test",
+		RoomID:    1,
+		StartedAt: time.Date(2026, 7, 11, 12, 0, 0, 0, time.Local),
+	})
+	if err != nil {
+		t.Fatalf("create live session: %v", err)
+	}
+
+	// 直接设 ended_at = 13:00（1 小时后）
+	if err := server.sessions.UpdateEndedAt(ctx, sess.ID, time.Date(2026, 7, 11, 13, 0, 0, 0, time.Local)); err != nil {
+		t.Fatalf("set ended_at: %v", err)
+	}
+
+	// 通过状态机把状态推进到 asr_done
+	// discovered → download_started → downloading → normalize_succeeded → media_ready → asr_submitted → asr_done
+	stateStore := state.NewStore(server.sessions.DB())
+	if _, err := stateStore.Apply(ctx, sess.ID, state.EventDownloadStarted, "t1", ""); err != nil {
+		t.Fatalf("apply download_started: %v", err)
+	}
+	if _, err := stateStore.Apply(ctx, sess.ID, state.EventNormalizeSucceeded, "t2", ""); err != nil {
+		t.Fatalf("apply normalize_succeeded: %v", err)
+	}
+	if _, err := stateStore.Apply(ctx, sess.ID, state.EventASRSubmitted, "t3", ""); err != nil {
+		t.Fatalf("apply asr_submitted: %v", err)
+	}
+	if _, err := stateStore.Apply(ctx, sess.ID, state.EventASRSucceeded, "t4", ""); err != nil {
+		t.Fatalf("apply asr_succeeded: %v", err)
+	}
+
+	// 再创建一条 recap_done session，验证 AI 成本
+	sess2, err := server.sessions.CreateLive(ctx, session.CreateLiveInput{
+		ChannelID: "test",
+		Title:     "Recap Test",
+		RoomID:    2,
+		StartedAt: time.Date(2026, 7, 11, 14, 0, 0, 0, time.Local),
+	})
+	if err != nil {
+		t.Fatalf("create live session 2: %v", err)
+	}
+	if err := server.sessions.UpdateEndedAt(ctx, sess2.ID, time.Date(2026, 7, 11, 15, 0, 0, 0, time.Local)); err != nil {
+		t.Fatalf("set ended_at 2: %v", err)
+	}
+	if _, err := stateStore.Apply(ctx, sess2.ID, state.EventDownloadStarted, "t5", ""); err != nil {
+		t.Fatalf("apply download_started 2: %v", err)
+	}
+	if _, err := stateStore.Apply(ctx, sess2.ID, state.EventNormalizeSucceeded, "t6", ""); err != nil {
+		t.Fatalf("apply normalize_succeeded 2: %v", err)
+	}
+	if _, err := stateStore.Apply(ctx, sess2.ID, state.EventASRSubmitted, "t7", ""); err != nil {
+		t.Fatalf("apply asr_submitted 2: %v", err)
+	}
+	if _, err := stateStore.Apply(ctx, sess2.ID, state.EventASRSucceeded, "t8", ""); err != nil {
+		t.Fatalf("apply asr_succeeded 2: %v", err)
+	}
+	if _, err := stateStore.Apply(ctx, sess2.ID, state.EventRecapSucceeded, "t9", ""); err != nil {
+		t.Fatalf("apply recap_succeeded: %v", err)
+	}
+
+	// 请求 dashboard
+	reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api/stats/dashboard", nil).WithContext(reqCtx)
+	rec := httptest.NewRecorder()
+	server.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var data session.DashboardData
+	if err := json.Unmarshal(rec.Body.Bytes(), &data); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if len(data.CostTrend) == 0 {
+		t.Fatal("expected cost trend entries")
+	}
+
+	// 两条 session 都在同一个月，asr_hours = 2.0 (1h + 1h)
+	// asr_cost = 2.0 * 0.792 = 1.584
+	// recap_count = 1 (只有 sess2 到了 recap_done)
+	// ai_cost = 1 * 0.1 = 0.1
+	// total_cost = 1.584 + 0.1 = 1.684
+	row := data.CostTrend[0]
+	if math.Abs(row.ASRHours-2.0) > 0.01 {
+		t.Errorf("asr_hours = %v, want ~2.0", row.ASRHours)
+	}
+	if math.Abs(row.ASRCost-1.584) > 0.01 {
+		t.Errorf("asr_cost = %v, want ~1.584", row.ASRCost)
+	}
+	if math.Abs(row.AICost-0.1) > 0.001 {
+		t.Errorf("ai_cost = %v, want ~0.1", row.AICost)
+	}
+	expectedTotal := row.ASRCost + row.AICost
+	if math.Abs(row.TotalCost-expectedTotal) > 0.01 {
+		t.Errorf("total_cost = %v, want ~%v", row.TotalCost, expectedTotal)
+	}
+
+	// 确认 JSON 中没有 recap_count 内部字段泄漏
+	var raw map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("unmarshal raw: %v", err)
+	}
+	costTrend, ok := raw["cost_trend"].([]any)
+	if !ok || len(costTrend) == 0 {
+		t.Fatal("cost_trend missing or empty")
+	}
+	firstRow, ok := costTrend[0].(map[string]any)
+	if !ok {
+		t.Fatal("cost_trend[0] not an object")
+	}
+	if _, exists := firstRow["recap_count"]; exists {
+		t.Error("recap_count leaked into JSON response")
+	}
+}
+
+// TestStatsOverviewAndCostUseCorrectPrice 验证 /api/stats/overview 和 /api/stats/cost
+// 使用正确的 ASR 单价（¥0.792/小时）而非旧的 ¥36/小时。
+func TestStatsOverviewAndCostUseCorrectPrice(t *testing.T) {
+	server := newTestServer(t)
+	ctx := context.Background()
+
+	if _, err := server.channels.Create(ctx, channel.UpsertInput{
+		ID: "test", Name: "Test", UID: 1, Enabled: true,
+	}); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	// 创建一条 session
+	if _, err := server.sessions.CreateLive(ctx, session.CreateLiveInput{
+		ChannelID: "test",
+		Title:     "Price Test",
+		RoomID:    1,
+		StartedAt: time.Date(2026, 7, 11, 12, 0, 0, 0, time.Local),
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	// /api/stats/overview: 1 session × 2h × 0.792 = 1.584
+	reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api/stats/overview", nil).WithContext(reqCtx)
+	rec := httptest.NewRecorder()
+	server.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("overview status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var overview map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &overview); err != nil {
+		t.Fatalf("unmarshal overview: %v", err)
+	}
+	asrCostEst, ok := overview["asr_cost_estimate"].(float64)
+	if !ok {
+		t.Fatalf("asr_cost_estimate not float64: %T", overview["asr_cost_estimate"])
+	}
+	// 1 session × 2h × 0.792 = 1.584; 旧值会是 1 × 2 × 36 = 72
+	if math.Abs(asrCostEst-1.584) > 0.01 {
+		t.Errorf("overview asr_cost_estimate = %v, want ~1.584 (old wrong value would be 72)", asrCostEst)
+	}
+
+	// /api/stats/cost: 同样 1 session × 2h × 0.792 = 1.584
+	req2 := httptest.NewRequest(http.MethodGet, "/api/stats/cost", nil).WithContext(reqCtx)
+	rec2 := httptest.NewRecorder()
+	server.Router().ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("cost status = %d, body = %s", rec2.Code, rec2.Body.String())
+	}
+
+	var costResp map[string]any
+	if err := json.Unmarshal(rec2.Body.Bytes(), &costResp); err != nil {
+		t.Fatalf("unmarshal cost: %v", err)
+	}
+	asrCostEst2, ok := costResp["asr_cost_estimate"].(float64)
+	if !ok {
+		t.Fatalf("cost asr_cost_estimate not float64: %T", costResp["asr_cost_estimate"])
+	}
+	if math.Abs(asrCostEst2-1.584) > 0.01 {
+		t.Errorf("cost asr_cost_estimate = %v, want ~1.584", asrCostEst2)
+	}
+	totalEst, ok := costResp["total_cost_estimate"].(float64)
+	if !ok {
+		t.Fatalf("total_cost_estimate not float64: %T", costResp["total_cost_estimate"])
+	}
+	// total = asr_cost + ai_cost = 1.584 + 0 (no recaps) = 1.584
+	if math.Abs(totalEst-1.584) > 0.01 {
+		t.Errorf("cost total_cost_estimate = %v, want ~1.584", totalEst)
 	}
 }
 

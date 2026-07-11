@@ -3936,8 +3936,7 @@ func (s *Server) handleStatsOverview(c *gin.Context) {
 
 	taskSummary, _ := s.workerPool.Store().TaskSummary(ctx)
 
-	// Cost estimate: DashScope ASR ~¥0.01/sec = ¥36/hour
-	const asrCostPerHour = 36.0
+	// ASR 成本估算：fun-asr 中国内地目录价 ¥0.792/小时（¥0.00022/秒）
 	asrHours := 0.0
 	if stats.TotalSessions > 0 {
 		// Rough estimate: ~2 hours per session average
@@ -3947,7 +3946,7 @@ func (s *Server) handleStatsOverview(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"sessions":          stats,
 		"task_summary":      taskSummary,
-		"asr_cost_estimate": asrHours * asrCostPerHour,
+		"asr_cost_estimate": asrHours * session.ASRCostPerHourCNY,
 		"asr_hours":         asrHours,
 	})
 }
@@ -4073,20 +4072,15 @@ func (s *Server) handleStatsCost(c *gin.Context) {
 		return
 	}
 
-	// Rough cost estimates
-	// DashScope ASR: ~¥0.01/second = ¥36/hour
-	const asrCostPerHour = 36.0
+	// ASR 成本估算：fun-asr 中国内地目录价 ¥0.792/小时
 	asrHours := float64(stats.TotalSessions) * 2.0 // ~2h avg estimate
-
-	// AI Recap: estimate based on recap count
-	// ~10K tokens/recap, ¥0.01/1K tokens (varies by model)
-	aiCost := float64(stats.TotalRecaps) * 0.1
+	aiCost := float64(stats.TotalRecaps) * session.AICostPerRecap
 
 	c.JSON(http.StatusOK, gin.H{
-		"asr_cost_estimate":   asrHours * asrCostPerHour,
+		"asr_cost_estimate":   asrHours * session.ASRCostPerHourCNY,
 		"asr_hours_estimate":  asrHours,
 		"ai_cost_estimate":    aiCost,
-		"total_cost_estimate": asrHours*asrCostPerHour + aiCost,
+		"total_cost_estimate": asrHours*session.ASRCostPerHourCNY + aiCost,
 		"monthly_breakdown":   stats.SessionsByMonth,
 	})
 }

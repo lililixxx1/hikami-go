@@ -688,6 +688,15 @@ type DashboardChannel struct {
 	PublishCount int    `json:"publish_count"`
 }
 
+// ASRCostPerHourCNY 是阿里云百炼 fun-asr 录音文件识别的中国内地目录价。
+// 来源: https://help.aliyun.com/zh/model-studio/model-pricing
+// ¥0.00022/秒 ≈ ¥0.792/小时。此为按默认模型(fun-asr)的估算基准价，
+// 未扣除每月 36,000 秒免费额度；paraformer-v2 等其他模型价格不同。
+const ASRCostPerHourCNY = 0.792
+
+// AICostPerRecap 是每条回顾的 AI 生成成本估算（约 10K tokens × ¥0.01/1K tokens）。
+const AICostPerRecap = 0.1
+
 type DashboardCost struct {
 	Month     string  `json:"month"`
 	ASRHours  float64 `json:"asr_hours"`
@@ -868,9 +877,7 @@ func (s *Store) GetDashboardStats(ctx context.Context) (*DashboardData, error) {
 		SELECT
 			month,
 			asr_hours,
-			asr_hours * 36.0 AS asr_cost,
-			recap_count * 0.1 AS ai_cost,
-			asr_hours * 36.0 + recap_count * 0.1 AS total_cost
+			recap_count
 		FROM monthly
 		ORDER BY month DESC
 		LIMIT 12
@@ -881,9 +888,13 @@ func (s *Store) GetDashboardStats(ctx context.Context) (*DashboardData, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var item DashboardCost
-		if err := rows.Scan(&item.Month, &item.ASRHours, &item.ASRCost, &item.AICost, &item.TotalCost); err != nil {
+		var recapCount int
+		if err := rows.Scan(&item.Month, &item.ASRHours, &recapCount); err != nil {
 			return nil, err
 		}
+		item.ASRCost = item.ASRHours * ASRCostPerHourCNY
+		item.AICost = float64(recapCount) * AICostPerRecap
+		item.TotalCost = item.ASRCost + item.AICost
 		data.CostTrend = append(data.CostTrend, item)
 	}
 	if err := rows.Err(); err != nil {

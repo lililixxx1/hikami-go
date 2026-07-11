@@ -63,7 +63,7 @@ StatsOverviewResponse:
     asr_cost_estimate:
       type: number
       format: double
-      description: ASR 成本估算(¥,粗估 ~¥36/h × 总场次 × 2h)
+      description: ASR 成本估算(¥,fun-asr 中国内地目录价 ¥0.792/h × 总场次 × 2h,未扣免费额度)
     asr_hours:
       type: number
       format: double
