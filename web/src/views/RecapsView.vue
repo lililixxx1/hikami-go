@@ -95,6 +95,7 @@ const recapContent = ref<DerivedRecapContent | null>(null)
 const recapLoading = ref(false)
 const addingSuggestedTerm = ref('')
 const partialLoading = ref(false)
+const clearFailedLoading = ref(false)
 // 抽屉内术语「已添加」标记:API 成功后才写入(避免失败时按钮误显示已添加)
 const addedSuggestedTerms = ref<Set<string>>(new Set())
 
@@ -452,21 +453,30 @@ function handleImportSubmitted() {
 async function handleClearFailed() {
   const count = failedCount.value
   if (count === 0) { HMessage.info('没有失败场次'); return }
+  if (clearFailedLoading.value) return
   if (!(await HConfirm(`确定清空 ${count} 个失败场次？`, {
     title: '清空', confirmText: '清空', cancelText: '取消', type: 'warning',
   }))) return
-  const result = await deleteFailedSessions()
-  HMessage.success(`已删除 ${result.deleted} 个`)
-  await sessionsStore.fetchSessions()
+  clearFailedLoading.value = true
+  try {
+    const result = await deleteFailedSessions()
+    HMessage.success(`已删除 ${result.deleted} 个`)
+  } catch {
+    // API 错误已由 client.ts 拦截器 toast
+  } finally {
+    // 无论成功失败都刷新列表（对账），刷新失败不传播
+    try { await sessionsStore.forceRefresh() } catch { /* ignore */ }
+    clearFailedLoading.value = false
+  }
 }
 
 onMounted(async () => {
-  // 用 ensureLoaded 而非 fetchSessions/fetchChannels:与 ?sid watch 的 ensureLoaded 复用同一 inflight,
-  // 避免 immediate watch 与 onMounted 并发各发一次 list 请求。
+  // 用 fetchSessions 而非 ensureLoaded:每次进入页面都拉最新列表（避免跨路由返回时显示旧数据）。
+  // fetchSessions 内部有 inflight 去重,与 ?sid watch 的 getByIdAfterLoad→ensureLoaded→fetchSessions 复用同一请求。
   await Promise.all([
     channelsStore.ensureLoaded(),
     runtimeStore.fetchRuntime(),
-    sessionsStore.ensureLoaded(),
+    sessionsStore.fetchSessions(),
     tasksStore.fetchTasks(),
   ])
 })
