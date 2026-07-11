@@ -44,6 +44,7 @@ const emit = defineEmits<{
   regenerate: []
   'partial-range': [startSeconds: number, endSeconds: number]
   'add-term': [term: string]
+  saved: [sessionId: string]
 }>()
 
 // ---------- md 渲染(marked + DOMPurify) ----------
@@ -114,6 +115,9 @@ async function saveEdit(): Promise<void> {
     await updateRecapContent(props.session.id, draft.value)
     HMessage.success('回顾内容已保存')
     editing.value = false
+    emit('saved', props.session.id)
+  } catch {
+    // 错误 toast 由 client.ts 拦截器统一处理；保持编辑态让用户可重试
   } finally {
     saving.value = false
   }

@@ -3694,7 +3694,9 @@ func (s *Server) handleUpdateRecapContent(ctx *gin.Context) {
 	}
 
 	outputDir := filepath.Join(s.cfg.OutputRoot, sess.ChannelID, sess.Slug, "recap")
-	markdownPath := filepath.Join(outputDir, "直播回顾_"+sess.Slug+".md")
+	// 使用与 GET (getRecapContent) 相同的 safeRecapName 清洗，确保读写路径一致。
+	fileBase := safeRecapName("直播回顾_" + sess.Slug)
+	markdownPath := filepath.Join(outputDir, fileBase+".md")
 
 	// Ensure output directory exists
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {

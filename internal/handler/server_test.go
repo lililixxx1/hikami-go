@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -1109,6 +1110,67 @@ func TestStatsOverviewAndCostUseCorrectPrice(t *testing.T) {
 	// total = asr_cost + ai_cost = 1.584 + 0 (no recaps) = 1.584
 	if math.Abs(totalEst-1.584) > 0.01 {
 		t.Errorf("cost total_cost_estimate = %v, want ~1.584", totalEst)
+	}
+}
+
+// TestRecapContentRoundTrip 验证 PUT recap/content 写入后 GET 能读到更新内容（slug 清洗一致性）。
+func TestRecapContentRoundTrip(t *testing.T) {
+	server := newTestServer(t)
+
+	if _, err := server.channels.Create(context.Background(), channel.UpsertInput{
+		ID: "test", Name: "Test", UID: 1, Enabled: true,
+	}); err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	sess, _, err := server.sessions.CreateDownload(context.Background(), session.CreateDownloadInput{
+		ChannelID: "test",
+		SourceID:  "BV1",
+		Title:     "Test Replay",
+	})
+	if err != nil {
+		t.Fatalf("create download session: %v", err)
+	}
+
+	// Mark local_available = true（PUT handler 检查 LocalAvailable）
+	if err := server.sessions.SetLocalAvailable(context.Background(), sess.ID, true); err != nil {
+		t.Fatalf("set local available: %v", err)
+	}
+
+	// Create recap directory to ensure file can be written
+	recapDir := filepath.Join(server.cfg.OutputRoot, sess.ChannelID, sess.Slug, "recap")
+	if err := os.MkdirAll(recapDir, 0o755); err != nil {
+		t.Fatalf("mkdir recap dir: %v", err)
+	}
+
+	// PUT new content
+	newContent := "# Updated Title\n\nThis is updated content."
+	putResp := performRequest(server, http.MethodPut, "/api/sessions/"+sess.ID+"/recap/content",
+		fmt.Sprintf(`{"content":%q}`, newContent))
+	if putResp.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d, body = %s", putResp.Code, putResp.Body.String())
+	}
+
+	// GET content back
+	getResp := performRequest(server, http.MethodGet, "/api/sessions/"+sess.ID+"/recap", "")
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, body = %s", getResp.Code, getResp.Body.String())
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(getResp.Body.Bytes(), &result); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if result["available"] != true {
+		t.Fatalf("expected available=true, got %v", result["available"])
+	}
+	markdown, ok := result["markdown"].(string)
+	if !ok {
+		t.Fatalf("markdown not string: %T", result["markdown"])
+	}
+	if markdown != newContent {
+		t.Errorf("markdown = %q, want %q", markdown, newContent)
 	}
 }
 

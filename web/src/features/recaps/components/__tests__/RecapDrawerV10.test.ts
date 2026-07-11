@@ -1,6 +1,13 @@
 // web/src/features/recaps/components/__tests__/RecapDrawerV10.test.ts
 import { mount } from '@vue/test-utils'
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
+
+// Mock @/api/sessions — RecapDrawerV10 动态 import updateRecapContent
+const mockUpdateRecapContent = vi.fn()
+vi.mock('@/api/sessions', () => ({
+  updateRecapContent: (...args: unknown[]) => mockUpdateRecapContent(...args),
+}))
+
 import RecapDrawerV10 from '../RecapDrawerV10.vue'
 import type { Session, RecapContent, Capabilities } from '@/api/types-derived'
 
@@ -56,5 +63,69 @@ describe('RecapDrawerV10', () => {
     })
     // recap_done → upload 是主动作;getDrawerActions 返回 upload
     expect(wrapper.text()).toContain('上传')  // 或对应中文 label
+  })
+
+  it('save edit emits saved with session id and exits edit mode', async () => {
+    mockUpdateRecapContent.mockResolvedValueOnce(undefined)
+    const wrapper = mount(RecapDrawerV10, {
+      props: { visible: true, session, content, loading: false, capabilities: caps,
+        isExpert: false, channels: [], actionLoadingId: '', addingTerm: '', partialLoading: false,
+        addedTerms: new Set<string>() },
+    })
+
+    // Click edit button
+    const editBtn = wrapper.findAll('button').find((b) => b.text().includes('编辑'))
+    expect(editBtn).toBeTruthy()
+    await editBtn!.trigger('click')
+
+    // Modify textarea
+    const textarea = wrapper.find('textarea')
+    expect(textarea.exists()).toBe(true)
+    await textarea.setValue('# Updated\n\nnew content')
+
+    // Click save
+    const saveBtn = wrapper.findAll('button').find((b) => b.text().includes('保存'))
+    expect(saveBtn).toBeTruthy()
+    await saveBtn!.trigger('click')
+
+    // Wait for async
+    await vi.dynamicImportSettled()
+    await wrapper.vm.$nextTick()
+
+    // Should have called updateRecapContent with session id and new content
+    expect(mockUpdateRecapContent).toHaveBeenCalledWith('s1', '# Updated\n\nnew content')
+
+    // Should emit saved with session id
+    expect(wrapper.emitted('saved')?.[0]).toEqual(['s1'])
+  })
+
+  it('save edit failure keeps edit mode and does not emit saved', async () => {
+    mockUpdateRecapContent.mockRejectedValueOnce(new Error('server error'))
+    const wrapper = mount(RecapDrawerV10, {
+      props: { visible: true, session, content, loading: false, capabilities: caps,
+        isExpert: false, channels: [], actionLoadingId: '', addingTerm: '', partialLoading: false,
+        addedTerms: new Set<string>() },
+    })
+
+    // Enter edit mode
+    const editBtn = wrapper.findAll('button').find((b) => b.text().includes('编辑'))
+    await editBtn!.trigger('click')
+
+    const textarea = wrapper.find('textarea')
+    await textarea.setValue('# Edited content')
+
+    // Click save
+    const saveBtn = wrapper.findAll('button').find((b) => b.text().includes('保存'))
+    await saveBtn!.trigger('click')
+
+    // Wait for async
+    await vi.dynamicImportSettled()
+    await wrapper.vm.$nextTick()
+
+    // Should NOT emit saved
+    expect(wrapper.emitted('saved')).toBeUndefined()
+
+    // Should still be in edit mode (textarea still visible)
+    expect(wrapper.find('textarea').exists()).toBe(true)
   })
 })

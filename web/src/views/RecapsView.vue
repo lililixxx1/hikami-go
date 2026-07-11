@@ -234,6 +234,20 @@ async function openRecap(s: DerivedSession) {
   }
 }
 
+// 回顾内容编辑保存后重新拉取，使预览区域显示最新内容。
+// 竞态保护：保存期间用户可能切换了 session，只在 sessionID 匹配时更新。
+async function onRecapSaved(sessionId: string) {
+  if (!selectedSession.value || selectedSession.value.id !== sessionId) return
+  recapLoading.value = true
+  try {
+    recapContent.value = (await getRecapContent(sessionId)) as unknown as DerivedRecapContent
+  } catch {
+    // 刷新失败由 client.ts 拦截器提示；保持旧内容
+  } finally {
+    recapLoading.value = false
+  }
+}
+
 function handleCopyRecap() {
   if (recapContent.value?.markdown) {
     navigator.clipboard.writeText(recapContent.value.markdown)
@@ -533,6 +547,7 @@ onMounted(async () => {
       @regenerate="handleRegenerate"
       @partial-range="handlePartialRecap"
       @add-term="handleAddSuggestedTerm"
+      @saved="onRecapSaved"
     />
 
     <DiscoverPreviewDrawer
