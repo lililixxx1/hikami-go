@@ -373,11 +373,16 @@ func (m *Manager) DiscoverChannel(ctx context.Context, item channel.Channel) ([]
 			slog.Info("discover skipped replay", "channel_id", item.ID, "source_id", entry.ID, "reason", "discover_limit_reached", "title", entry.Title, "limit", item.DiscoverLimit)
 			break
 		}
-		title := m.resolveTitle(ctx, item.ID, entry.ID, entry.Title)
-		if titlePrefix != "" && !matchAnyPrefix(title, titlePrefix) {
-			slog.Info("discover skipped replay", "channel_id", item.ID, "source_id", entry.ID, "reason", "title_prefix_mismatch", "title", title, "title_prefix", titlePrefix)
+		// title_prefix 匹配用原始标题（entry.Title）。
+		// 注意：不能在 resolveTitle 之后匹配，因为 ResolveDownloadTitle 内部会调
+		// CleanReplayTitle 剥掉「【直播回放】」前缀，清洗后的标题不再匹配 prefix。
+		// entry.Title 为空时（--flat-playlist 常见），跳过 prefix 过滤——合集 URL
+		// 本身已保证只有回放，prefix 是额外保险而非唯一过滤手段。
+		if titlePrefix != "" && strings.TrimSpace(entry.Title) != "" && !matchAnyPrefix(entry.Title, titlePrefix) {
+			slog.Info("discover skipped replay", "channel_id", item.ID, "source_id", entry.ID, "reason", "title_prefix_mismatch", "title", entry.Title, "title_prefix", titlePrefix)
 			continue
 		}
+		title := m.resolveTitle(ctx, item.ID, entry.ID, entry.Title)
 		createdSession, created, err := m.sessions.CreateDownload(ctx, session.CreateDownloadInput{
 			ChannelID: item.ID,
 			SourceID:  entry.ID,
@@ -435,11 +440,12 @@ func (m *Manager) PreviewChannel(ctx context.Context, item channel.Channel) ([]R
 	results := make([]Result, 0, len(entries))
 	titlePrefix := strings.TrimSpace(item.TitlePrefix)
 	for _, entry := range entries {
-		title := m.resolveTitle(ctx, item.ID, entry.ID, entry.Title)
-		if titlePrefix != "" && !matchAnyPrefix(title, titlePrefix) {
-			slog.Info("discover preview skipped replay", "channel_id", item.ID, "source_id", entry.ID, "reason", "title_prefix_mismatch", "title", title, "title_prefix", titlePrefix)
+		// title_prefix 匹配用原始标题（同 DiscoverChannel 逻辑，详见其注释）。
+		if titlePrefix != "" && strings.TrimSpace(entry.Title) != "" && !matchAnyPrefix(entry.Title, titlePrefix) {
+			slog.Info("discover preview skipped replay", "channel_id", item.ID, "source_id", entry.ID, "reason", "title_prefix_mismatch", "title", entry.Title, "title_prefix", titlePrefix)
 			continue
 		}
+		title := m.resolveTitle(ctx, item.ID, entry.ID, entry.Title)
 		slog.Info("discover preview accepted replay", "channel_id", item.ID, "source_id", entry.ID, "title", title)
 		results = append(results, Result{
 			ChannelID: item.ID,
