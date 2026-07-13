@@ -1,4 +1,5 @@
-.PHONY: build build-go build-go-api web-setup web-build web-dev test run fmt tidy api-docs api-lint api-gen-types
+.PHONY: build build-go build-go-api web-setup web-build web-dev test run fmt tidy api-docs api-lint api-gen-types \
+        build-ffmpeg-minimal verify-ffmpeg-minimal
 
 # 完整构建：先产出前端 webdist，再以 embedded_web 标签嵌入编译（ISS-1）
 build: web-build build-go
@@ -45,13 +46,26 @@ build-linux-arm64:
 build-darwin-arm64:
 	GOOS=darwin GOARCH=arm64 go build -tags embedded_web -o hikami-darwin-arm64 ./cmd/hikami
 
-# 完整 Windows 版：嵌入 ffmpeg + 前端
+# Windows 单文件版：嵌入裁剪版 ffmpeg + 前端。裁剪版仅含本项目用到的音频
+# demuxer/muxer(flv/concat/mov/mp3) + mp3/aac encoder（约 8-12MB），由
+# build-ffmpeg-minimal 产出。需先 make build-ffmpeg-minimal 生成 assets/ffmpeg.zip。
 build-windows-amd64:
 	GOOS=windows GOARCH=amd64 go build -tags embed_ffmpeg,embedded_web -o hikami-windows-amd64.exe ./cmd/hikami
+	@ls -lh hikami-windows-amd64.exe | awk '{print "  产物体积:", $5}'
+	@echo "  注：嵌入的是裁剪版 ffmpeg，若 assets/ffmpeg.zip 缺失会编译失败，先跑 make build-ffmpeg-minimal"
 
-# 轻量 Windows 版：嵌入前端，依赖系统 ffmpeg（不嵌 ffmpeg）
+# 轻量 Windows 版：嵌入前端，依赖系统 ffmpeg（不嵌 ffmpeg，体积最小）
 build-windows-amd64-lite:
 	GOOS=windows GOARCH=amd64 go build -tags embedded_web -o hikami-windows-amd64-lite.exe ./cmd/hikami
+
+# 构建裁剪版 ffmpeg/ffprobe（Windows x64 静态），产出 internal/runtime/assets/ffmpeg.zip。
+# 仅在更新嵌入的 ffmpeg 时运行（Docker 交叉编译，约 5-10 分钟）。详见 scripts/README-ffmpeg-build.md。
+build-ffmpeg-minimal:
+	./scripts/build-ffmpeg-minimal.sh
+
+# 验证裁剪版 ffmpeg.zip 覆盖本项目全部调用路径（6 条用例）。在 Windows 上跑。
+verify-ffmpeg-minimal:
+	./scripts/verify-ffmpeg-minimal.sh
 
 # API 文档渲染（本地静态服务器）
 api-docs:

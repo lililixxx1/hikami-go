@@ -78,7 +78,7 @@
 
 | 字段 | 说明 |
 |------|------|
-| `Version` | 版本标识（master-latest） |
+| `Version` | 版本标识（`embedded-minimal-7.x`，标识嵌入的是裁剪版 ffmpeg）；改 Version 会让旧用户升级后重新解包，避免用到旧缓存 |
 | `ArchiveURL` | 归档下载 URL |
 | `ArchiveFormat` | 归档格式（zip/txz） |
 | `FFmpegPath` | 归档内 ffmpeg 二进制相对路径 |
@@ -89,6 +89,14 @@
 
 - `ffmpeg_embed.go`：`//go:build embed_ffmpeg`，嵌入 `assets/ffmpeg.zip`
 - `ffmpeg_embed_none.go`：`//go:build !embed_ffmpeg`，返回 `nil, false`（默认构建）
+
+**裁剪版 ffmpeg**：`assets/ffmpeg.zip` 是裁剪版（约 8-12MB），仅含本项目用到的音频
+demuxer/muxer（flv/concat/mov/mp3）+ mp3/aac encoder，由 `scripts/build-ffmpeg-minimal.sh`
+交叉编译产出（Docker + MinGW-w64）。录制/合并路径全走 `-c:a copy`（零编码器），仅 normalize
+需 mp3 encoder、importer 需 aac encoder，故裁剪空间极大（完整 BtbN gpl 版约 80MB）。
+`scripts/verify-ffmpeg-minimal.sh` 逐条复刻代码里的 ffmpeg 调用参数验证产物合格。详见
+`scripts/README-ffmpeg-build.md`。裁剪版进版本库（`.gitignore` 白名单放行 `ffmpeg.zip`），
+让 `make build-windows-amd64` 开箱即用。
 
 **Resolution 结构体：**
 
@@ -210,6 +218,7 @@
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-07-13 | 裁剪版 ffmpeg | `build-windows-amd64` 嵌入的 ffmpeg 从 BtbN 完整 gpl 版(~80MB)改为裁剪版(~8-12MB)。新增 `scripts/build-ffmpeg-minimal.sh`(Docker+MinGW-w64 交叉编译,`--disable-everything` 后白名单启用 flv/concat/mov/mp3 demuxer/muxer + mp3/aac encoder,依据:录制全 `-c:a copy` 零编码器)+ `scripts/verify-ffmpeg-minimal.sh`(6 用例复刻真实参数)+ `scripts/README-ffmpeg-build.md`。`ffmpeg_manifest.go` Version 改 `embedded-minimal-7.x`(新缓存目录隔离旧完整版)。`.gitignore` 白名单放行 `assets/ffmpeg.zip`(入库让 Windows 构建开箱即用)。Makefile 新增 `build-ffmpeg-minimal`/`verify-ffmpeg-minimal` target,`build-windows-amd64` 注释更新。未改任何解析逻辑(ResolveFFmpeg/installEmbeddedFFmpeg/probe.go 原样复用)。 |
 | 2026-06-04 | 测试补充 | 新增 ffmpeg_resolver_test.go（15 用例）：safeJoin 安全检查 4 个、executableFile 3 个、extractArchive 2 个、ffmpegVersionDir 1 个、extractZip/extractTgz 穿越拦截 2 个、cachedResolution 2 个、并发安全 1 个。总用例从 9 增至 24 |
 | 2026-06-03 | 重大更新 | 新增 FFmpeg 自动解析/下载/嵌入系统：ffmpeg_resolver.go（ResolveFFmpeg 三级回退：系统 -> 嵌入 -> 在线下载）、ffmpeg_manifest.go（三平台资源清单）、ffmpeg_embed.go（embed_ffmpeg build tag 嵌入）、ffmpeg_embed_none.go（默认空实现）；支持 zip/tar.xz 解压、SHA256 校验、路径穿越防护、原子安装、下载进度日志 |
 | 2026-06-01 | 测试补充 | 新增 `health_test.go`（8 用例）：Cookie 过期检查 6 个场景（无文件/已过期/即将过期/有效/多主播混合/禁用跳过）+ 磁盘检查 2 个场景（基本验证/路径去重） |

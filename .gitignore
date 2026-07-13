@@ -19,7 +19,13 @@ cover_final.out
 # Runtime artifacts
 snapshot.txt
 *.network-request
-internal/runtime/assets/
+# 裁剪版 ffmpeg 产物入库（让 make build-windows-amd64 开箱即用），其余临时文件忽略
+internal/runtime/assets/*
+!internal/runtime/assets/ffmpeg.zip
+!internal/runtime/assets/LICENSE.txt
+
+# 裁剪版 ffmpeg 构建中间产物（scripts/build-ffmpeg-minimal.sh）
+.tmp/ffmpeg-build/
 
 # Runtime data (recordings, transcriptions, cookies)
 data/
