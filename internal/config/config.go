@@ -888,11 +888,9 @@ func (c *Config) EnsureDirs() error {
 	if err := os.MkdirAll(c.OutputRoot, 0o755); err != nil {
 		return err
 	}
-	if c.Logs.Dir != "" {
-		if err := os.MkdirAll(c.Logs.Dir, 0o755); err != nil {
-			return err
-		}
-	}
+	// 注：程序只把日志写到 stdout（main.go 的 slog handler 绑 os.Stdout），从不落盘，
+	// 因此不再创建 logs/ 空目录。c.Logs.Dir 字段和 logs.dir 配置项保留仅为向后兼容
+	// （老 config.yaml 里有这个 key 不会报错），但当前无任何代码读取它。
 	dbDir := filepath.Dir(c.DBPath)
 	if dbDir != "." && dbDir != "" {
 		if err := os.MkdirAll(dbDir, 0o755); err != nil {
