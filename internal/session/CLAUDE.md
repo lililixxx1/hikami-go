@@ -76,7 +76,7 @@
 
 ## 测试与质量
 
-- `session_test.go`: 共 39 个测试函数，覆盖：
+- `session_test.go`: 共 40 个测试函数，覆盖：
   - `CreateLive`: 成功创建、默认标题、默认时间、缺少 channel_id 拒绝、无效 room_id 拒绝、**同槽 UNIQUE 冲突返回 `ErrAlreadyLive`（不再复用/重置）**、**FK（channel 不存在）错误不被误判为已存在**、ID 格式
   - `CreateDownload`: 成功创建、重复去重、缺少 source_id 拒绝、默认标题、slug 回退
   - `CreateImport`: 成功创建、默认标题、有/无结束时间
@@ -90,7 +90,7 @@
 ## 相关文件清单
 
 - `session.go` -- 唯一源文件（含 `ErrAlreadyLive` 哨兵、`isConstraintViolation` helper）
-- `session_test.go` -- 单元测试（39 个测试函数）
+- `session_test.go` -- 单元测试（40 个测试函数）
 
 ## 变更记录 (Changelog)
 

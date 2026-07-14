@@ -144,6 +144,7 @@ A: `recap_templates` 表中的 `system_prompt` 和 `user_format` 字段使用 `_
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-07-08 | 重大更新 | 迁移增至 v35：v33 新增 `runtime_settings` 表（全局运行时配置覆盖，per-section JSON，CHECK 白名单 6 段：publish/asr_s3/dashscope/recap_ai/webdav/archive）；v34 新增 `tasks.bypass_fail_state INTEGER NOT NULL DEFAULT 0`（任务实例级状态旁路，重新生成回顾等非推进型任务失败不降级主状态）；v35 扩展 `runtime_settings` CHECK 白名单 `+tools`（第 7 段，yt-dlp/rclone 路径 web 可编辑）——SQLite 不支持直接改 CHECK，用标准表重建模式（建 `runtime_settings_v35`→INSERT 复制→DROP 旧表→RENAME），旧库 6 段数据全量回灌无损升级。总版本数 32→35，表数 10（含 `schema_migrations` 账本表）。`TestMigrateCreatesAllTables` 的 `expected` 清单已纳入 `runtime_settings`。 |
 | 2026-06-23 | 重大更新 | 迁移增至 v32：v31 新增 `sessions.archived_at TEXT`（发布成功后自动归档到 WebDAV 的时间戳，不推进会话主状态，由 `internal/archive` 写入）；v32 新增 `channels.auto_recap INTEGER NOT NULL DEFAULT 1`（per-channel 自动回顾开关，三态经 `resolveAutoRecap` 兜底为 true）。总版本数 30→32 |
 | 2026-06-01 | 测试扩充 | migrate_test.go 从 2 扩充至 8 个用例：新增 TestMigrateCreatesAllTables（9 张表）、TestMigrateCreatesIndexes（7 个索引）、TestMigrateDefaultRecapTemplate（内置模板）、TestOpen_EnablesForeignKeys（外键）、TestMigrate_VersionSequence（版本连续性）、TestMigrate_ChannelsColumns（10 个追加列） |
 | 2026-05-23 | 重大更新 | 迁移增至 v30：v28 新增 `glossary_candidates` 表（含 status CHECK 约束、confidence/score REAL、normalized_key 唯一索引、score/status 复合索引、last_session_id 索引）；v29 新增 `channels.recap_model`（默认 ''）；v30 新增 `channels.max_continuations`（默认 -1） |

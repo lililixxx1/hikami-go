@@ -387,7 +387,7 @@ make web-build  # 生产构建（输出到 web/dist/）
 
 ## 测试状态
 
-已配置 Vitest 测试框架。`vitest run` 运行时共 **149 个用例**，分布在 23 个测试文件中。Phase 6(V10 重写 + 移除 Element Plus)后新增 14 个 UI 组件单测(HButton/HCard/HCollapse/HDescriptions/HDialog/HDrawer/HEmpty/HInput/HPill/HProgress/HSelect/HSwitch/HTable/HTextarea),覆盖 H* 组件库核心交互。
+已配置 Vitest 测试框架。`vitest run` 运行时共 **161 个用例**，分布在 24 个测试文件中。Phase 6(V10 重写 + 移除 Element Plus)后新增 14 个 UI 组件单测(HButton/HCard/HCollapse/HDescriptions/HDialog/HDrawer/HEmpty/HInput/HPill/HProgress/HSelect/HSwitch/HTable/HTextarea),覆盖 H* 组件库核心交互。后续新增：features/home（RunningTasksSection + useElapsedDuration）、features/streamers（useStreamerDetail）、stores/sessions、features/recaps 组件测试（RecapDrawerV10/SessionTableV10）。
 
 关键测试文件:
 

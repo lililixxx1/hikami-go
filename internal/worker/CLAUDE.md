@@ -151,7 +151,7 @@
   - Hub: SubscribeBroadcast（广播接收）、Unsubscribe（取消订阅）、StopClosesChannels
   - Helpers: parsePIDFromMessage、isProcessAlive
 
-- `task_test.go`: 6 个测试用例，覆盖：
+- `task_test.go`: 7 个测试用例，覆盖：
   - Task Store 生命周期: pending->running->progress->succeeded
   - RetryFailedTask: failed->pending（attempt+1）
   - CancelPendingTask: pending->cancelled
@@ -165,8 +165,8 @@
 - `task.go` -- Task 结构体、Store 实现、SQL 常量、PID 解析工具、RecentFailedTasks、TaskSummary、ListRunning/ListPending（共用 `listByStatus`）
 - `hub.go` -- Hub 广播实现
 - `errors.go` -- 友好错误映射（GetFriendlyError、FriendlyError、errorMapping、friendlyErrorMappings）
-- `worker_test.go` -- 单元+集成测试（33 个用例）
-- `task_test.go` -- 单元+集成测试（5 个用例）
+- `worker_test.go` -- 单元+集成测试（35 个用例）
+- `task_test.go` -- 单元+集成测试（7 个用例）
 
 ## 变更记录 (Changelog)
 

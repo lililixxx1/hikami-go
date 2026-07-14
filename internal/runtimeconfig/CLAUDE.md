@@ -65,7 +65,7 @@
 
 ## 测试与质量
 
-- `store_test.go`: **8 个测试用例**(基于 `:memory:` SQLite + `db.Migrate`):
+- `store_test.go`: **9 个测试用例**(基于 `:memory:` SQLite + `db.Migrate`):
   - `TestLoadEmpty`: 空表返回空 map
   - `TestSaveAndLoad`: 基本存取往返
   - `TestSaveReplace`: 同 section 二次 Save 覆盖(`ON CONFLICT DO UPDATE`)
@@ -89,7 +89,7 @@ A: `ApplyOverrides` 逐段 unmarshal,损坏段 `slog.Error` + 跳过(不致命),
 ## 相关文件清单
 
 - `store.go` — `Store` 实现、`SaveTx`、`WithTx`、`SavePayload`(103 行)
-- `store_test.go` — 单元测试(8 个用例)
+- `store_test.go` — 单元测试(9 个用例)
 
 ## 变更记录 (Changelog)
 

@@ -86,7 +86,7 @@
 
 ## 测试与质量
 
-- `archive_test.go`: 14 个测试用例，覆盖：
+- `archive_test.go`: 13 个测试用例，覆盖：
   - **CreateTask**: 成功（`TestCreateTaskSuccess`）、错误状态（`TestCreateTaskWrongStatus`，非 published）、目录缺失（`TestCreateTaskDirMissing`）、WebDAV 未配置（`TestCreateTaskWebDAVNotConfigured`）、活跃 archive 冲突（`TestCreateTaskActiveArchiveConflict`）、活跃 upload 互斥（`TestCreateTaskActiveUploadConflict`）
   - **HandleTask**: 成功且不推进状态（`TestHandleTaskSuccessDoesNotAdvanceState`）、复制失败返回错误（`TestHandleTaskCopyFailureReturnsErr`）、错误状态（`TestHandleTaskWrongStatus`）、`all` 清理删目录 + 置 `local_available=false`（`TestHandleTaskCleanupAllRemovesDirAndSetsLocalAvailable`）、`all` 清理在状态回退时跳过（`TestHandleTaskCleanupAllSkipsWhenStatusReverted`）、`generated` 清理仅删 asr 目录（`TestHandleTaskCleanupGeneratedRemovesAsrOnly`）
   - **目标路径**: rclone 分支（`TestArchiveTargetRclone`）、native 分支（`TestArchiveTargetNative`）
@@ -94,7 +94,7 @@
 ## 相关文件清单
 
 - `archive.go` -- Handler、`CreateTask`、`HandleTask`、状态旁路逻辑、清理策略（cleanupTemp/cleanupGenerated/cleanupAll）、目标路径计算
-- `archive_test.go` -- 单元测试（14 个用例）
+- `archive_test.go` -- 单元测试（13 个用例）
 
 ## 变更记录 (Changelog)
 

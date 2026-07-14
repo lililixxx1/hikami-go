@@ -11,7 +11,7 @@
 - **入口文件**: `download.go`, `native.go`, `downloader_select.go`
 - **核心类型**: `Handler`, `YTDLPDownloader`, `NativeDownloader`, `AutoDownloader`
 - **任务类型**: `download`
-- **测试总数**: 48（按 `grep -c "^func Test" internal/download/*_test.go` 统计；probe_test.go 的 7 个用例受 `//go:build probe` 保护，常规测试不编译但仍计入函数定义）
+- **测试总数**: 49（按 `grep -c "^func Test" internal/download/*_test.go` 统计；probe_test.go 的 7 个用例受 `//go:build probe` 保护，常规测试不编译但仍计入函数定义）
 
 ## 对外接口
 
@@ -132,7 +132,7 @@ type Downloader interface {
 ## 测试与质量
 
 - `download_test.go`: 29 个测试用例，覆盖下载辅助函数、Handler 创建/注册/入队/任务执行、临时 Cookie 文件写入、`escapeConcatListPath` 相对路径绝对化 / 绝对路径保留转义等
-- `native_test.go`: 9 个测试用例，覆盖 native 成功下载、Cookie 缺失、非 BV、多 P 产物、seg.so 回退 XML、双失败空弹幕、无 pages、音频 URL 全失败、ffprobe/ffmpeg mock 与音频 HTTP client 独立 Transport/无超时/禁用 HTTP/2
+- `native_test.go`: 10 个测试用例，覆盖 native 成功下载、Cookie 缺失、非 BV、多 P 产物、seg.so 回退 XML、双失败空弹幕、无 pages、音频 URL 全失败、ffprobe/ffmpeg mock 与音频 HTTP client 独立 Transport/无超时/禁用 HTTP/2
 - `downloader_select_test.go`: 3 个测试用例，覆盖后端工厂、auto 遇 `ErrNativeUnsupported` 回退、其他错误不回退
 - `probe_test.go`: 7 个 `//go:build probe` 真实联调用例，覆盖 view/playurl/danmaku/native E2E、单 P/多 P 联调；常规测试不编译
 

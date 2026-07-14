@@ -170,7 +170,7 @@ type Provider interface {
 
 ## 测试与质量
 
-- `recap_test.go`: 65 个测试用例，覆盖：
+- `recap_test.go`: 72 个测试用例，覆盖：
   - CreateTask: 成功、状态错误、文件缺失、活跃冲突、场次不存在
   - Provider: LocalProvider（正常/空 prompt/system prompt）
   - 辅助函数: firstParagraph、safeName、parseChatCompletionContent、parseAnthropicResult
@@ -186,7 +186,7 @@ type Provider interface {
   - 署名识别: `hasGeneratedNotice` 兼容历史 Hazel 与新 Hikami 署名/变体（改名过渡期 AI 可能吐回旧签名，`TestHasGeneratedNotice`）
   - Handler: NewHandlerNilTemplateStore
 
-- `template_test.go`: 25 个测试用例，覆盖：
+- `template_test.go`: 26 个测试用例，覆盖：
   - TemplateStore CRUD: GetGlobal、GetByChannel、Upsert、Delete、ListGlobal
   - Resolve 合并逻辑: 7 种场景
   - RenderTemplate: 8 种场景
@@ -214,8 +214,8 @@ type Provider interface {
 - `template.go` -- TemplateStore CRUD、Resolve 合并逻辑、导入导出、ClearCustom 全量清除、哨兵错误
 - `render.go` -- RenderTemplate 变量插值引擎、TemplateVars 结构体
 - `presets.go` -- TemplatePreset 类型、BuiltinPresets 5 个内置模板预设
-- `recap_test.go` -- 单元+集成测试（55 个用例）
-- `template_test.go` -- 模板测试（25 个用例）
+- `recap_test.go` -- 单元+集成测试（72 个用例）
+- `template_test.go` -- 模板测试（26 个用例）
 - `test_recap_main_test.go` -- 端到端集成测试（1 个用例）
 - `test_recap_0329_test.go` -- 端到端集成测试（1 个用例，03.29 场次）
 

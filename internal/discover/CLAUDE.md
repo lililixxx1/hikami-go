@@ -44,7 +44,7 @@ type Lister interface {
 
 - 外部工具: yt-dlp (`--dump-json --flat-playlist`)
 - 依赖: channel.Store (主播列表), session.Store (场次去重), worker.Pool (排队任务)
-- 过滤: `channel.TitlePrefix` 非空时按逗号分隔前缀匹配；为空时跳过过滤
+- 过滤: `channel.TitlePrefix` 非空时按逗号分隔前缀匹配；为空时跳过过滤。**匹配在原始标题上做**（`DiscoverChannel`/`PreviewChannel` 在 `resolveTitle` 之前用 `entry.Title` 匹配），因为 `resolveTitle` 内部调 `CleanReplayTitle` 会去掉 `【直播回放】` 等前缀，清洗后的标题不再匹配前缀（`96b5115`）
 - 去重: 通过 `session.CreateDownload` 的唯一约束 `(channel_id, source_type, source_id)` 实现
 - 来源模式: `DiscoverAll`/`PreviewAll` 均跳过 `source_mode == "live_only"` 的主播
 - 发现限制: `DiscoverChannel` 在 `createdCount >= discover_limit` 时停止创建新场次（0 = 不限制）；`PreviewAll` 完全镜像该语义（按新项计数截断，达限后该频道后续项全丢弃，避免两步流程绕过 limit 一次性下载超配额——codex 审核 P1）
@@ -81,7 +81,7 @@ type Lister interface {
 
 ## 测试与质量
 
-- `discover_test.go`: 10 个测试函数，覆盖 DiscoverAll（建任务/跳过已存在/跳过 live_only）、discover_limit（达限/0=不限）、**PreviewAll**（标注 Exists、尊重 discover_limit、达限时在已存在项后 break）、**Execute**（不重跑 yt-dlp、幂等去重）。
+- `discover_test.go`: 16 个测试函数，覆盖 DiscoverAll（建任务/跳过已存在/跳过 live_only）、discover_limit（达限/0=不限）、**PreviewAll**（标注 Exists、尊重 discover_limit、达限时在已存在项后 break）、**Execute**（不重跑 yt-dlp、幂等去重）、title_prefix 匹配（原始标题 before CleanReplayTitle / 空 resolver 结果 guard / limit 前置检查）。
 
 ## 相关文件清单
 
@@ -91,6 +91,8 @@ type Lister interface {
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-07-13 | Bug 修复 | **title_prefix 匹配改在原始标题上做**（`96b5115`）：`DiscoverChannel`/`PreviewChannel` 的 title_prefix 匹配从 `resolveTitle` **之后**移到**之前**——在 `resolveTitle`（内部调 `CleanReplayTitle` 去掉 `【直播回放】` 等前缀）之前用 `entry.Title`（原始标题）做前缀匹配，否则清洗后的标题不再匹配前缀导致回放被错误跳过。配套：limit 检查移到 title resolution 之前（避免对将跳过的项做无谓的 resolve）、guard 空 resolver 结果。新增 6 测试（title_prefix 原始标题匹配 / 空 resolver 结果 / limit 前置），测试 10→16。 |
+| 2026-07-11 | Bug 修复 | **ISSUE-003 回放标题解析**（`4e96177` + `589aab5`）：回放发现时用 `resolveTitle` 解析真实视频标题替代 yt-dlp flat-playlist 的粗糙标题。v2 修复：limit 检查移到 title resolution 之前（避免对将跳过的项做无谓解析），guard 空 resolver 结果。 |
 | 2026-07-02 | 功能 | **两步式预览勾选下载**（`83ef024`）：新增 `PreviewAll`（第一步预览，不建场次不入队，按主播分组+标注已处理项+按 discover_limit 截断）、`Execute`（第二步执行，复用预览 entry 信息建 download 场+入队，不重跑 yt-dlp，复用 CreateDownload 幂等）、`ExecuteItem` 类型、`Result.Exists` 字段、`annotateExists` 批量 IN 查询辅助（codex 审核 P1/P2 修复：limit 语义镜像 + 频道失败项纳入 span）。新增 handler 路由 `POST /api/sessions/discover/preview` + `/execute`。`discover_test.go` 5→10（+PreviewAll/Execute 覆盖）。前端抽屉保留一步式「全部下载」作回退，发现按钮补 yt-dlp 能力守卫 |
 | 2026-05-15 | 更新 | 空 title_prefix 时不再过滤标题；DiscoverChannel/PreviewChannel 增加结构化日志，记录 title_prefix_mismatch、discover_limit_reached、create_session_failed、already_exists、accepted 等原因；新增 PreviewChannel 文档 |
 | 2026-05-14 | 更新 | DiscoverAll 新增 source_mode 检查（跳过 live_only 主播）；DiscoverChannel 新增 discover_limit 限制（每次最多创建 N 个新场次）；Lister.List 签名新增 cookieFile 参数 |

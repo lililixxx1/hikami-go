@@ -126,33 +126,33 @@ graph TD
 | 路径 | 职责 | 测试用例 | 文档 |
 |------|------|----------|------|
 | `cmd/hikami` | CLI 入口、服务启动、自动触发链（normalize→asr→recap→publish→archive 的 SetOnSuccess 回调）、归档注入与旁路注册、初始化 | 0 | [CLAUDE.md](./cmd/hikami/CLAUDE.md) |
-| `internal/config` | YAML 配置加载、校验、默认值、DownloaderConfig、ASRS3Config、ArchiveConfig、Effective\* 默认方法、AdminToken/loopback 校验、ApplyOverrides（runtimeconfig 持久化覆盖） | 31 | [CLAUDE.md](./internal/config/CLAUDE.md) |
-| `internal/db` | SQLite 打开与 schema 迁移 (v33，含 runtime_settings/archived_at/auto_recap)、DB 文件权限 0600 | 9 | [CLAUDE.md](./internal/db/CLAUDE.md) |
+| `internal/config` | YAML 配置加载、校验、默认值、DownloaderConfig、ASRS3Config、ArchiveConfig、ToolsConfig（yt-dlp/rclone 路径 web 可编辑）、Effective\* 默认方法、AdminToken/loopback 校验、ApplyOverrides（runtimeconfig 持久化覆盖，含 tools 段） | 34 | [CLAUDE.md](./internal/config/CLAUDE.md) |
+| `internal/db` | SQLite 打开与 schema 迁移 (v35，含 runtime_settings 7 段 CHECK/archived_at/auto_recap/bypass_fail_state)、DB 文件权限 0600 | 9 | [CLAUDE.md](./internal/db/CLAUDE.md) |
 | `internal/fsutil` | 原子文件写入辅助（WriteFileAtomic/WriteJSONAtomic） | 4 | [CLAUDE.md](./internal/fsutil/CLAUDE.md) |
 | `internal/aiprovider` | AI Provider 共享返回类型 | 5 | [CLAUDE.md](./internal/aiprovider/CLAUDE.md) |
 | `internal/runtime` | 外部工具探测、FFmpeg 自动解析/下载/嵌入、健康检查、磁盘/Cookie 检查 | 26 | [CLAUDE.md](./internal/runtime/CLAUDE.md) |
 | `internal/biliutil` | B 站 Cookie、登录、WBI、UA、加密工具、视频链接解析、view/playurl/弹幕 XML/seg.so API 客户端、buvid 设备指纹（-352 风控对抗共享层：GetBuvids 24h 缓存 + Invalidate 失效重试 + InjectBuvids replace 注入）、封面下载/回放标题清洗 | 84 | [CLAUDE.md](./internal/biliutil/CLAUDE.md) |
 | `internal/channel` | 主播 CRUD、识别（-352 风控对抗：buvid 注入 + WBI 签名）、自动化配置（auto_record/auto_asr/auto_publish/auto_recap 三态）、per-channel 发布配置 | 62 | [CLAUDE.md](./internal/channel/CLAUDE.md) |
-| `internal/session` | 场次 CRUD、去重、统计（GetStats/GetDashboardStats）、失败重试、local_available/archived_at 标记；CreateLive 同槽冲突返回 ErrAlreadyLive（不再复用/重置） | 39 | [CLAUDE.md](./internal/session/CLAUDE.md) |
+| `internal/session` | 场次 CRUD、去重、统计（GetStats/GetDashboardStats）、失败重试、local_available/archived_at 标记；CreateLive 同槽冲突返回 ErrAlreadyLive（不再复用/重置） | 40 | [CLAUDE.md](./internal/session/CLAUDE.md) |
 | `internal/state` | 场次聚合状态机与失败恢复、ApplyWithPublishTarget（published 为终态，无 publish_reverted 出口） | 11 | [CLAUDE.md](./internal/state/CLAUDE.md) |
-| `internal/worker` | 任务池、任务存储、Hub 广播、重试取消、Register+WithBypassFailState（状态旁路任务元数据）、任务实例级 BypassFailState（重新生成等非推进型任务失败不降级主状态）、live_record 进程接管回调、recoverRunning 两阶段（running 类型分发 + pending 孤儿重入队解除 scheduler 死锁） | 41 | [CLAUDE.md](./internal/worker/CLAUDE.md) |
-| `internal/handler` | Gin REST API、WebSocket、引导、诊断、配置导出/导入（6 段配置+secrets 事务化持久化到 runtime_settings）、回顾模型列表、DashScope/ASR S3/archive 配置端点、stats/dashboard（单连接查询，已修复自死锁）、recap/regenerate 重新生成端点、运行时状态代际校验、admin token 认证中间件 | 66 | [CLAUDE.md](./internal/handler/CLAUDE.md) |
-| `internal/discover` | B 站回放发现（两步式预览勾选下载：PreviewAll 预览→Execute 执行；保留一步式 DiscoverAll 作回退） | 10 | [CLAUDE.md](./internal/discover/CLAUDE.md) |
-| `internal/download` | 回放音频下载（native 单 P/多 P + yt-dlp 双后端，concat list 路径转义）、单链接触发、CookieAccountStore cookie 解析 | 48 | [CLAUDE.md](./internal/download/CLAUDE.md) |
-| `internal/live_record` | 直播音频与弹幕录制、ffmpeg 进程接管（Adopt）、-352 频道级阶梯冷却（5/10/20m，CheckLive RefreshKeys+Invalidate 重试 + ErrRiskControl352 哨兵 + jitter）、重连按错误类型分支（selectStream→maxReconnect / CDN 瞬时→cdnRetryBudget） | 72 | [CLAUDE.md](./internal/live_record/CLAUDE.md) |
+| `internal/worker` | 任务池、任务存储、Hub 广播、重试取消、Register+WithBypassFailState（状态旁路任务元数据）、任务实例级 BypassFailState（重新生成等非推进型任务失败不降级主状态）、live_record 进程接管回调、recoverRunning 两阶段（running 类型分发 + pending 孤儿重入队解除 scheduler 死锁） | 42 | [CLAUDE.md](./internal/worker/CLAUDE.md) |
+| `internal/handler` | Gin REST API、WebSocket、引导、诊断、配置导出/导入（6 段配置+secrets 事务化持久化到 runtime_settings）、回顾模型列表、DashScope/ASR S3/archive/tools 配置端点、stats/dashboard（单连接查询，已修复自死锁）、recap/regenerate 重新生成端点、glossary JSON 双格式导入、GET /channels/:id、运行时状态代际校验、admin token 认证中间件 | 75 | [CLAUDE.md](./internal/handler/CLAUDE.md) |
+| `internal/discover` | B 站回放发现（两步式预览勾选下载：PreviewAll 预览→Execute 执行；保留一步式 DiscoverAll 作回退；title_prefix 匹配原始标题在 CleanReplayTitle 之前） | 16 | [CLAUDE.md](./internal/discover/CLAUDE.md) |
+| `internal/download` | 回放音频下载（native 单 P/多 P + yt-dlp 双后端，concat list 路径转义）、单链接触发、CookieAccountStore cookie 解析 | 49 | [CLAUDE.md](./internal/download/CLAUDE.md) |
+| `internal/live_record` | 直播音频与弹幕录制、ffmpeg 进程接管（Adopt）、-352 频道级阶梯冷却（5/10/20m，CheckLive RefreshKeys+Invalidate 重试 + ErrRiskControl352 哨兵 + jitter）、重连按错误类型分支（selectStream→maxReconnect / CDN 瞬时→cdnRetryBudget）、HTTP 412/403/429 风控冷却（ErrHTTPRiskControl）、0 字节僵尸文件检测（ErrZeroByteStalled）+ 不增长检测（ErrRecordingNotGrowing）、probe 失败独立预算重连 | 89 | [CLAUDE.md](./internal/live_record/CLAUDE.md) |
 | `internal/importer` | 手动 multipart 导入 | 15 | [CLAUDE.md](./internal/importer/CLAUDE.md) |
 | `internal/normalize` | 媒体标准化、弹幕解析（JSONL/XML/多 P 合并）、元数据生成 | 68 | [CLAUDE.md](./internal/normalize/CLAUDE.md) |
 | `internal/asr` | DashScope ASR、S3 存储后端、本地临时音频、公网 IP 检测、弹幕校正 | 63 | [CLAUDE.md](./internal/asr/CLAUDE.md) |
-| `internal/recap` | AI 回顾、模板、分段、续写、术语发现、符号化纯文本文章输出（emoji 前缀分行）、署名识别（hasGeneratedNotice 兼容改名过渡期变体）、local_available 守卫、CapabilityChecker 能力 gate、disabledProvider 禁用即禁用、CreateRegenTask（重新生成，覆盖本地 md 不碰 B站，带 BypassFailState） | 94 | [CLAUDE.md](./internal/recap/CLAUDE.md) |
+| `internal/recap` | AI 回顾、模板、分段、续写、术语发现、符号化纯文本文章输出（emoji 前缀分行）、署名识别（hasGeneratedNotice 兼容改名过渡期变体）、local_available 守卫、CapabilityChecker 能力 gate、disabledProvider 禁用即禁用、CreateRegenTask（重新生成，覆盖本地 md 不碰 B站，带 BypassFailState） | 100 | [CLAUDE.md](./internal/recap/CLAUDE.md) |
 | `internal/upload` | WebDAV 归档上传（rclone + 原生 WebDAV）、前置产物校验、清理策略+local_available 闭环 | 38 | [CLAUDE.md](./internal/upload/CLAUDE.md) |
 | `internal/publisher` | B 站专栏草稿/发布与 Markdown 转 Opus，含 -352 风控自动处理（buvid 注入 via 共享 BuvidStore + gaia 验证 + WBI 刷新重试）、封面来源解析（recap cover > 配置 cover_url 本地路径自动上传/网络 URL 原样）、local_available 守卫（专栏只能手动去 B站管理，本系统不删不改） | 67 | [CLAUDE.md](./internal/publisher/CLAUDE.md) |
-| `internal/archive` | 发布后 WebDAV 归档（状态旁路任务：从 published 出发，不推进主状态仅写 archived_at），复用 upload.Copier/Deleter，与 upload 互斥 | 14 | [CLAUDE.md](./internal/archive/CLAUDE.md) |
+| `internal/archive` | 发布后 WebDAV 归档（状态旁路任务：从 published 出发，不推进主状态仅写 archived_at），复用 upload.Copier/Deleter，与 upload 互斥 | 13 | [CLAUDE.md](./internal/archive/CLAUDE.md) |
 | `internal/scheduler` | 定时发现、直播检查、告警任务 | 13 | [CLAUDE.md](./internal/scheduler/CLAUDE.md) |
-| `internal/secrets` | API Key 管理 | 8 | [CLAUDE.md](./internal/secrets/CLAUDE.md) |
-| `internal/runtimeconfig` | 全局运行时配置覆盖持久化（runtime_settings 表 per-section JSON，含 SaveTx/WithTx 与 secrets 原子写入；启动由 ApplyOverrides 覆盖 config.yaml 基线） | 8 | [CLAUDE.md](./internal/runtimeconfig/CLAUDE.md) |
-| `internal/glossary` | 术语表与 AI 术语发现候选 | 63 | [CLAUDE.md](./internal/glossary/CLAUDE.md) |
+| `internal/secrets` | API Key 管理 | 9 | [CLAUDE.md](./internal/secrets/CLAUDE.md) |
+| `internal/runtimeconfig` | 全局运行时配置覆盖持久化（runtime_settings 表 per-section JSON 7 段含 tools，SaveTx/WithTx 与 secrets 原子写入；启动由 ApplyOverrides 覆盖 config.yaml 基线） | 9 | [CLAUDE.md](./internal/runtimeconfig/CLAUDE.md) |
+| `internal/glossary` | 术语表与 AI 术语发现候选（ImportJSON 双格式：对象/裸数组 fallback，ErrInvalidJSON→400） | 68 | [CLAUDE.md](./internal/glossary/CLAUDE.md) |
 | `internal/notify` | 通知事件与发送器 | 12 | [CLAUDE.md](./internal/notify/CLAUDE.md) |
-| `web` | Vue 3 前端管理界面（features 分域 + composables 收敛 + Vitest 测试；设置页 4 折叠分组 + 录播/回放子 tab + 两步式发现回放抽屉 + 抽屉内重新生成回顾） | 97 | [CLAUDE.md](./web/CLAUDE.md) |
+| `web` | Vue 3 前端管理界面（V10 自建 H* 组件库移除 Element Plus；features 分域 + composables 收敛 + Vitest 测试 161 例；设置页 4 折叠分组 V10 重写 + 录播/回放子 tab + 两步式发现回放抽屉 + 抽屉内重新生成回顾） | 161 | [CLAUDE.md](./web/CLAUDE.md) |
 
 完整路径、入口文件、测试数量见下方「精简模块索引」表。
 
@@ -246,6 +246,25 @@ systemctl status hikami      # 状态
 优先运行与改动相关的最小测试；跨模块、迁移、API 或前端类型变更后运行 `make test`，前端变更运行 `cd web && npm run type-check` 或 `make web-build`。
 
 ## 变更记录 (Changelog)
+
+### 2026-07-13 · 嵌入裁剪版 ffmpeg + Windows exe 闪退修复 + 不再创建空 logs/
+
+- **嵌入裁剪版 ffmpeg**（`7eb7203`）：`build-windows-amd64` 嵌入的 ffmpeg 从 BtbN 完整 gpl 版（~80MB）改为裁剪版（~8-12MB）。新增 `scripts/build-ffmpeg-minimal.sh`（Docker+MinGW-w64 交叉编译，`--disable-everything` 后白名单启用 flv/concat/mov/mp3 demuxer/muxer + mp3/aac encoder；依据：录制全 `-c:a copy` 零编码器）+ `scripts/verify-ffmpeg-minimal.sh`（逐条复刻真实参数验证）+ `scripts/README-ffmpeg-build.md`。`ffmpeg_manifest.go` Version 改 `embedded-minimal-7.x`。`.gitignore` 白名单放行 `assets/ffmpeg.zip`。未改任何解析逻辑。
+- **Windows exe 闪退修复**（`4a79b44`）：裁剪版 zip 顶层是 `bin/ffmpeg.exe`，但 manifest 仍写死 BtbN 完整版目录结构 `ffmpeg-master-latest-win64-gpl-shared/bin/ffmpeg.exe` → 解包后按 manifest 找不到二进制 → 启动 fatal。修复：`ffmpeg_manifest.go` 的 `windows-amd64` 段 `FFmpegPath`→`bin/ffmpeg.exe`、`FFprobePath`→`bin/ffprobe.exe`、`ArchiveURL` 删除（留空防误下 80MB 完整版）。
+- **不再创建空 logs/ 目录**（`f39c44d`）：`config.EnsureDirs()` 删掉建 `logs/` 那段——程序只把 slog 日志写到 stdout（`main.go`），从不落盘，`logs.dir` 配置项是历史遗留，保留字段仅为向后兼容老 config.yaml 不报错。
+- **discover title_prefix 匹配修复**（`96b5115`）：`DiscoverChannel`/`PreviewChannel` 的 title_prefix 匹配改在 `resolveTitle`（内部调 `CleanReplayTitle` 去掉 `【直播回放】` 前缀）**之前**的原始标题上做，否则清洗后的标题不再匹配前缀。
+
+### 2026-07-08 · 配置默认值 + 设置页 UI + Bug 报告核实修复 + V10 前端全页面重写
+
+- **配置默认值 + 设置页 UI 三处修复**（branch `fix/config-and-ui-2026-07-08`）：① `output_root` 默认值 `huizeman`→`hikami-go`；② 设置页 sidebar `position:sticky` 钉顶；③ 新增 `tools` 配置段（yt-dlp/rclone 路径 web 可编辑，第 7 个 runtimeconfig 段，DB v35 迁移表重建扩展 CHECK 白名单 +tools）+ `ToolsCardV10.vue` 可编辑表单；④ HDialog 确认框 DOM 结构从兄弟改嵌套 + `@click.self` 修冒泡误关。前端 149→151 测试、config 31→45、handler 95、db 9。
+- **Bug 报告核实修复**（branch `fix/bug-report-2026-07-08`）：5 条报告核实 3 真 1 不成立 1 夸大。① glossary JSON 导入双格式 fallback（裸数组）+ ErrInvalidJSON→400；② publish `private_pub` 全局段 `0` 规范化为默认 `2`（堵 publisher 收到 0 路径）；③ 补 `GET /api/channels/:id` 路由（Store.Get 已存在）；④ channels PUT 全字段替换是设计如此（文档说明不改代码）；⑤ cover_url 默认 `/home/cc` 不成立（仓库无此默认值）。新增 7 测试。
+- **Vue 3 V10 全页面重写 Phase 6 完成**（branch `feat/remove-element-plus`）：基于 OpenAPI 契约重写 4 视图 + 自建 V10 组件库（16 个 H* 组件 + HMessage/HConfirm/HToast）+ `design-tokens.css`，完全移除 Element Plus。删除手写 `api/types.ts`（549 行），39 个 import 迁移到 `api/types-derived.ts`。149 测试通过、type-check/build 通过、bundle 体积大幅下降。
+
+### 2026-07-07 · 后端接口 OpenAPI 文档落地 + 录播稳定性异常 #10/#11 + P2
+
+- **OpenAPI 文档落地**（`docs/api/`，branch `feat/api-openapi-doc`）：手写 OpenAPI 3.0.3 YAML，121 端点 + WebSocket 事件契约，作为 V10 前端重写契约源。`openapi.yaml`（paths 内联）+ 14 个 schema + Swagger UI + `api-gap-analysis.md` + Makefile 3 target。10 个关键陷阱如实记录（`/ws` 无 `/api` 前缀、ResolvedTemplate PascalCase、multipart import、PUT secrets 空串删除、auto_recap 三态、6 组 config patch 语义、QR 410、配置密钥只写等）。
+- **录播稳定性异常 #10/#11 + P2**（branch `fix/live-record-anomaly-10-11-p2`，codex 计划 v1→v4 APPROVED + 执行复审 v1→v3 APPROVED）：① **异常 #10（重连死循环 P0）**：probe 失败用独立 `probeErrorBudget=1` 控制 + 耗尽时校验有效音频（有→成功收尾，无→失败避免空音频污染回顾）；② **异常 #11（0 字节僵尸 + NotGrowing P1）**：`healthStats` 四字段聚合 + 0 字节连续 2 次→`ErrZeroByteStalled`、`failCount>=3`→`ErrRecordingNotGrowing` + 取消；HandleTask `peekAbortReason` 收尾：前序有有效音频→覆盖走成功保留，无→失败路径；③ **P2（HTTP 412/403/429 风控冷却）**：`ErrHTTPRiskControl` 哨兵 + `getJSON` 识别风控码 + 全部 6 个 CheckLive 调用点 + GetStream 覆盖冷却。live_record 72→89（+17 测试）。
+- **auto_recap 默认值反转 + -352 剩余端点加固**（branch `fix/recap-default-and-risk-hardening`）：① `auto_recap` 默认 true→false（新建主播默认不自动回顾，已有主播不受影响，迁移 DEFAULT 保持 1）；② `biliutil/video.go` VideoClient 改指针接收者 + buvid/WBI 签名注入；③ `handler/server.go` 抽 `biliCreativeGet` 共享 client helper 补 Referer/Origin。
 
 ### 2026-07-06 · 录播稳定性 9 个异常修复
 
