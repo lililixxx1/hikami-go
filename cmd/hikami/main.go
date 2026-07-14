@@ -12,11 +12,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 
 	"hikami-go/internal/archive"
@@ -55,6 +53,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 日志 writer：Windows 桌面模式（systray）写文件，其他模式写 stdout。
+	// initLogFile 不依赖 logger（此时 logger 尚未创建）。
+	logWriter, logCleanup, logErr := initLogFile()
+	if logErr != nil {
+		slog.Error("failed to open log file, falling back to stdout", "error", logErr)
+		logWriter = os.Stdout
+		logCleanup = func() {}
+	}
+	// defer logCleanup 必须在 DB/worker/scheduler 的 defer 之前注册，
+	// 这样退出时 LIFO 顺序保证日志文件最后关闭（worker/scheduler 清理日志不丢）。
+	defer logCleanup()
+
 	logOptions := &slog.HandlerOptions{Level: cfg.LogLevel()}
 	logFormat := cfg.LogFormat
 	if logFormat == "" {
@@ -62,9 +72,9 @@ func main() {
 	}
 	var logHandler slog.Handler
 	if strings.EqualFold(logFormat, "text") {
-		logHandler = slog.NewTextHandler(os.Stdout, logOptions)
+		logHandler = slog.NewTextHandler(logWriter, logOptions)
 	} else {
-		logHandler = slog.NewJSONHandler(os.Stdout, logOptions)
+		logHandler = slog.NewJSONHandler(logWriter, logOptions)
 	}
 	logger := slog.New(logHandler)
 	slog.SetDefault(logger)
@@ -482,17 +492,20 @@ func main() {
 		}
 	}()
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
+	// 关闭协调器：统一所有退出入口（托盘菜单/信号），sync.Once 保证幂等。
+	sc := newShutdownCoordinator(httpServer, logger)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := httpServer.Shutdown(ctx); err != nil {
-		logger.Error("http server shutdown failed", "error", err)
-		os.Exit(1)
+	// runTray 阻塞主线程：
+	//   Windows+systray: 运行托盘消息循环，信号 goroutine 作系统关闭兜底
+	//   其他: 阻塞在 signal.Notify，收到信号调 requestShutdown
+	// 信号监听只在 runTray 内，main 不重复监听。
+	// runTray 返回后 main 继续执行 defer 链（LIFO 顺序）：
+	// sched.Stop → workerPool.Stop → database.Close → logCleanup（日志最后关闭）
+	runTray(sc, serverURL, logger)
+
+	if err := sc.Err(); err != nil {
+		logger.Error("shutdown completed with error", "error", err)
 	}
-	logger.Info("hikami stopped")
 }
 
 func webURL(addr string) string {

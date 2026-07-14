@@ -58,6 +58,18 @@ build-windows-amd64:
 build-windows-amd64-lite:
 	GOOS=windows GOARCH=amd64 go build -tags embedded_web -o hikami-windows-amd64-lite.exe ./cmd/hikami
 
+# Windows 桌面版：嵌入裁剪版 ffmpeg + 前端 + 系统托盘（隐藏终端窗口）
+# 加 -H windowsgui 让 exe 不弹控制台，加 systray tag 编译托盘代码
+build-windows-desktop:
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -tags 'embed_ffmpeg,embedded_web,systray' \
+		-ldflags='-H windowsgui -s -w' -o hikami-windows-desktop.exe ./cmd/hikami
+	@ls -lh hikami-windows-desktop.exe | awk '{print "  产物体积:", $5}'
+
+# Windows 桌面轻量版：嵌入前端 + 系统托盘，依赖系统 ffmpeg
+build-windows-desktop-lite:
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -tags 'embedded_web,systray' \
+		-ldflags='-H windowsgui -s -w' -o hikami-windows-desktop-lite.exe ./cmd/hikami
+
 # 构建裁剪版 ffmpeg/ffprobe（Windows x64 静态），产出 internal/runtime/assets/ffmpeg.zip。
 # 仅在更新嵌入的 ffmpeg 时运行（Docker 交叉编译，约 5-10 分钟）。详见 scripts/README-ffmpeg-build.md。
 build-ffmpeg-minimal:
