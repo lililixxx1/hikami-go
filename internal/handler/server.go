@@ -2762,12 +2762,6 @@ type RecapModelOption struct {
 var recommendedRecapModels = []RecapModelOption{
 	{Value: "deepseek-v4-flash", Label: "deepseek-v4-flash（快速）", Group: "DeepSeek"},
 	{Value: "deepseek-v4-pro", Label: "deepseek-v4-pro（默认）", Group: "DeepSeek"},
-	{Value: "gpt-4o", Label: "gpt-4o", Group: "OpenAI"},
-	{Value: "gpt-4o-mini", Label: "gpt-4o-mini", Group: "OpenAI"},
-	{Value: "qwen-plus", Label: "qwen-plus", Group: "其他"},
-	{Value: "qwen-turbo", Label: "qwen-turbo", Group: "其他"},
-	{Value: "qwen-max", Label: "qwen-max", Group: "其他"},
-	{Value: "claude-sonnet-4-20250514", Label: "claude-sonnet-4-20250514", Group: "其他"},
 }
 
 // getRecapModels 返回推荐回顾模型列表（只读，供前端下拉填充）。

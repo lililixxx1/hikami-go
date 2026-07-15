@@ -2,7 +2,7 @@
   RecapCardV10.vue(Phase 5 Task 5.2)。回顾 AI 配置卡。
   移植自 RecapSettingsCard.vue(EP)。
   - enabled 开关 + provider(base_url/model/api_key/api_key_env)。
-  - 模型下拉用 useRecapModels(GET /api/config/recap/models,扁平化为 HSelect options)。
+  - 模型下拉用 useRecapModels(GET /api/config/recap/models,扁平化为 HCombobox options,可手动输入)。
   - 三态密钥:api_key_set + clear_key checkbox(gap-analysis 补的 UI,与 DashScope 同模式)。
   - 高级参数:max_tokens/max_continuations/timeout_seconds(include_speaker_info)。
   - 数字字段用 computed 代理(HInput 只接受 string)。
@@ -11,7 +11,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { HMessage } from '@/components/ui/message'
-import { HCard, HButton, HInput, HSelect, HSwitch, HCheckbox, HPill } from '@/components/ui'
+import { HCard, HButton, HInput, HSelect, HSwitch, HCheckbox, HPill, HCombobox } from '@/components/ui'
 import { getRecapConfig, updateRecapConfig } from '@/api/settings'
 import { useRecapModels } from '@/composables/useRecapModels'
 import { useRuntimeStore } from '@/stores/runtime'
@@ -43,11 +43,11 @@ const maxTokens = computed({ get: () => String(config.value.max_tokens), set: (v
 const maxContinuations = computed({ get: () => String(config.value.max_continuations), set: (v: string) => { config.value.max_continuations = Number(v) || 0 } })
 const timeoutSeconds = computed({ get: () => String(config.value.timeout_seconds), set: (v: string) => { config.value.timeout_seconds = Number(v) || 0 } })
 
-// useRecapModels 按 group 聚合,扁平化为 HSelect options(group 作前缀标签)
+// useRecapModels 按 group 聚合,扁平化为 HCombobox options(可输入,无需 group 前缀)
 const modelOptions = computed(() => {
   const opts: { label: string; value: string }[] = []
   for (const g of recapModelGroups.value) {
-    for (const m of g.models) opts.push({ label: `${g.name} · ${m.label}`, value: m.value })
+    for (const m of g.models) opts.push({ label: m.label, value: m.value })
   }
   return opts
 })
@@ -109,8 +109,8 @@ defineExpose({ reload: fetchConfig })
     <div class="form-row-inline">
       <label class="form-label">模型版本</label>
       <div class="form-field">
-        <HSelect v-model="config.model" :options="modelOptions" />
-        <div class="form-hint">支持输入任意 OpenAI 兼容模型名称,留空跟随 DeepSeek 默认。</div>
+        <HCombobox v-model="config.model" :options="modelOptions" placeholder="deepseek-v4-pro" clearable />
+        <div class="form-hint">支持输入任意 OpenAI 兼容模型名称,清空跟随 DeepSeek 默认。</div>
       </div>
     </div>
 
