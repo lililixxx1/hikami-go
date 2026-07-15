@@ -2,7 +2,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { Channel, Session, RuntimeStatus } from '@/api/types-derived'
-import { HDrawer, HEmpty, HCollapse, HCollapseItem, HSelect, HInput, HPill, HButton } from '@/components/ui'
+import { HDrawer, HEmpty, HCollapse, HCollapseItem, HInput, HPill, HButton, HCombobox } from '@/components/ui'
 import { getFriendlySessionStatus } from '@/utils/friendlyStatus'
 import { formatDateTime } from '@/utils/format'
 import type { CookieStatus as CookieStatusValue, AutoToggleField, RecapOverrideField } from '../composables/useStreamerDetail'
@@ -69,7 +69,7 @@ watch(
   { immediate: true },
 )
 
-// recap_model HSelect 选项:跟随全局(空)+ 各分组模型
+// recap_model HCombobox 选项:跟随全局(空)+ 各分组模型;清空即回到"跟随全局"
 const recapOptions = computed(() => {
   const base = [{ label: '跟随全局', value: '' }]
   for (const grp of props.recapModelGroups) {
@@ -194,13 +194,15 @@ function applyRecapOverrides() {
         <section class="detail-section">
           <h4 class="detail-section-title">回顾设置</h4>
           <div class="form-stack">
-            <HSelect
+            <HCombobox
               :model-value="recapModelDraft"
               :options="recapOptions"
+              placeholder="留空跟随全局"
+              clearable
               @update:model-value="recapModelDraft = $event"
             >
               <template #label>回顾模型</template>
-            </HSelect>
+            </HCombobox>
             <div class="switch-row">
               <span class="switch-label">最大续写次数</span>
               <HInput

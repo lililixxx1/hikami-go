@@ -263,21 +263,30 @@ func TestGetRecapModels(t *testing.T) {
 	if err := json.Unmarshal(resp.Body.Bytes(), &result); err != nil {
 		t.Fatalf("unmarshal models: %v, body=%s", err, resp.Body.String())
 	}
-	if len(result.Models) == 0 {
-		t.Fatal("expected non-empty models list")
+
+	// 预设只保留 DeepSeek 两个快捷选项，锁死精确集合与顺序，防止未来误加回多余预设。
+	want := []RecapModelOption{
+		{Value: "deepseek-v4-flash", Label: "deepseek-v4-flash（快速）", Group: "DeepSeek"},
+		{Value: "deepseek-v4-pro", Label: "deepseek-v4-pro（默认）", Group: "DeepSeek"},
+	}
+	if len(result.Models) != len(want) {
+		t.Fatalf("expected %d models, got %d (%+v)", len(want), len(result.Models), result.Models)
+	}
+	for i, m := range result.Models {
+		if m != want[i] {
+			t.Fatalf("models[%d] = %+v, want %+v", i, m, want[i])
+		}
 	}
 
-	byValue := make(map[string]RecapModelOption)
+	// 确认精简生效：已移除的厂商模型不再出现。
+	byValue := make(map[string]RecapModelOption, len(result.Models))
 	for _, m := range result.Models {
 		byValue[m.Value] = m
 	}
-	if m, ok := byValue["deepseek-v4-pro"]; !ok {
-		t.Fatal("expected deepseek-v4-pro in models")
-	} else if m.Group != "DeepSeek" {
-		t.Fatalf("expected group DeepSeek for deepseek-v4-pro, got %q", m.Group)
-	}
-	if _, ok := byValue["qwen-max"]; !ok {
-		t.Fatal("expected qwen-max in models")
+	for _, gone := range []string{"gpt-4o", "gpt-4o-mini", "qwen-plus", "qwen-turbo", "qwen-max", "claude-sonnet-4-20250514"} {
+		if _, ok := byValue[gone]; ok {
+			t.Fatalf("removed model %q still present in models list", gone)
+		}
 	}
 }
 
