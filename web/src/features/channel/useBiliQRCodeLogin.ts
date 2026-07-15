@@ -84,7 +84,7 @@ export function useBiliQRCodeLogin(options: UseBiliQRCodeLoginOptions) {
   watch(visible, (v) => {
     if (v) void startLogin()
     else void cleanupSession()
-  })
+  }, { immediate: true })
 
   async function poll(): Promise<void> {
     if (!session.value || polling.value || !visible()) return

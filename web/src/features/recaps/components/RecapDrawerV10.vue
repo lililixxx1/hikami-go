@@ -169,7 +169,7 @@ watch(
   -->
   <template v-if="visible">
     <div class="drawer-overlay" @click="emit('update:visible', false)" />
-    <div class="recap-drawer-panel">
+    <div class="drawer rtl open recap-drawer-panel" style="width: 600px;">
       <div class="drawer-header">
         <span class="drawer-title">{{ session?.title || '回顾' }}</span>
         <button type="button" class="drawer-close" aria-label="关闭" @click="emit('update:visible', false)">

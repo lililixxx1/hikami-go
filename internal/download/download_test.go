@@ -636,3 +636,99 @@ func TestHandleTaskDownloadFails(t *testing.T) {
 		t.Fatalf("error should contain 'network error', got: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ffmpegLocationDir / ytDlpArgs（--ffmpeg-location 注入）
+// ---------------------------------------------------------------------------
+
+func TestFFmpegLocationDir(t *testing.T) {
+	// 用 filepath.Join 构造跨平台路径，避免 Linux 上测 Windows 反斜杠路径语义不符的问题。
+	absPath := filepath.Join(string(filepath.Separator), "opt", "hikami", "bin", "ffmpeg")
+	relDir := filepath.Join("hikami", ".runtime", "ffmpeg", "bin")
+	relPath := filepath.Join(relDir, "ffmpeg")
+
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", ""},
+		{"bare name ffmpeg", "ffmpeg", ""},
+		{"bare name ffprobe", "ffprobe", ""},
+		{"absolute path", absPath, filepath.Join(string(filepath.Separator), "opt", "hikami", "bin")},
+		{"relative path", relPath, relDir},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := ffmpegLocationDir(c.in); got != c.want {
+				t.Fatalf("ffmpegLocationDir(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+func TestYTDLPArgsInjectsFFmpegLocation(t *testing.T) {
+	d := YTDLPDownloader{FFmpeg: filepath.Join("some", "dir", "ffmpeg")}
+	got := d.ytDlpArgs("", "-x", "--audio-format", "m4a")
+	want := []string{"--ffmpeg-location", filepath.Join("some", "dir"), "-x", "--audio-format", "m4a"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestYTDLPArgsNoFFmpegLocationForBareName(t *testing.T) {
+	d := YTDLPDownloader{FFmpeg: "ffmpeg"}
+	got := d.ytDlpArgs("", "-x", "url")
+	want := []string{"-x", "url"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("got %v, want %v (bare name should not inject)", got, want)
+	}
+}
+
+func TestYTDLPArgsCombinesCookiesAndFFmpegLocation(t *testing.T) {
+	d := YTDLPDownloader{FFmpeg: filepath.Join("bin", "ffmpeg")}
+	got := d.ytDlpArgs("cookies.txt", "-x", "url")
+	want := []string{"--ffmpeg-location", "bin", "--cookies", "cookies.txt", "-x", "url"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestYTDLPArgsNoPrefixForEmptyAll(t *testing.T) {
+	d := YTDLPDownloader{}
+	got := d.ytDlpArgs("", "-x", "url")
+	want := []string{"-x", "url"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("got %v, want %v (empty FFmpeg + empty cookie → no prefix)", got, want)
+	}
+}
+
+func TestYTDLPArgsCookiesOnlyWhenFFmpegBare(t *testing.T) {
+	d := YTDLPDownloader{FFmpeg: "ffmpeg"}
+	got := d.ytDlpArgs("cookies.txt", "-x", "url")
+	want := []string{"--cookies", "cookies.txt", "-x", "url"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// singlePCid（单 P 弹幕抓取的 cid 解析）
+// 注：singlePCid 内部用默认 view client（默认 base url + 默认 http client），
+// 无法在不改签名的情况下注入 mock base url，故单测只覆盖「无 BV / 无效 BV 时返回 0」
+// 的降级行为（不发网络请求）；带 BV 的实际 view API 查询由集成验证覆盖。
+// 参照 TestFetchCidMapForMultiPNoBvid 的模式。
+// ---------------------------------------------------------------------------
+
+func TestSinglePCidNoBvid(t *testing.T) {
+	cases := []string{
+		"https://example.com/video/notabvid",
+		"",
+		"https://www.bilibili.com/",
+	}
+	for _, url := range cases {
+		if cid := singlePCid(context.Background(), url, ""); cid != 0 {
+			t.Fatalf("url=%q: expected cid 0, got %d", url, cid)
+		}
+	}
+}

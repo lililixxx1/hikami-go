@@ -64,12 +64,33 @@ func (d YTDLPDownloader) Download(ctx context.Context, sourceURL string, rawDir 
 	return d.downloadMultiP(ctx, command, sourceURL, rawDir, entries, cookieFile)
 }
 
-// ytDlpArgs 在 baseArgs 前面插入 --cookies cookieFile（当 cookieFile 非空时）。
+// ytDlpArgs 构造 yt-dlp 调用参数前缀：当 FFmpeg 指向真实路径（非裸命令名）时注入
+// --ffmpeg-location <dir>，使 yt-dlp 后处理（-x 音频提取/转码）能找到 hikami 解析的 ffmpeg；
+// 当 cookieFile 非空时注入 --cookies。两前缀均缺席时原样返回 baseArgs。
 func (d YTDLPDownloader) ytDlpArgs(cookieFile string, baseArgs ...string) []string {
-	if cookieFile == "" {
+	prefix := make([]string, 0, 4)
+	if dir := ffmpegLocationDir(d.FFmpeg); dir != "" {
+		prefix = append(prefix, "--ffmpeg-location", dir)
+	}
+	if cookieFile != "" {
+		prefix = append(prefix, "--cookies", cookieFile)
+	}
+	if len(prefix) == 0 {
 		return baseArgs
 	}
-	return append([]string{"--cookies", cookieFile}, baseArgs...)
+	return append(prefix, baseArgs...)
+}
+
+// ffmpegLocationDir 从 ffmpeg 可执行文件路径推导 yt-dlp --ffmpeg-location 所需的目录。
+// 对空值和裸命令名（如 "ffmpeg"）返回空（此时不注入，让 yt-dlp 回退自身 PATH 查找）。
+func ffmpegLocationDir(ffmpegPath string) string {
+	if ffmpegPath == "" {
+		return ""
+	}
+	if filepath.Base(ffmpegPath) == ffmpegPath {
+		return "" // 裸命令名，无目录信息
+	}
+	return filepath.Dir(ffmpegPath)
 }
 
 // playlistEntry represents a single entry from yt-dlp --dump-json --flat-playlist.
@@ -145,6 +166,19 @@ func (d YTDLPDownloader) downloadSingleP(ctx context.Context, command, sourceURL
 		return err
 	}
 	normalizeCoverName(rawDir)
+
+	// 补弹幕抓取（与 native 单 P 的 native.go 对齐，与 multi-P 的 download.go 同函数）。
+	// yt-dlp 不下载 B 站弹幕（非其字幕/CC 轨道），需用 cid 调专门接口抓取后写 raw/danmaku.xml，
+	// 供 normalize 阶段（优先级 2）解析。抓取失败不阻断主流程（音频已落地是主目标）。
+	if cid := singlePCid(ctx, sourceURL, cookieFile); cid != 0 {
+		cookieHeader, _ := cookieHeaderFromCookieFile(cookieFile)
+		xml := fetchDanmakuShared(ctx, nil, "", "", cid, cookieHeader)
+		if err := fsutil.WriteFileAtomic(filepath.Join(rawDir, "danmaku.xml"), xml, 0o644); err != nil {
+			slog.Warn("write danmaku xml failed for single-P", "source_url", sourceURL, "error", err)
+		}
+	} else {
+		slog.Warn("single-P: no cid resolved, skip danmaku", "source_url", sourceURL)
+	}
 	return nil
 }
 
@@ -412,6 +446,23 @@ func fetchCidMapForMultiP(ctx context.Context, sourceURL, cookieFile string) map
 		m[p.Page] = p.CID
 	}
 	return m
+}
+
+// singlePCid 解析单 P 视频的 cid（弹幕抓取需要）。从 sourceURL 提取 bvid，
+// 调 B 站 view API 取 Pages[0].CID。失败返回 0（调用方跳过弹幕，不阻断下载）。
+// 逻辑与 fetchCidMapForMultiP 同源，单 P 直接取首个分 P 的 cid。
+func singlePCid(ctx context.Context, sourceURL, cookieFile string) int64 {
+	bvid := extractNativeBVID(sourceURL)
+	if bvid == "" {
+		return 0
+	}
+	cookieHeader, _ := cookieHeaderFromCookieFile(cookieFile)
+	viewClient := biliutil.VideoClient{} // 用默认 httpClient + 默认 base url
+	info, err := viewClient.Fetch(ctx, bvid, cookieHeader)
+	if err != nil || len(info.Pages) == 0 {
+		return 0
+	}
+	return info.Pages[0].CID
 }
 
 // cookieHeaderFromCookieFile 从 Netscape cookie 文件读出 Cookie header 字符串。

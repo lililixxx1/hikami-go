@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref } from 'vue'
+import { nextTick, onBeforeUnmount, ref } from 'vue'
 import QRCode from 'qrcode'
 import { useBiliQRCodeLogin } from '@/features/channel/useBiliQRCodeLogin'
 import { HDialog, HButton, HInput } from '@/components/ui'
@@ -29,7 +29,10 @@ const emit = defineEmits<{
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 
 async function renderQRCode(text: string): Promise<void> {
-  if (!canvasRef.value) return
+  // immediate watch 在组件挂载极早期触发 startLogin，HDialog 的 v-if 可能还未完成 canvas 挂载。
+  // await nextTick 确保 canvasRef 就绪，避免静默 return 导致二维码不显示。
+  await nextTick()
+  if (!canvasRef.value) return // nextTick 后仍无 canvas 属异常（组件已卸载），此时放弃
   await QRCode.toCanvas(canvasRef.value, text, {
     width: 220,
     margin: 1,
