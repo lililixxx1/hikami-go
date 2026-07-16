@@ -214,10 +214,12 @@ type Provider interface {
 - `template.go` -- TemplateStore CRUD、Resolve 合并逻辑、导入导出、ClearCustom 全量清除、哨兵错误
 - `render.go` -- RenderTemplate 变量插值引擎、TemplateVars 结构体
 - `presets.go` -- TemplatePreset 类型、BuiltinPresets 5 个内置模板预设
-- `recap_test.go` -- 单元+集成测试（72 个用例）
-- `template_test.go` -- 模板测试（26 个用例）
+- `recap_test.go` -- 单元+集成测试（76 个用例）
+- `template_test.go` -- 模板测试（27 个用例）
 - `test_recap_main_test.go` -- 端到端集成测试（1 个用例）
 - `test_recap_0329_test.go` -- 端到端集成测试（1 个用例，03.29 场次）
 
 ## 变更记录 (Changelog)
+
+- 2026-07-16(三):**术语校正词边界感知替换 + ResolvedTemplate 补 json tag**(调查文档修复批次,codex 审核 APPROVED)。① **术语词边界**(`glossary_correction.go`/`transcript_correction.go`):原两处调用点用 `strings.ReplaceAll` 做纯子串匹配,含 ASCII 字母数字的 term(`AI`/`277`/`Nike`)嵌在更长字符串(`MAIL`/`123277456`/`Nikerussia`)里时被误替换,静默损坏转写文本(位置B)和回顾正文(位置A)。新增 `replaceTermBoundaryAware`/`hasAlphanumeric`/`isASCIIAlphanumeric` 3 函数——对含 `[A-Za-z0-9]` 的 term 强制左右边界非 ASCII 字母数字,纯 CJK term 回落 `strings.ReplaceAll` 保持零回归;`term==""` 提前返回避免 `ReplaceAll` 在每字符间插入 canonical(调查文档 §5.6 边界 bug)。手写 rune 扫描(不用正则:Go RE2 不支持 lookbehind + 150 条规则各自 Compile 性能差)。位置B 顺带修正:只在 `replaced != output` 时才记 applied,correction report 更准。**关键**:纯 CJK 零回归有专门测试验证。新增 4 测试(`TestReplaceTermBoundaryAware` 16 用例/`TestHasAlphanumeric` 9 用例/`TestApplyGlossaryCorrectionsAlphanumericBoundary`/`TestCorrectTextWithRulesBoundaryAwareAndAppliedAccuracy`),recap_test.go 72→76。② **ResolvedTemplate 补 json tag**(`template.go:57-63`):该结构体缺 `json:` tag,Go 默认 PascalCase 序列化,前端按 snake_case 访问得 undefined → 主播级模板「跟随全局」预览全空、切换自定义不回填。补 4 字段 `json:"snake_case"` tag(与同文件 `Template` 风格一致),同步 OpenAPI spec(`templates.yaml`/`openapi.yaml`/`README.md`/`api-gap-analysis.md` 从 PascalCase 改回 snake_case)、重新生成 `web/src/api/generated.ts`、清理 `types-derived.ts` 误导注释。新增 `TestResolvedTemplateJSONKeys`(断言 snake_case 键名 + 不再有 PascalCase),template_test.go 26→27。后端 27 包全过、gofmt/vet 通过、redocly 7 warnings 同基线。
 
