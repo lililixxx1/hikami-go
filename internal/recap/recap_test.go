@@ -1658,3 +1658,112 @@ func TestHasGeneratedNotice(t *testing.T) {
 		})
 	}
 }
+
+// TestReplaceTermBoundaryAware 验证词边界感知替换：含 ASCII 字母数字的 term 嵌在
+// 更长单词里时不替换，独立出现时替换；纯 CJK term 回落到 strings.ReplaceAll 原行为。
+func TestReplaceTermBoundaryAware(t *testing.T) {
+	tests := []struct {
+		name      string
+		s         string
+		term      string
+		canonical string
+		want      string
+	}{
+		// ASCII term 嵌更长单词（核心 bug 场景）
+		{"ASCII嵌更长单词_MAIL", "MAIL", "AI", "人工智能", "MAIL"},
+		{"ASCII独立_两侧空格", "AI 很强", "AI", "人工智能", "人工智能 很强"},
+		{"ASCII独立_左中文右中文", "发个MAIL给AI助手", "AI", "人工智能", "发个MAIL给人工智能助手"},
+		{"ASCII_字符串首", "AI开头", "AI", "人工智能", "人工智能开头"},
+		{"ASCII_字符串尾", "结尾AI", "AI", "人工智能", "结尾人工智能"},
+		// 纯数字 term
+		{"数字嵌更长数字", "12345", "23", "二十三", "12345"},
+		{"数字独立", "编号 23 done", "23", "二十三", "编号 二十三 done"},
+		// 混合 ASCII+CJK term
+		{"混合term两侧中文", "B站直播", "B站", "哔哩", "哔哩直播"},
+		// 纯 CJK term（回落 ReplaceAll，零回归）
+		{"CJK紧挨汉字", "律动文学", "律动", "绿冻", "绿冻文学"},
+		{"CJK回落ReplaceAll", "多个律动出现", "律动", "绿冻", "多个绿冻出现"},
+		// 边界与特殊情形
+		{"空term_不损坏文本", "任意文本", "", "X", "任意文本"},
+		{"term不存在", "无匹配", "AI", "人工智能", "无匹配"},
+		{"canonical含ASCII", "用AI", "AI", "AI2", "用AI2"},
+		{"多次独立出现", "AI 和 AI", "AI", "人工智能", "人工智能 和 人工智能"},
+		{"紧邻重复term_两侧互邻ASCII", "AIAI", "AI", "人工智能", "AIAI"},
+		{"term等于整串", "AI", "AI", "人工智能", "人工智能"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := replaceTermBoundaryAware(tt.s, tt.term, tt.canonical)
+			if got != tt.want {
+				t.Fatalf("replaceTermBoundaryAware(%q, %q, %q) = %q, want %q",
+					tt.s, tt.term, tt.canonical, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestHasAlphanumeric 验证 ASCII 字母数字检测。
+func TestHasAlphanumeric(t *testing.T) {
+	tests := []struct {
+		s    string
+		want bool
+	}{
+		{"", false},
+		{"中文", false},
+		{"，。!", false},
+		{"AI", true},
+		{"A", true},
+		{"1", true},
+		{"B站", true},
+		{"1q84", true},
+		{"律动2", true},
+	}
+	for _, tt := range tests {
+		if got := hasAlphanumeric(tt.s); got != tt.want {
+			t.Fatalf("hasAlphanumeric(%q) = %v, want %v", tt.s, got, tt.want)
+		}
+	}
+}
+
+// TestApplyGlossaryCorrectionsAlphanumericBoundary 走 applyGlossaryCorrections 全路径
+// （glossary store + 引号保护 + 替换），验证 ASCII term 词边界 + 纯 CJK 照常替换共存。
+func TestApplyGlossaryCorrectionsAlphanumericBoundary(t *testing.T) {
+	fix := setupRecapTest(t)
+	ctx := context.Background()
+	if err := fix.glossaryStore.Upsert(ctx, "ch1", "AI", "人工智能", "缩写"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fix.glossaryStore.Upsert(ctx, "ch1", "律动", "绿冻", "粉丝称呼"); err != nil {
+		t.Fatal(err)
+	}
+	input := "AI 很强，发个MAIL给AI助手，律动文学也出现了"
+	want := "人工智能 很强，发个MAIL给人工智能助手，绿冻文学也出现了"
+	got := applyGlossaryCorrections(ctx, fix.glossaryStore, "ch1", input)
+	if got != want {
+		t.Fatalf("unexpected corrected content:\ngot:  %s\nwant: %s", got, want)
+	}
+}
+
+// TestCorrectTextWithRulesBoundaryAwareAndAppliedAccuracy 验证位置B 的词边界替换
+// 与「只在输出真变化时才记 applied」的修正（Contains 命中但边界不满足不应记 applied）。
+func TestCorrectTextWithRulesBoundaryAwareAndAppliedAccuracy(t *testing.T) {
+	rules := []correctionRule{
+		{Term: "AI", Canonical: "人工智能"},
+	}
+	// MAIL 里有 AI 子串，但边界不满足 → 不应替换、不应记 applied
+	output, applied := correctTextWithRules("发个MAIL", rules)
+	if output != "发个MAIL" {
+		t.Fatalf("should not replace substring inside MAIL, got: %s", output)
+	}
+	if len(applied) != 0 {
+		t.Fatalf("should not record applied when boundary not satisfied, got: %v", applied)
+	}
+	// 独立 AI 应替换并记 applied
+	output2, applied2 := correctTextWithRules("AI 很强", rules)
+	if output2 != "人工智能 很强" {
+		t.Fatalf("should replace standalone AI, got: %s", output2)
+	}
+	if len(applied2) != 1 || applied2[0] != "AI" {
+		t.Fatalf("should record AI as applied, got: %v", applied2)
+	}
+}

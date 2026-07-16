@@ -56,10 +56,10 @@ type TemplateExport struct {
 
 // ResolvedTemplate is the result of merging global + channel-level templates.
 type ResolvedTemplate struct {
-	SystemPrompt string
-	UserFormat   string
-	FanName      string
-	ExtraVars    map[string]string
+	SystemPrompt string            `json:"system_prompt"`
+	UserFormat   string            `json:"user_format"`
+	FanName      string            `json:"fan_name"`
+	ExtraVars    map[string]string `json:"extra_vars"`
 }
 
 // TemplateStore provides access to the recap_templates table.

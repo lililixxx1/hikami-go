@@ -61,9 +61,11 @@ func applyReplacementsPreservingQuotes(line string, replacements []glossaryRepla
 		return fmt.Sprintf("\x00Q%d\x00", idx)
 	})
 
-	// Apply corrections to non-quoted parts
+	// Apply corrections to non-quoted parts. replaceTermBoundaryAware 对含 ASCII
+	// 字母数字的 term 强制词边界判断，防止 term 嵌在更长单词里被误替换
+	// （如 term=AI 不应替换 MAIL 里的子串）；纯 CJK term 回落到 strings.ReplaceAll。
 	for _, repl := range replacements {
-		result = strings.ReplaceAll(result, repl.term, repl.canonical)
+		result = replaceTermBoundaryAware(result, repl.term, repl.canonical)
 	}
 
 	// Restore quoted segments
@@ -71,6 +73,67 @@ func applyReplacementsPreservingQuotes(line string, replacements []glossaryRepla
 		result = strings.Replace(result, fmt.Sprintf("\x00Q%d\x00", i), q, 1)
 	}
 	return result
+}
+
+// hasAlphanumeric 报告 s 是否包含 ASCII 字母或数字。
+// 纯 CJK/标点的 term 返回 false，保持现有子串替换行为。
+func hasAlphanumeric(s string) bool {
+	for _, r := range s {
+		if isASCIIAlphanumeric(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// isASCIIAlphanumeric 报告 r 是否为 ASCII 字母或数字。
+func isASCIIAlphanumeric(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+}
+
+// replaceTermBoundaryAware 在 s 中把 term 替换为 canonical。对含 ASCII 字母数字
+// 的 term 强制词边界（两侧不得是 ASCII 字母数字），防止 term 嵌在更长单词里被误替换。
+// 纯 CJK/标点的 term 回落到 strings.ReplaceAll（中文无词边界概念，靠长词优先排序兜底）。
+// 注意：term=="" 时直接返回 s，避免 strings.ReplaceAll 在每个字符间插入 canonical。
+func replaceTermBoundaryAware(s, term, canonical string) string {
+	if term == "" {
+		return s
+	}
+	if !hasAlphanumeric(term) {
+		return strings.ReplaceAll(s, term, canonical)
+	}
+	runes := []rune(s)
+	termRunes := []rune(term)
+	if len(runes) < len(termRunes) {
+		return s
+	}
+	var b strings.Builder
+	i := 0
+	for i < len(runes) {
+		if i+len(termRunes) <= len(runes) && runes[i] == termRunes[0] {
+			match := true
+			for j := 1; j < len(termRunes); j++ {
+				if runes[i+j] != termRunes[j] {
+					match = false
+					break
+				}
+			}
+			if match {
+				// 边界检查：左右相邻字符不能是 ASCII 字母数字
+				leftOK := i == 0 || !isASCIIAlphanumeric(runes[i-1])
+				rightIdx := i + len(termRunes)
+				rightOK := rightIdx >= len(runes) || !isASCIIAlphanumeric(runes[rightIdx])
+				if leftOK && rightOK {
+					b.WriteString(canonical)
+					i = rightIdx
+					continue
+				}
+			}
+		}
+		b.WriteRune(runes[i])
+		i++
+	}
+	return b.String()
 }
 
 func isMarkdownQuoteLine(line string) bool {

@@ -6,8 +6,8 @@
 //    保留其 optional 语义(与真实 API omitempty 一致)。
 //  - 配置类型(DashScope/ASRS3/WebDAV/Publish/Archive/Recap)合并 Response(读)+ Request(写)字段,
 //    因表单提交时带明文 key/password/clear_* 写字段,而响应永不返回明文。types.ts 历史如此。
-//  - 少数 generated schema 与前端历史用法不一致的字段(ResolvedRecapTemplate 的 PascalCase、
-//    GlossaryEntry 的 source),按前端实际消费形态定义,避免破坏运行时逻辑。
+//  - 少数 generated schema 与前端历史用法不一致的字段(如 GlossaryEntry 的 source),
+//    按前端实际消费形态定义,避免破坏运行时逻辑。
 import type { components, paths } from './generated'
 
 type Schema<K extends keyof components['schemas']> = components['schemas'][K]
@@ -144,10 +144,7 @@ export interface GlossaryNote {
 export type RecapTemplate = Schema<'RecapTemplate'>
 export type TemplatePreset = Schema<'TemplatePreset'>
 
-// ResolvedRecapTemplate: generated schema(ResolvedTemplate)用 PascalCase 键
-// (SystemPrompt/UserFormat/FanName/ExtraVars),但前端组件消费 snake_case
-// (resolvedTemplate.system_prompt 等,见 useRecapTemplateEditor/RecapTemplateEditor)。
-// 保留 snake_case 定义以匹配前端实际消费。
+// ResolvedRecapTemplate: 键名与后端 ResolvedTemplate 的 json tag 一致(snake_case)。
 export interface ResolvedRecapTemplate {
   system_prompt: string
   user_format: string

@@ -170,7 +170,7 @@
 | 统计·本月场次 | 用 dashboard.sessions_by_month 取最近月(非 overview.total) |
 | 统计·录制成功率 | 前端算 succeeded/(succeeded+failed) |
 | Cookie expires_at 非标准格式 | 用 new Date() 容错解析 |
-| **ResolvedTemplate 字段 PascalCase** | 前端访问用 SystemPrompt/UserFormat/FanName/ExtraVars(非 snake_case) |
+| ResolvedTemplate 字段 snake_case | system_prompt/user_format/fan_name/extra_vars(2026-07-16 已补 json tag,此前 PascalCase 历史遗留已修复) |
 | recap/auto_recap 三态 | 字段缺席=nil=false;显式传 true/false 设置 |
 
 ### 🔌 WebSocket 接入(模板缺失,前端重写必须补)

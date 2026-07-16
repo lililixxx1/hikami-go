@@ -2952,7 +2952,7 @@ paths:
       description: |
         返回 `{global, channel, resolved}`:
         - global/channel 是 `*Template`,**查不到时为 null(非缺席)**(gin.H 无 omitempty)
-        - resolved 是合并后的 ResolvedTemplate(**字段名 PascalCase**,见 schema)
+        - resolved 是合并后的 ResolvedTemplate(**字段名 snake_case**,见 schema)
       responses:
         '200':
           description: 主播级模板视图

@@ -799,3 +799,43 @@ func TestTemplateUpsertWritesLocalTimezoneTimestamps(t *testing.T) {
 	mustBeLocalRFC3339(t, createdAt)
 	mustBeLocalRFC3339(t, updatedAt)
 }
+
+// TestResolvedTemplateJSONKeys 验证 ResolvedTemplate 跨 HTTP 边界序列化为 snake_case。
+// 回归:此前该结构体缺 json tag，Go 用 PascalCase 字段名序列化(SystemPrompt/...)，
+// 前端按 snake_case 访问得 undefined，导致主播级模板「跟随全局」预览全空、
+// 切换自定义不回填。补 tag 后此处断言 snake_case 键名且不再出现 PascalCase。
+func TestResolvedTemplateJSONKeys(t *testing.T) {
+	r := &ResolvedTemplate{
+		SystemPrompt: "p",
+		UserFormat:   "f",
+		FanName:      "n",
+		ExtraVars:    map[string]string{"k": "v"},
+	}
+	b, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, snake := range []string{"system_prompt", "user_format", "fan_name", "extra_vars"} {
+		if _, ok := m[snake]; !ok {
+			t.Fatalf("resolved JSON missing snake_case key %q, got keys: %v", snake, resolvedJSONKeys(m))
+		}
+	}
+	// 同时断言不再出现 PascalCase 键（回归保护）
+	for _, pascal := range []string{"SystemPrompt", "UserFormat", "FanName", "ExtraVars"} {
+		if _, ok := m[pascal]; ok {
+			t.Fatalf("resolved JSON must not contain PascalCase key %q (should be snake_case)", pascal)
+		}
+	}
+}
+
+func resolvedJSONKeys(m map[string]json.RawMessage) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}

@@ -44,7 +44,7 @@ docs/api/
 │       ├── stats.yaml              # SessionStats / DashboardData / ...
 │       ├── config-sections.yaml    # 6 组 config Request/Response
 │       ├── glossary.yaml           # GlossaryEntry / Candidate / 状态机请求
-│       ├── templates.yaml          # RecapTemplate / ResolvedTemplate(PascalCase 坑)
+│       ├── templates.yaml          # RecapTemplate / ResolvedTemplate(snake_case)
 │       ├── bili.yaml               # QRCode* / BiliCookieAccount
 │       └── secrets.yaml            # SecretView
 ├── index.html                      # Swagger UI 渲染页(CDN)
@@ -80,7 +80,7 @@ docs/api/
 ## 关键陷阱速查
 
 - **WebSocket 路径是 `/ws` 非 `/api/ws`**(`server.go:275`);OpenAPI 3.0 不原生支持 WS,用 `101 Switching Protocols` 响应作文档锚点
-- **ResolvedTemplate 字段名是 PascalCase**(`SystemPrompt`/`UserFormat`/`FanName`/`ExtraVars`,`recap.ResolvedTemplate` 无 json tag,历史遗留)
+- **ResolvedTemplate 字段名 snake_case**(`system_prompt`/`user_format`/`fan_name`/`extra_vars`,2026-07-16 已给 `recap.ResolvedTemplate` 补 json tag;此前 PascalCase 为历史遗留,已修复)
 - **`POST /api/sessions/import` 是 multipart/form-data**,非 JSON
 - **`PUT /api/secrets/{key}` 传 `{value:""}` 删除密钥**,无独立 DELETE 端点
 - **`auto_recap` 三态语义**:`UpsertChannelInput.auto_recap` 是 `*bool`,字段缺席=nil=默认 false(`channel.go:resolveAutoRecap`)

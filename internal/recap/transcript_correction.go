@@ -58,8 +58,13 @@ func correctTextWithRules(input string, rules []correctionRule) (string, []strin
 		if !strings.Contains(output, rule.Term) {
 			continue
 		}
-		output = strings.ReplaceAll(output, rule.Term, rule.Canonical)
-		appliedSet[rule.Term] = struct{}{}
+		// replaceTermBoundaryAware 对含 ASCII 字母数字的 term 做词边界判断；
+		// 只在输出真变化时才记 applied，使 correction report 更准确。
+		replaced := replaceTermBoundaryAware(output, rule.Term, rule.Canonical)
+		if replaced != output {
+			appliedSet[rule.Term] = struct{}{}
+			output = replaced
+		}
 	}
 	if len(appliedSet) == 0 {
 		return output, nil

@@ -154,7 +154,11 @@ export interface paths {
             };
             cookie?: never;
         };
-        get?: never;
+        /**
+         * 获取单个频道详情
+         * @description 返回单个频道的完整字段。序列化形态与 listChannels 的单元素一致。
+         */
+        get: operations["getChannel"];
         /**
          * 更新频道
          * @description 全量更新(presence-aware:未传的字段保持原值)。
@@ -1254,6 +1258,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/config/tools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 获取外部工具路径配置(yt-dlp / rclone) */
+        get: operations["getToolsConfig"];
+        /**
+         * 更新外部工具路径配置
+         * @description 全字段可选(presence-aware)。保存后重新 Probe 刷新能力状态(无需重启)。
+         *     只暴露 yt-dlp/rclone(软依赖,改错仅降级);ffmpeg/ffprobe 为硬依赖不在此暴露。
+         */
+        put: operations["updateToolsConfig"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/config/export": {
         parameters: {
             query?: never;
@@ -1518,8 +1544,9 @@ export interface paths {
         put?: never;
         /**
          * 从 JSON 导入全局词条
-         * @description 请求体是 **raw JSON**(GlossaryExport 结构),非 application/json wrapper。
-         *     后端 io.ReadAll(ctx.Request.Body) 直接读。
+         * @description 请求体是 **raw JSON**,非 application/json wrapper。后端 io.ReadAll(ctx.Request.Body) 直接读。
+         *     支持两种格式:① GlossaryExport 对象 `{"entries":[...],"note":""}`(ExportJSON 产出);
+         *     ② 裸数组 `[{...},{...}]`(前端 JSON.parse 典型形态)。非法 JSON 返回 400。
          */
         post: operations["importGlobalGlossaryJSON"];
         delete?: never;
@@ -1942,7 +1969,7 @@ export interface paths {
          * 获取主播级模板(含全局合并视图)
          * @description 返回 `{global, channel, resolved}`:
          *     - global/channel 是 `*Template`,**查不到时为 null(非缺席)**(gin.H 无 omitempty)
-         *     - resolved 是合并后的 ResolvedTemplate(**字段名 PascalCase**,见 schema)
+         *     - resolved 是合并后的 ResolvedTemplate(**字段名 snake_case**,见 schema)
          */
         get: operations["getChannelRecapTemplate"];
         /**
@@ -3020,7 +3047,7 @@ export interface components {
             };
             /**
              * Format: double
-             * @description ASR 成本估算(¥,粗估 ~¥36/h × 总场次 × 2h)
+             * @description ASR 成本估算(¥,fun-asr 中国内地目录价 ¥0.792/h × 总场次 × 2h,未扣免费额度)
              */
             asr_cost_estimate: number;
             /**
@@ -3110,7 +3137,10 @@ export interface components {
             mode: "draft" | "publish";
             category_id: number;
             list_id: number;
-            /** @enum {integer} */
+            /**
+             * @description B 站专栏可见范围:1=仅自己可见,2=公开(默认)。全局段传入 0 会被规范化为 2(全局段无"继承上层"语义;区别于频道级 publish_private_pub 用 0 表示继承全局)。
+             * @enum {integer}
+             */
             private_pub: 1 | 2;
             summary_len: number;
             /** @enum {integer} */
@@ -3145,7 +3175,10 @@ export interface components {
             mode?: "draft" | "publish" | "";
             category_id?: number;
             list_id?: number;
-            /** @enum {integer} */
+            /**
+             * @description B 站专栏可见范围:1=仅自己可见,2=公开(默认)。全局段传入 0 会被规范化为 2(全局段无"继承上层"语义;区别于频道级 publish_private_pub 用 0 表示继承全局)。
+             * @enum {integer}
+             */
             private_pub?: 1 | 2;
             summary_len?: number;
             /** @enum {integer} */
@@ -3333,6 +3366,26 @@ export interface components {
             auto_after_publish?: boolean;
             /** @enum {string} */
             cleanup_policy?: "none" | "temp" | "generated" | "all";
+        };
+        /**
+         * @description GET /api/config/tools 响应。yt_dlp/rclone 可执行文件路径或命令名。
+         *     留空时 probe 走 exec.LookPath 默认探测(降级为 unavailable,不阻止启动)。
+         *     仅暴露软依赖工具;ffmpeg/ffprobe 为硬依赖(改错会 fatal 阻止启动),
+         *     仍需在 config.yaml 修改,不在此暴露。
+         */
+        ToolsConfigResponse: {
+            /** @description yt-dlp 可执行文件路径或命令名(留空走 PATH 探测) */
+            yt_dlp: string;
+            /** @description rclone 可执行文件路径或命令名(留空走 PATH 探测) */
+            rclone: string;
+        };
+        /**
+         * @description PUT /api/config/tools 请求。全字段可选(presence-aware):
+         *     字段缺席=不改,空串 "" =清空(回退 PATH 探测)。保存后重新 Probe 刷新能力状态。
+         */
+        ToolsConfigRequest: {
+            yt_dlp?: string;
+            rclone?: string;
         };
         /** @description 回顾 AI 段导出(指针,缺席=备份不含) */
         ExportRecapAI: {
@@ -3663,22 +3716,16 @@ export interface components {
             user_format: string;
         };
         /**
-         * @description ⚠️ **字段名是 PascalCase**(`SystemPrompt`/`UserFormat`/`FanName`/`ExtraVars`)。
-         *     源码 `recap.ResolvedTemplate` 无 json tag(template.go:57-63),
-         *     Go 默认序列化用字段名(首字母大写)。
-         *     这是历史遗留,与项目其他 snake_case 不一致,但必须在 schema 里如实记录。
-         *     前端访问时需用 PascalCase key。
+         * @description global + channel-level 模板合并结果。字段名 snake_case
+         *     (`system_prompt`/`user_format`/`fan_name`/`extra_vars`),
+         *     与源码 `recap.ResolvedTemplate` 的 json tag 一致(template.go:57-63)。
          */
         ResolvedTemplate: {
-            /** @description ⚠️ PascalCase(非 system_prompt) */
-            SystemPrompt: string;
-            UserFormat: string;
-            FanName: string;
-            /**
-             * @description map[string]string。
-             *     ⚠️ PascalCase key。注意:运行时若为 nil map,序列化为 `{}`(非 null)。
-             */
-            ExtraVars: {
+            system_prompt: string;
+            user_format: string;
+            fan_name: string;
+            /** @description map[string]string。注意:运行时若为 nil map,序列化为 `{}`(非 null)。 */
+            extra_vars: {
                 [key: string]: string;
             };
         };
@@ -4089,6 +4136,39 @@ export interface operations {
                 };
             };
             401: paths["/api/health/runtime"]["get"]["responses"]["401"];
+        };
+    };
+    getChannel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 频道 ID */
+                id: components["parameters"]["ChannelID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 频道详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Channel"];
+                };
+            };
+            401: paths["/api/health/runtime"]["get"]["responses"]["401"];
+            /** @description 频道不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     updateChannel: {
@@ -5678,7 +5758,7 @@ export interface operations {
                     "application/json": components["schemas"]["PublishConfigResponse"];
                 };
             };
-            /** @description 字段值非法(如 private_pub 非 1/2,timer_pub_time 超区间) */
+            /** @description 字段值非法(如 private_pub 非 0/1/2,且 0 会被规范化为 2;timer_pub_time 超区间) */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -5983,6 +6063,52 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: paths["/api/health/runtime"]["get"]["responses"]["401"];
+        };
+    };
+    getToolsConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 工具路径配置 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolsConfigResponse"];
+                };
+            };
+            401: paths["/api/health/runtime"]["get"]["responses"]["401"];
+        };
+    };
+    updateToolsConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ToolsConfigRequest"];
+            };
+        };
+        responses: {
+            /** @description 更新后的工具路径配置 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolsConfigResponse"];
                 };
             };
             401: paths["/api/health/runtime"]["get"]["responses"]["401"];
