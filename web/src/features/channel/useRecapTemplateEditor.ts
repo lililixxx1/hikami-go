@@ -52,7 +52,7 @@ export function useRecapTemplateEditor(options: UseRecapTemplateEditorOptions) {
     () => !userFormat.value.trim() || userFormat.value.trim() === '__builtin__',
   )
 
-  async function loadData() {
+  async function loadData(): Promise<boolean> {
     loading.value = true
     try {
       if (scope() === 'global') {
@@ -82,8 +82,10 @@ export function useRecapTemplateEditor(options: UseRecapTemplateEditorOptions) {
           extraVars.value = '{}'
         }
       }
+      return true
     } catch (e: any) {
       HMessage.error('加载模板失败: ' + (e.message || e))
+      return false
     } finally {
       loading.value = false
     }
@@ -131,7 +133,7 @@ export function useRecapTemplateEditor(options: UseRecapTemplateEditorOptions) {
     return true
   }
 
-  async function save() {
+  async function save(): Promise<boolean> {
     saving.value = true
     try {
       if (scope() === 'global') {
@@ -154,9 +156,11 @@ export function useRecapTemplateEditor(options: UseRecapTemplateEditorOptions) {
         })
       }
       HMessage.success('模板已保存')
-      loadData()
+      if (!(await loadData())) return false // 写入成功但重拉失败：视为整体失败，不触发组件成功分支
+      return true
     } catch (e: any) {
       HMessage.error('保存失败: ' + (e.message || e))
+      return false
     } finally {
       saving.value = false
     }
@@ -212,7 +216,7 @@ export function useRecapTemplateEditor(options: UseRecapTemplateEditorOptions) {
     URL.revokeObjectURL(url)
   }
 
-  async function importTemplateFile(content: string) {
+  async function importTemplateFile(content: string): Promise<boolean> {
     importing.value = true
     try {
       const result =
@@ -223,9 +227,11 @@ export function useRecapTemplateEditor(options: UseRecapTemplateEditorOptions) {
       if (scope() === 'channel') {
         useCustom.value = true
       }
-      await loadData()
+      if (!(await loadData())) return false // 导入 API 成功但重拉失败：视为整体失败
+      return true
     } catch (e: any) {
       HMessage.error('导入失败: ' + (e.message || e))
+      return false
     } finally {
       importing.value = false
     }

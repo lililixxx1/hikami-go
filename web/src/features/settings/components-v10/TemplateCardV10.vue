@@ -31,36 +31,43 @@ const presetOptions = computed(() =>
 )
 
 // extra_vars 是 JSON 字符串(composable 内部以 '{}' 初始化)。拆成 key-value 行编辑。
-interface KVRow { key: string; value: string }
-const kvRows = computed<KVRow[]>({
-  get: () => {
-    try {
-      const obj = JSON.parse(extraVars.value || '{}') as Record<string, string>
-      return Object.entries(obj).map(([key, value]) => ({ key, value: String(value ?? '') }))
-    } catch {
-      return []
-    }
-  },
-  set: (rows: KVRow[]) => {
-    const obj: Record<string, string> = {}
-    for (const r of rows) {
-      const k = r.key.trim()
-      if (k) obj[k] = r.value
-    }
-    extraVars.value = JSON.stringify(obj)
-  },
-})
+// 编辑态用独立 ref 保留空 key 行(编辑中间态合法)，仅在保存时才 flush 成 JSON
+// 丢弃空 key，避免 writable computed 读写环导致「添加变量」后输入框立即被销毁。
+interface KVRow { id: number; key: string; value: string }
+const kvRows = ref<KVRow[]>([])
+let kvIdSeq = 0
+
+// 从 extraVars(JSON 字符串)解析填充到 kvRows。loadData/applyPreset 后调用，
+// 把后端或预设的 extra_vars 反映到编辑态行。
+function syncKvRowsFromExtraVars() {
+  try {
+    const obj = JSON.parse(extraVars.value || '{}') as Record<string, string>
+    kvRows.value = Object.entries(obj).map(([key, value]) => ({
+      id: ++kvIdSeq, key, value: String(value ?? ''),
+    }))
+  } catch {
+    kvRows.value = []
+  }
+}
+
+// 把 kvRows 序列化回 extraVars(丢弃空 key，仅在保存前调用)。
+function flushKvRowsToExtraVars() {
+  const obj: Record<string, string> = {}
+  for (const r of kvRows.value) {
+    const k = r.key.trim()
+    if (k) obj[k] = r.value
+  }
+  extraVars.value = JSON.stringify(obj)
+}
 
 function updateKvKey(i: number, key: string) {
-  const rows = kvRows.value.map((r, idx) => idx === i ? { ...r, key } : r)
-  kvRows.value = rows
+  kvRows.value = kvRows.value.map((r, idx) => idx === i ? { ...r, key } : r)
 }
 function updateKvValue(i: number, value: string) {
-  const rows = kvRows.value.map((r, idx) => idx === i ? { ...r, value } : r)
-  kvRows.value = rows
+  kvRows.value = kvRows.value.map((r, idx) => idx === i ? { ...r, value } : r)
 }
 function addKvRow() {
-  kvRows.value = [...kvRows.value, { key: '', value: '' }]
+  kvRows.value = [...kvRows.value, { id: ++kvIdSeq, key: '', value: '' }]
 }
 function removeKvRow(i: number) {
   kvRows.value = kvRows.value.filter((_, idx) => idx !== i)
@@ -70,10 +77,18 @@ async function handleApplyPreset(name: string) {
   selectedPresetName.value = ''
   if (!name) return
   await applyPreset(name)
+  // 注意：applyPreset 只改 system_prompt/user_format，不动 extraVars（取消时连这两个也不改），
+  // 因此这里不应 syncKvRowsFromExtraVars——否则会用未变的 extraVars 重建 kvRows，
+  // 丢弃用户正在编辑但尚未保存的变量行。
 }
 
 async function handleSave() {
-  await save()
+  flushKvRowsToExtraVars()
+  const ok = await save()
+  if (!ok) return // 保存失败：错误提示已由 composable 给出，不 sync/emit（保留用户编辑态）
+  // 成功：save() 内部 loadData 已重拉 extra_vars（服务器已丢弃空 key 行），
+  // 同步 kvRows 让编辑器反映实际持久化的内容。
+  syncKvRowsFromExtraVars()
   emit('saved')
 }
 
@@ -87,11 +102,12 @@ async function handleImportFile(event: Event) {
   const file = input.files?.[0]
   if (!file) return
   input.value = ''
-  try {
-    const content = await file.text()
-    await importTemplateFile(content)
-    importDialogVisible.value = false
-  } catch { /* error shown by interceptor */ }
+  const content = await file.text()
+  const ok = await importTemplateFile(content)
+  if (!ok) return // 导入失败：不关对话框、不 sync（保留用户当前编辑态）
+  // 成功：importTemplateFile 内部 loadData 重写了 extraVars，同步 kvRows。
+  syncKvRowsFromExtraVars()
+  importDialogVisible.value = false
 }
 
 async function handleImportText() {
@@ -99,14 +115,15 @@ async function handleImportText() {
     HMessage.warning('请粘贴模板 JSON 内容')
     return
   }
-  try {
-    await importTemplateFile(importContent.value.trim())
-    importDialogVisible.value = false
-  } catch { /* error shown by interceptor */ }
+  const ok = await importTemplateFile(importContent.value.trim())
+  if (!ok) return // 同 handleImportFile：失败不关对话框、不 sync
+  syncKvRowsFromExtraVars()
+  importDialogVisible.value = false
 }
 
 onMounted(async () => {
   await Promise.all([loadData(), loadPresets()])
+  syncKvRowsFromExtraVars()
 })
 </script>
 
@@ -148,7 +165,7 @@ onMounted(async () => {
 
       <div style="margin-top: 14px;">
         <div class="form-label" style="margin-bottom: 6px;">额外变量(extra_vars)</div>
-        <div v-for="(row, i) in kvRows" :key="i" class="kv-row">
+        <div v-for="(row, i) in kvRows" :key="row.id" class="kv-row">
           <HInput :model-value="row.key" placeholder="变量名" @update:model-value="(v: string) => updateKvKey(i, v)" />
           <HInput :model-value="row.value" placeholder="值" @update:model-value="(v: string) => updateKvValue(i, v)" />
           <HButton variant="ghost" size="xs" @click="removeKvRow(i)">删除</HButton>
