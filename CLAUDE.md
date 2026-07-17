@@ -247,6 +247,12 @@ systemctl status hikami      # 状态
 
 ## 变更记录 (Changelog)
 
+### 2026-07-17 · 子文件夹文档漂移全面修复 + 计划归档 + vite 端口 bug
+
+- **vite dev 代理端口 bug 修复**(`8630b95`):`web/vite.config.ts` 的 `/api`、`/ws` 代理目标从 `localhost:8080` 改为 `127.0.0.1:6334`,与 `config.go` 的 `web.listen` 默认值对齐,修复 `npm run dev` 连不上默认后端。全仓 8080 仅此一处 + 文档残留,无其他依赖。
+- **文档漂移全面修复**(`881f093`,codex-review 5 轮 r1→r5 APPROVED):2 个 Explore agent 盘点 + 交叉核实,修复 22 个文档文件。`docs/DESIGN.md` 22 处(Element Plus×3、8080×3、迁移表 v18→v35 补 v19-v35、Schema 补 4 表、路由表 8 假视图→4 真视图+redirect、`useChannelHealth`×3→7 真实 composables、组件族重写、删"未配置 Vitest"补 180 用例等);`data-flow.md`(v27→v35、audio.wav→audio.asr.mp3);`BUSINESS_FLOW.md`(ASR 默认 qwen3→fun-asr);`README.md`/`FRONTEND_ARCHITECTURE.md`(Element Plus→自建 H*、组件/composables 计数);`DOCUMENTATION_INDEX.md`/`KNOWN_ISSUES.md`;`CLAUDE-detail/` 4 文件;各模块 CLAUDE.md。
+- **计划归档 + 仓库清理**(`881f093`+`78d703d`):12 个 `docs/plan-*.md` → `plans/archive/`(git mv);同步 5 处引用;清理 3 处失效 `plans/archive/*.md` 链接(根 CLAUDE:168 + `internal/archive/archive.go` 代码注释 + archive CLAUDE);`.gitignore` 放行 `plans/archive/`(`plans/*` + `!plans/archive/`);移除误入库的 `.zcode/plans/` + 补 `.zcode/` 忽略。
+
 ### 2026-07-16 · 术语校正词边界 + ResolvedTemplate json tag + TemplateCardV10 添加变量修复
 
 - **术语校正词边界感知替换**（`0ec038f`）：`glossary_correction.go`/`transcript_correction.go` 两处 `strings.ReplaceAll` 纯子串匹配，含 ASCII 字母数字的 term 嵌在更长单词里时被误替换（AI 嵌 MAIL、277 嵌 123277456）。新增 `replaceTermBoundaryAware`/`hasAlphanumeric`/`isASCIIAlphanumeric`，对含 `[A-Za-z0-9]` 的 term 强制词边界、纯 CJK 回落 ReplaceAll 零回归。位置B 顺带修正 applied 记录准确性。
