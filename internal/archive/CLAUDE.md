@@ -8,7 +8,7 @@
 
 > **archive 是「状态旁路任务」**——它从 `published` 出发，成功后**不**调用 `states.Apply`、不发任何 Event，场次主状态全程保持 `published`，仅写 `archived_at` 时间戳。
 
-为保证「不改 session.Status」这一约束，`HandleTask` 自身不调 `states.Apply`；失败兜底则由 `worker` 的状态旁路机制处理——`Register` 时声明 `worker.WithBypassFailState()`，worker 在失败路径据此调用 `SetFailSessionStateFn(..., bypassState=true)`，`cmd/hikami` 的回调收到后仅写 `last_error`，否则 `EventTaskFailed` 的全局特判会把 `published` 降级为 `failed`，丢失 UI 已发布入口（设计 4.3，详见 `plans/archive/auto-upload-after-publish.md` §4.2.1）。
+为保证「不改 session.Status」这一约束，`HandleTask` 自身不调 `states.Apply`；失败兜底则由 `worker` 的状态旁路机制处理——`Register` 时声明 `worker.WithBypassFailState()`，worker 在失败路径据此调用 `SetFailSessionStateFn(..., bypassState=true)`，`cmd/hikami` 的回调收到后仅写 `last_error`，否则 `EventTaskFailed` 的全局特判会把 `published` 降级为 `failed`，丢失 UI 已发布入口（设计 4.3，状态旁路任务设计；原计划文档已随仓库重建清理）。
 
 ## 入口与启动
 

@@ -23,7 +23,15 @@ make tidy         # go mod tidy
 make build-linux-amd64    # Linux x86_64
 make build-linux-arm64    # Linux ARM64
 make build-darwin-arm64   # macOS ARM64
+
+# Windows（4 个 target）
+make build-windows-amd64         # 完整 ffmpeg + 前端，控制台版（-tags embed_ffmpeg,embedded_web）
+make build-windows-amd64-lite    # 无 ffmpeg，控制台版（-tags embedded_web）
+make build-windows-desktop       # 完整 ffmpeg + 系统托盘 + 隐藏控制台（-tags 'embed_ffmpeg,embedded_web,systray' -ldflags='-H windowsgui'，2026-07-14 新增）
+make build-windows-desktop-lite  # 无 ffmpeg + 系统托盘 + 隐藏控制台
 ```
+
+> **Windows 系统托盘**（2026-07-14，`ad34a15`）：`-tags systray` 启用 `cmd/hikami/tray_windows.go`（基于 `fyne.io/systray`），托盘菜单「打开管理界面/退出」；`-ldflags='-H windowsgui'` 隐藏控制台窗口；桌面模式日志写 `%LOCALAPPDATA%/Hikami-Go/hikami.log`。非 Windows / 无 systray tag 走 `tray_other.go` 等价占位。CI release.yml 的 windows 矩阵含 `desktop: true` 变体。
 
 ### 配置
 
@@ -93,14 +101,14 @@ make build-darwin-arm64   # macOS ARM64
 - 健康检查生命周期：`live_record.Manager.StartHealthCheck` 支持重复调用（先 StopHealthCheck），`StopHealthCheck` 通过 context cancel 停止后台 goroutine。
 - 前端组件按功能域组织：`components/channel/`、`components/session/`、`components/task/`、`components/layout/`、`components/onboarding/`。
 - 前端工具函数：`utils/lifecycle.ts` 集中管理生命周期步骤映射和动作元数据，被多个视图和组件复用。`utils/friendlyStatus.ts` 提供友好状态标签和进度映射。
-- 前端组合函数：`composables/useChannelHealth.ts` 提供主播自动化风险检测，`composables/useExpertMode.ts` 提供专家模式切换（localStorage 持久化），`composables/useWebSocket.ts` 提供 WebSocket 进度推送。
+- 前端组合函数（`web/src/composables/` 共 7 个）：`useAppRefreshCoordinator.ts`（应用刷新协调，WebSocket + 降级轮询的唯一 owner）、`usePolling.ts`（通用轮询）、`useWebSocket.ts`（WebSocket 进度推送 + 重连）、`useAdminToken.ts`（X-Admin-Token）、`useExpertMode.ts`（专家模式，localStorage 持久化）、`useRecapModels.ts`（回顾模型下拉分组）、`useDiscoverReplay.ts`（发现回放抽屉可见性 + 执行后刷新）。
 
 ## AI 使用指引
 
 - 本项目是 Go 单体服务，修改时注意 `internal/` 下各模块的职责边界。
 - 状态机转换表在 `internal/state/state.go` 的 `transitions` 变量中定义。
 - 任务类型常量在各模块中定义（如 `download.TaskType`、`normalize.TaskType`）。
-- 数据库迁移在 `internal/db/migrate.go` 中，新增表需追加到 `migrations` 切片。当前 32 个版本。
+- 数据库迁移在 `internal/db/migrate.go` 中，新增表需追加到 `migrations` 切片。当前 38 个物理迁移元素，业务语义版本到 v35（v35 的 runtime_settings 表重建占 v35-v38 共 4 个元素 CREATE/INSERT/DROP/RENAME）。
 - 外部工具交互全部通过接口抽象，mock 时实现对应接口即可。
 - API 路由注册在 `internal/handler/server.go` 的 `routes()` 方法中。
 - 配置结构体在 `internal/config/config.go` 中，新增配置项需同时更新 `setDefaults`。

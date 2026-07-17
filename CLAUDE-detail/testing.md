@@ -2,13 +2,13 @@
 
 > 本文件由根 CLAUDE.md 拆分而来，作为 AI 上下文补充文档。
 >
-> 最后同步：2026-06-25 | Go 测试文件 61 个 | Go 测试函数 880 | 前端测试文件 4 个 | 前端测试用例 90
+> 最后同步：2026-07-17 | Go 测试文件 67 个 | Go 测试函数 1033 | 前端测试文件 26 个 | 前端测试用例 180（vitest run 实跑）
 >
-> 注：计数统一采用 `grep -c "^func Test"` 顶级函数口径（前端为 `it/test` 块）。各模块测试文件数与历史口径可能因 build tag / 子测试而异。
+> 注：Go 计数采用 `grep -c "^func Test"` 顶级函数口径；前端为 `vitest run` 实跑用例数（含 describe.each 展开，静态 it/test 块为 176）。各模块测试文件数与历史口径可能因 build tag / 子测试而异。
 
 ## 测试策略
 
-- `internal/handler/server_test.go`：集成测试（52 个测试函数），使用内存 SQLite 和 fake 依赖测试 API 路由，覆盖主播 CRUD、主播识别保存、直播状态检查、录制启停、运行时健康（含 ASR 详情）、ASR/Recap/Upload/Fetch/Publish 能力拒绝、opus 编辑/删除能力守卫、任务 CRUD、配置导出/导入、stats/dashboard、archive 端点。
+- `internal/handler/server_test.go`：集成测试（59 个测试函数，表驱动子测试展开后运行时 92 用例），使用内存 SQLite 和 fake 依赖测试 API 路由，覆盖主播 CRUD、主播识别保存、直播状态检查、录制启停、运行时健康（含 ASR 详情）、ASR/Recap/Upload/Fetch/Publish 能力拒绝、opus 编辑/删除能力守卫、任务 CRUD、配置导出/导入、stats/dashboard、archive 端点、回顾模型预设（TestGetRecapModels 精确集合断言）。
 - `internal/handler/auth_test.go`：单元测试（5 个测试函数），覆盖 admin token 认证中间件（X-Admin-Token/Bearer、ConstantTimeCompare、缺失/错误 token 拒绝、公开路由放行）。
 - `internal/channel/channel_test.go`：单元测试（54 个测试用例），覆盖主播 Store CRUD、Bootstrap、识别输入解析（URL/UID/直播间）、B 站 API 识别、mergeIdentified 合并策略、per-channel 配置。
 - `internal/channel/identify_test.go`：单元测试（5 个测试用例），覆盖识别输入规范化、直播间/UID 识别、Cookie 查找策略。
@@ -17,8 +17,8 @@
 - `internal/glossary/glossary_test.go`：单元+集成测试（31 个测试用例），覆盖 CRUD、合并逻辑、Prompt 导出、Markdown/JSON 导入导出、批量删除/切换、频道作用域隔离。
 - `internal/glossary/candidate_store_test.go`：单元+集成测试（11 个测试用例），覆盖候选 CRUD、审批、评分、批量操作。
 - `internal/glossary/discovery_test.go`：单元+集成测试（14 个测试用例），覆盖 AI 术语发现、分块、prompt、候选合并、解析结果校验、时间戳处理。
-- `internal/recap/recap_test.go`：单元+集成测试（62 个测试用例），覆盖 CreateTask 前置条件、LocalProvider、HandleTask 全流程（含校正产物验证）、弹幕分析、Prompt 构建（含模板渲染）、SessionMetadata 读取、FormatDanmakuStats/appendDanmakuStats、术语校正转写（buildCorrectionRules/correctTextWithRules/correctedTranscriptForPrompt）、ensureFinalAddressSection、续写逻辑。
-- `internal/recap/template_test.go`：单元+集成测试（25 个测试用例），覆盖 TemplateStore CRUD（GetGlobal/GetByChannel/Upsert/Delete/ListGlobal）、Resolve 合并逻辑（全局覆盖内置、主播覆盖全局、部分覆盖、禁用回退、ExtraVars 合并、`__builtin__` 标记回退）、RenderTemplate 变量插值（标准变量、自定义变量、空值/nil 处理、数值变量）。
+- `internal/recap/recap_test.go`：单元+集成测试（76 个测试用例），覆盖 CreateTask 前置条件、LocalProvider、HandleTask 全流程（含校正产物验证）、弹幕分析、Prompt 构建（含模板渲染）、SessionMetadata 读取、FormatDanmakuStats/appendDanmakuStats、术语校正转写（buildCorrectionRules/correctTextWithRules/correctedTranscriptForPrompt，含 replaceTermBoundaryAware 词边界感知替换）、ensureFinalAddressSection、续写逻辑。
+- `internal/recap/template_test.go`：单元+集成测试（27 个测试用例），覆盖 TemplateStore CRUD（GetGlobal/GetByChannel/Upsert/Delete/ListGlobal）、Resolve 合并逻辑（全局覆盖内置、主播覆盖全局、部分覆盖、禁用回退、ExtraVars 合并、`__builtin__` 标记回退）、RenderTemplate 变量插值（标准变量、自定义变量、空值/nil 处理、数值变量）、ResolvedTemplate JSON 键名（snake_case 断言，2026-07-16 新增）。
 - `internal/recap/test_recap_main_test.go`：集成测试（1 个测试用例），使用真实 AI API 端到端回顾生成（需手动运行 `go test -run TestGenerateRecapFromRealData -v -timeout 10m`）。
 - `internal/recap/test_recap_0329_test.go`：集成测试（1 个测试用例），使用真实 AI API 端到端回顾生成。
 - `internal/state/state_test.go`：单元+集成测试（11 个测试用例），覆盖所有合法转换、非法转换拒绝、task_failed 全状态可达、Apply 事务持久化、失败错误写入、时间戳设置、ApplyWithPublishTarget 同事务写 publish_target。
@@ -40,7 +40,10 @@
 - `internal/live_record/manager_test.go`：集成测试（16 个测试用例），覆盖录制启停、任务执行写入原始产物、重连录制分片拼接、Cookie 查找（主播/Bootstrap 优先级）、流选择（混合/纯音频/回退/必须音频）、CheckAndStartAll 跳过 replay_only、redactURL 脱敏、Stop 幂等、健康检查生命周期、setActive/clearActive。
 - `internal/live_record/danmaku_test.go`：单元测试（11 个测试用例），覆盖弹幕消息解包（普通/zlib/brotli 压缩）、弹幕内容解析（文本/用户/颜色/时间偏移）、getDanmuInfo Cookie 传递与空 Cookie、-352 重试成功/-352 全失败降级/-352 getConf 旧版 API 回退、buildAuthBody UID/protover 设置。
 - `internal/discover/discover_test.go`：单元+集成测试（5 个测试用例）。
-- `internal/download/download_test.go`：单元+集成测试（20 个测试用例），覆盖单 P 和多 P 下载、错误处理。
+- `internal/download/download_test.go`：单元+集成测试（36 个测试用例），覆盖下载辅助函数、Handler 创建/注册/入队、临时 Cookie 文件、escapeConcatListPath 转义、ffmpegLocationDir 裸命令名/空值守卫、singlePCid 降级（2026-07-15 新增 --ffmpeg-location 注入 + 单 P 弹幕抓取相关测试）。
+- `internal/download/native_test.go`：单元测试（10 个测试用例），覆盖 native 成功下载、Cookie 缺失、非 BV、多 P 产物、seg.so 回退 XML、双失败空弹幕。
+- `internal/download/downloader_select_test.go`：单元测试（3 个测试用例），覆盖后端工厂、auto 回退。
+- `internal/download/probe_test.go`：`//go:build probe` 真实联调用例（7 个），默认不参与常规测试。
 - `internal/importer/importer_test.go`：单元测试（15 个测试用例），覆盖 multipart 导入、弹幕导入、ffmpeg 转码。
 - `internal/upload/upload_test.go`：单元测试（25 个测试用例），覆盖上传逻辑、清理策略。
 - `internal/upload/webdav_copier_test.go`：单元测试（10 个测试用例），覆盖 joinWebDAVPath、pathDir、relativeTarget、isWebDAVNotExist。
@@ -60,7 +63,9 @@
 
 ## 前端测试
 
-- `web/src/features/recaps/sessionActions.test.ts`：单元测试（41 个测试用例），覆盖 `getRowActions`/`getDrawerActions`（各状态下可见动作）、`canFetchLocal`（local_available 守卫）、`decideRetry`/`isRetryable`/`retryHint`（重试决策）、`primaryActionType`、`UI_ACTION_REASON`（禁用原因）。从 RecapsView 视图抽出的纯函数。
-- `web/src/utils/format.test.ts`：单元测试（17 个测试用例），覆盖格式化工具函数。
-- `web/src/utils/friendlyStatus.test.ts`：单元测试（13 个测试用例），覆盖状态友好化映射。
-- `web/src/utils/lifecycle.test.ts`：单元测试（19 个测试用例），覆盖生命周期工具函数。
+前端使用 Vitest（@vue/test-utils + happy-dom），`cd web && npx vitest run` 实跑 **180 个用例 / 26 个测试文件**：
+
+- `web/src/components/ui/__tests__/`：15 个 H* 组件单测（HButton/HCard/HCollapse/HDescriptions/HDialog/HDrawer/HEmpty/HInput/HPill/HProgress/HSelect/HSwitch/HTable/HTextarea/**HCombobox** 2026-07-15 新增），覆盖 v-model/emit/disabled/clearable/slot/datalist 绑定等核心交互。
+- `web/src/features/recaps/sessionActions.test.ts`：48 个用例，覆盖 `getRowActions`/`getDrawerActions`/`canFetchLocal`/`decideRetry`/`isRetryable`/`retryHint`/`primaryActionType`/`UI_ACTION_REASON`（含 describe.each 展开回放类用例）。
+- `web/src/features/recaps/components/__tests__/SessionTableV10.test.ts`、`web/src/features/settings/components-v10/__tests__/TemplateCardV10.test.ts`：RecapsView 回顾表格 + 设置页模板卡片（extra_vars 编辑链路 8 用例，2026-07-16 新增）。
+- `web/src/features/home/...`（RunningTasksSection + useElapsedDuration）、`web/src/features/streamers/...`（useStreamerDetail）、`web/src/stores/sessions.test.ts`、`web/src/utils/{format,friendlyStatus,lifecycle}.test.ts`：分别覆盖首页任务区、主播详情 composable、sessions store、格式化/状态映射/生命周期工具。

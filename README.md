@@ -83,7 +83,7 @@ make run          # 启动
 | 后端 | Go 1.25.0 + Gin + gorilla/websocket |
 | 数据库 | SQLite（纯 Go，无需 CGO） |
 | 配置 | Viper (YAML) |
-| 前端 | Vue 3 + Element Plus + Vite |
+| 前端 | Vue 3 + 自建 H* 组件库 + Vite |
 | 外部工具 | ffmpeg / ffprobe（必需）；yt-dlp / rclone（可选，按需启用） |
 | AI | DashScope ASR + OpenAI 兼容 / Anthropic 回顾 |
 

@@ -90,7 +90,7 @@ flowchart TB
 - 编排层：`internal/worker` 执行异步任务；`internal/scheduler` 定时触发回放发现和直播检查；`cmd/hikami/main.go` 注册自动 ASR、自动回顾、自动发布回调。
 - 领域层：`channel`、`session`、`state`、`discover`、`download`、`live_record`、`importer`、`normalize`、`asr`、`recap`、`upload`、`publisher`、`glossary`、`secrets`。
 - 基础设施层：`db`、`config`、`runtime`、`biliutil`，以及外部工具 `ffmpeg`、`ffprobe`（必需）；`yt-dlp`、`rclone`（可选，缺失仅降级对应能力）。
-- 前端层：`web` 使用 Vue 3、Pinia、Vue Router、Element Plus、Axios 和 WebSocket。
+- 前端层：`web` 使用 Vue 3、Pinia、Vue Router、自建 H\* 组件库（18 个 `H*.vue` + `ConfirmHost.vue` = 19 个 Vue 组件；命令式 `HMessage`/`HConfirm`/`HToast`）、Axios、mitt 和 WebSocket。
 
 源码依据：`cmd/hikami/main.go`、`internal/*/CLAUDE.md`、`web/CLAUDE.md`
 
@@ -132,7 +132,7 @@ graph LR
 
 ### 迁移版本
 
-当前 `internal/db/migrate.go` 的 `migrations` 切片包含 18 个版本。
+当前 `internal/db/migrate.go` 的 `migrations` 切片包含 38 个物理迁移元素，业务语义版本到 v35（其中 v35 的 `runtime_settings` 表重建由 4 条 SQL 迁移 CREATE/INSERT/DROP/RENAME 完成，占物理序号 v35-v38）。
 
 | 版本 | 内容 | 影响对象 |
 |---:|---|---|
@@ -154,6 +154,23 @@ graph LR
 | 16 | 创建 `glossary_meta` | 全局/主播术语备注 |
 | 17 | `channels` 增加发布配置字段：`publish_enabled`、`publish_mode`、`publish_category_id`、`publish_list_id`、`publish_private_pub`、`publish_original`、`auto_publish` | 主播级发布配置 |
 | 18 | `channels` 增加发布扩展字段：`publish_aigc`、`publish_timer_pub_time`、`publish_cover_url`、`publish_topics` | AI 声明、定时发布、封面、话题 |
+| 19 | `channels` 增加 `source_mode TEXT NOT NULL DEFAULT 'both'` | 直播/回放来源模式开关 |
+| 20 | `channels` 增加 `discover_limit INTEGER NOT NULL DEFAULT 0` | 回放发现数量上限 |
+| 21 | 创建 `recap_templates` 表（`id`/`channel_id`/`name`/`system_prompt`/`user_format`/`fan_name`/`extra_vars`/`enabled`/`is_default`/`created_at`/`updated_at`） | 回顾模板（全局 + per-channel） |
+| 22 | 创建 `recap_templates_channel_name_uidx` 唯一索引 `UNIQUE(channel_id, name)` | 模板去重 |
+| 23 | INSERT 内置 default 模板行（`system_prompt='__builtin__'`、`is_default=1`） | 默认模板初始化 |
+| 24 | `tasks` 增加 `usage_metadata TEXT NOT NULL DEFAULT '{}'` | 任务用量/成本追踪 |
+| 25 | 创建 `bili_cookie_accounts` 表（`id`/`uid` UNIQUE/`nickname`/`cookie_file`/`is_default_download`/`is_default_publish`/`created_at`/`updated_at`） | B 站多账号管理 |
+| 26 | `channels` 增加 `download_account_id INTEGER DEFAULT NULL` | 主播关联下载账号 |
+| 27 | `channels` 增加 `publish_account_id INTEGER DEFAULT NULL` | 主播关联发布账号 |
+| 28 | 创建 `glossary_candidates` 表 + 3 索引（字段含 `term`/`canonical`/`category`/`status` CHECK pending/approved/rejected/`confidence`/`score`/`occurrence_count`/`session_count`/`first_session_id`/`last_session_id`/`reason`/`normalized_key`/`reviewed_at`） | 术语候选发现 |
+| 29 | `channels` 增加 `recap_model TEXT NOT NULL DEFAULT ''` | per-channel 回顾模型 |
+| 30 | `channels` 增加 `max_continuations INTEGER NOT NULL DEFAULT -1` | per-channel 续写次数上限 |
+| 31 | `sessions` 增加 `archived_at TEXT` | 场次归档时间戳 |
+| 32 | `channels` 增加 `auto_recap INTEGER NOT NULL DEFAULT 1` | per-channel 自动回顾开关 |
+| 33 | 创建 `runtime_settings` 表（`section` CHECK 6 段 / `data` JSON / `updated_at`，PRIMARY KEY(section)） | 全局运行时配置覆盖持久化 |
+| 34 | `tasks` 增加 `bypass_fail_state INTEGER NOT NULL DEFAULT 0` | 任务级 bypass fail state |
+| 35 | `runtime_settings` 表重建：CHECK 扩展到 7 段（加 `tools`），由 4 条 SQL 完成（CREATE v35 + INSERT v36 + DROP v37 + RENAME v38，占物理序号 v35-v38） | 运行时配置段扩展 |
 
 源码依据：`internal/db/migrate.go`
 
@@ -196,6 +213,13 @@ graph LR
 | `publish_timer_pub_time` | INTEGER | NOT NULL DEFAULT 0 |
 | `publish_cover_url` | TEXT | NOT NULL DEFAULT '' |
 | `publish_topics` | TEXT | NOT NULL DEFAULT '' |
+| `source_mode` | TEXT | NOT NULL DEFAULT 'both' |
+| `discover_limit` | INTEGER | NOT NULL DEFAULT 0 |
+| `recap_model` | TEXT | NOT NULL DEFAULT '' |
+| `max_continuations` | INTEGER | NOT NULL DEFAULT -1 |
+| `auto_recap` | INTEGER | NOT NULL DEFAULT 1 |
+| `download_account_id` | INTEGER | DEFAULT NULL |
+| `publish_account_id` | INTEGER | DEFAULT NULL |
 
 #### `sessions`
 
@@ -217,6 +241,7 @@ graph LR
 | `uploaded_at` | TEXT | 可空 |
 | `published_at` | TEXT | 可空 |
 | `publish_target` | TEXT | 可空 |
+| `archived_at` | TEXT | 可空 |
 | `created_at` | TEXT | NOT NULL DEFAULT datetime('now') |
 | `updated_at` | TEXT | NOT NULL DEFAULT datetime('now') |
 
@@ -243,6 +268,8 @@ graph LR
 | `finished_at` | TEXT | 可空 |
 | `created_at` | TEXT | NOT NULL DEFAULT datetime('now') |
 | `updated_at` | TEXT | NOT NULL DEFAULT datetime('now') |
+| `usage_metadata` | TEXT | NOT NULL DEFAULT '{}' |
+| `bypass_fail_state` | INTEGER | NOT NULL DEFAULT 0 |
 
 索引：
 
@@ -282,6 +309,89 @@ graph LR
 | `note` | TEXT | NOT NULL DEFAULT '' |
 | `updated_at` | TEXT | NOT NULL DEFAULT datetime('now') |
 
+#### `recap_templates`
+
+回顾模板（全局模板 `channel_id=''` + per-channel 模板），由 v21 创建、v22 建唯一索引、v23 插入内置 default 行。
+
+| 字段 | 类型 | 约束/默认值 |
+|---|---|---|
+| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT |
+| `channel_id` | TEXT | NOT NULL DEFAULT ''（空串表示全局模板） |
+| `name` | TEXT | NOT NULL DEFAULT 'default' |
+| `system_prompt` | TEXT | NOT NULL DEFAULT '' |
+| `user_format` | TEXT | NOT NULL DEFAULT '' |
+| `fan_name` | TEXT | NOT NULL DEFAULT '' |
+| `extra_vars` | TEXT | NOT NULL DEFAULT '{}'（JSON） |
+| `enabled` | INTEGER | NOT NULL DEFAULT 1 |
+| `is_default` | INTEGER | NOT NULL DEFAULT 0 |
+| `created_at` | TEXT | NOT NULL DEFAULT datetime('now') |
+| `updated_at` | TEXT | NOT NULL DEFAULT datetime('now') |
+
+索引：
+
+- `recap_templates_channel_name_uidx`：`UNIQUE(channel_id, name)`
+
+内置 default 模板：`channel_id=''`、`name='default'`、`system_prompt='__builtin__'`、`user_format='__builtin__'`、`is_default=1`。
+
+#### `bili_cookie_accounts`
+
+B 站多账号表（v25 创建），供下载/发布账号选择。
+
+| 字段 | 类型 | 约束/默认值 |
+|---|---|---|
+| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT |
+| `uid` | INTEGER | NOT NULL UNIQUE |
+| `nickname` | TEXT | NOT NULL DEFAULT '' |
+| `cookie_file` | TEXT | NOT NULL |
+| `is_default_download` | INTEGER | NOT NULL DEFAULT 0 |
+| `is_default_publish` | INTEGER | NOT NULL DEFAULT 0 |
+| `created_at` | TEXT | NOT NULL DEFAULT datetime('now') |
+| `updated_at` | TEXT | NOT NULL DEFAULT datetime('now') |
+
+主播通过 `channels.download_account_id` / `channels.publish_account_id` 关联本表 `id`。
+
+#### `glossary_candidates`
+
+术语候选发现表（v28 创建），承载回放/录制转写后自动发现的待审术语候选。
+
+| 字段 | 类型 | 约束/默认值 |
+|---|---|---|
+| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT |
+| `channel_id` | TEXT | NOT NULL DEFAULT '' |
+| `term` | TEXT | NOT NULL（CHECK `trim(term) <> ''`） |
+| `canonical` | TEXT | NOT NULL DEFAULT '' |
+| `category` | TEXT | NOT NULL DEFAULT '' |
+| `status` | TEXT | NOT NULL DEFAULT 'pending'，CHECK IN ('pending','approved','rejected') |
+| `confidence` | REAL | NOT NULL DEFAULT 0，CHECK `[0,1]` |
+| `score` | REAL | NOT NULL DEFAULT 0，CHECK `[0,1]` |
+| `occurrence_count` | INTEGER | NOT NULL DEFAULT 1，CHECK `>= 0` |
+| `session_count` | INTEGER | NOT NULL DEFAULT 1，CHECK `>= 0` |
+| `first_session_id` | TEXT | NOT NULL DEFAULT '' |
+| `last_session_id` | TEXT | NOT NULL DEFAULT '' |
+| `reason` | TEXT | NOT NULL DEFAULT '' |
+| `normalized_key` | TEXT | NOT NULL（CHECK `trim(normalized_key) <> ''`） |
+| `created_at` | TEXT | NOT NULL DEFAULT datetime('now') |
+| `updated_at` | TEXT | NOT NULL DEFAULT datetime('now') |
+| `reviewed_at` | TEXT | 可空 |
+
+索引：
+
+- `glossary_candidates_channel_key_uidx`：`UNIQUE(channel_id, normalized_key)`
+- `glossary_candidates_channel_status_score_idx`：`(channel_id, status, score DESC, updated_at DESC)`
+- `glossary_candidates_last_session_idx`：`(last_session_id)`
+
+#### `runtime_settings`
+
+全局运行时配置覆盖持久化（v33 创建，v35 重建为 7 段）。`config.yaml` 降级为只读基线，UI 改动按配置段写入此表，启动时 `ApplyOverrides` 用本表覆盖 viper 加载的基线值。
+
+| 字段 | 类型 | 约束/默认值 |
+|---|---|---|
+| `section` | TEXT | NOT NULL，CHECK IN ('publish','asr_s3','dashscope','recap_ai','webdav','archive','tools')，PRIMARY KEY |
+| `data` | TEXT | NOT NULL DEFAULT '{}'，CHECK `json_valid(data)` |
+| `updated_at` | TEXT | NOT NULL DEFAULT datetime('now') |
+
+v35 重建将 CHECK 白名单从 6 段扩到 7 段（新增 `tools` 段，承载 `yt_dlp`/`rclone` 路径），通过 CREATE 新表 + INSERT 回灌 + DROP 旧表 + RENAME 完成。
+
 源码依据：`internal/db/migrate.go`、`internal/channel/channel.go`、`internal/session/session.go`、`internal/worker/task.go`、`internal/glossary/glossary.go`、`internal/secrets/secrets.go`
 
 ### 实体关系图
@@ -293,6 +403,10 @@ erDiagram
     SESSIONS ||--o{ TASKS : "session_id"
     CHANNELS ||--o{ GLOSSARY_ENTRIES : "channel_id 可为空字符串表示全局"
     CHANNELS ||--o{ GLOSSARY_META : "channel_id 可为空字符串表示全局"
+    CHANNELS ||--o{ RECAP_TEMPLATES : "channel_id 可为空字符串表示全局"
+    CHANNELS ||--o{ GLOSSARY_CANDIDATES : "channel_id 可为空字符串表示全局"
+    BILI_COOKIE_ACCOUNTS ||--o{ CHANNELS : "download_account_id"
+    BILI_COOKIE_ACCOUNTS ||--o{ CHANNELS : "publish_account_id"
 
     CHANNELS {
         text id PK
@@ -354,6 +468,47 @@ erDiagram
     GLOSSARY_META {
         text channel_id PK
         text note
+    }
+
+    RECAP_TEMPLATES {
+        integer id PK
+        text channel_id
+        text name
+        text system_prompt
+        text user_format
+        text fan_name
+        text extra_vars
+        integer enabled
+        integer is_default
+    }
+
+    BILI_COOKIE_ACCOUNTS {
+        integer id PK
+        integer uid
+        text nickname
+        text cookie_file
+        integer is_default_download
+        integer is_default_publish
+    }
+
+    GLOSSARY_CANDIDATES {
+        integer id PK
+        text channel_id
+        text term
+        text canonical
+        text category
+        text status
+        real confidence
+        real score
+        integer occurrence_count
+        integer session_count
+        text normalized_key
+    }
+
+    RUNTIME_SETTINGS {
+        text section PK
+        text data
+        text updated_at
     }
 ```
 
@@ -574,9 +729,9 @@ flowchart TB
 - `Hub.Run` 持有订阅者集合，广播 channel 缓冲为 64，每个订阅者 channel 缓冲为 16。
 - 向订阅者发送时使用非阻塞写；慢订阅者不会阻塞整个广播。
 - `/ws` 端点订阅 Hub 并通过 gorilla/websocket 写出 JSON。
-- 前端 `useWebSocket` 将 `/ws` 的 `task_progress` 事件转发到 mitt 事件总线，`TasksView` 用它更新 Pinia task store。
+- 前端 `useWebSocket` 将 `/ws` 的 `task_progress` 事件转发到 mitt 事件总线，`RecapsView`（任务列表）与 HomeView（运行中任务）用它更新 Pinia task store。
 
-源码依据：`internal/worker/hub.go`、`internal/handler/server.go`、`web/src/composables/useWebSocket.ts`、`web/src/views/TasksView.vue`
+源码依据：`internal/worker/hub.go`、`internal/handler/server.go`、`web/src/composables/useWebSocket.ts`、`web/src/views/RecapsView.vue`
 
 ### 恢复策略与并发控制
 
@@ -821,7 +976,7 @@ flowchart TB
 
 - 默认输出目录为 `hikami-go`，默认数据库为 `hikami.db`。
 - 默认命令：`ffmpeg`、`ffprobe`、`yt-dlp`、`rclone`。
-- 默认监听 `:8080`，worker 数为 3。
+- 默认监听 `127.0.0.1:6334`（仅绑定回环；若绑非回环地址则强制要求 `web.admin_token`），worker 数为 3。
 - 默认定时：回放发现 `@every 20m`，直播检查 `@every 30s`。
 - `output_root`、`db_path` 必须非空；启用 Web 时 `web.listen` 必须非空。
 - `worker.num` 必须大于 0。
@@ -934,9 +1089,9 @@ flowchart TB
 ### 技术栈与构建体系
 
 - 核心框架：Vue 3.5、TypeScript、Vite、Vue Router 4、Pinia。
-- UI 与交互：Element Plus 2.9、`@element-plus/icons-vue`、Axios、mitt、marked。
-- 构建命令：`web/package.json` 定义 `dev`、`build`、`preview`、`type-check`；生产构建先执行 `vue-tsc -b` 类型检查，再执行 `vite build`。
-- 开发代理：`web/vite.config.ts` 将 `/api` 代理到 `http://localhost:8080`，将 `/ws` 代理到 `ws://localhost:8080`。
+- UI 与交互：自建 H\* 组件库（18 个 `H*.vue` + `ConfirmHost.vue` = 19 个 Vue 组件；命令式 `HMessage`/`HConfirm`/`HToast`）、Axios、mitt、marked、dompurify、qrcode。
+- 构建命令：`web/package.json` 定义 `dev`、`build`、`preview`、`type-check`、`test`（`vitest run`）、`test:watch`；生产构建先执行 `vue-tsc -b` 类型检查，再执行 `vite build`。
+- 开发代理：`web/vite.config.ts` 将 `/api` 代理到 `http://127.0.0.1:6334`，将 `/ws` 代理到 `ws://127.0.0.1:6334`（与后端 `web.listen` 默认对齐）。
 - 路径别名：Vite 将 `@` 指向 `web/src`，业务模块通过 `@/api`、`@/stores`、`@/components` 等路径导入。
 - 嵌入式部署：前端构建产物写入 `cmd/hikami/webdist`，由 `cmd/hikami/embed.go` 通过 Go `embed.FS` 嵌入服务端二进制。
 
@@ -949,7 +1104,7 @@ flowchart TB
 | `web/src/api` | HTTP API 封装。`client.ts` 管理 Axios 实例和通用方法，各业务文件按后端资源拆分请求函数。 |
 | `web/src/stores` | Pinia 状态管理。维护频道、场次、任务、直播状态、运行时能力等跨页面共享状态。 |
 | `web/src/components` | 可复用 UI 组件。按 `channel`、`session`、`task`、`layout` 分组，承载列表、表单、状态、时间线、布局等可组合视图。 |
-| `web/src/composables` | 组合式函数。封装轮询、WebSocket、主播健康检测等跨组件逻辑。 |
+| `web/src/composables` | 组合式函数（共 7 个：useAdminToken/useAppRefreshCoordinator/useDiscoverReplay/useExpertMode/usePolling/useRecapModels/useWebSocket）。封装管理员令牌、应用刷新协调、回放发现触发、专家模式、回顾模型选择、轮询、WebSocket 重连等跨组件逻辑。 |
 | `web/src/views` | 路由页面。负责页面级数据装配、筛选、批量操作、弹窗抽屉控制和业务动作编排。 |
 | `web/src/utils` | 纯工具层。集中维护常量、格式化、状态颜色、生命周期映射和动作能力判断。 |
 | `web/src/router` | Vue Router 配置。定义路由表、兼容重定向和页面标题元数据。 |
@@ -976,35 +1131,40 @@ Pinia store 采用组合式写法，每个 store 暴露 `ref` 状态、`loading`
 
 ### 路由设计
 
-路由使用 `createWebHistory()`，每个路由项配置 `name`、懒加载组件和 `meta.title`：
+路由使用 `createWebHistory()`，真实视图组件只有 4 个，其余路径为兼容性 redirect：
 
 | 路径 | 视图 | 说明 |
 |---|---|---|
-| `/` | `DashboardView` | 工作台首页。 |
-| `/live` | `LiveView` | 直播控制台。 |
-| `/sessions` | `SessionsView` | 场次列表。 |
-| `/sessions/:sid` | `SessionDetailView` | 场次详情，使用生命周期视图，路径保持兼容。 |
-| `/tasks` | `TasksView` | 任务中心。 |
-| `/channels` | `ChannelsView` | 主播列表。 |
-| `/channels/:id` | `ChannelDetailView` | 主播详情或新建配置页。 |
-| `/settings` | `SettingsView` | 设置中心。 |
+| `/` | `HomeView` | 首页（整合任务/场次/主播/能力/直播状态、运行中任务、待处理场次）。 |
+| `/streamers` | `StreamersView` | 我的主播（主播列表 + 通过 `?id=` 打开详情/编辑抽屉）。 |
+| `/recaps` | `RecapsView` | 回顾（场次回顾 + 录播/回放子 tab；任务列表、生命周期、回顾抽屉）。 |
+| `/settings` | `SettingsView` | 设置（4 折叠分组：总览/流水线配置/账号与备份/高级）。 |
 
-兼容重定向规则：
+兼容重定向规则（旧路径 → 新路径）：
 
-- `/import` 重定向到 `/sessions?import=1`，由场次页打开手动导入抽屉。
-- `/health` 重定向到 `/settings?section=runtime`，系统能力被合并到设置中心。
+- `/live` → `/`、`/dashboard` → `/`
+- `/sessions` → `/recaps`、`/sessions/:sid` → `/recaps?sid=:sid`、`/tasks` → `/recaps`
+- `/import` → `/recaps?import=1`（打开手动导入抽屉）
+- `/channels` → `/streamers`、`/channels/:id` → `/streamers?id=:id`
+- `/health` → `/settings?section=runtime`（系统能力合并到设置中心）
 
-当前前端没有父子路由配置，嵌套结构由 `AppLayout` 的全局布局和 `router-view` 承载；详情页通过动态段 `/sessions/:sid`、`/channels/:id` 表达资源嵌套关系。`AppLayout` 根据当前路径前缀把 `/sessions/:sid` 归并到场次导航，把 `/channels/:id` 归并到主播导航。
+没有父子路由配置，嵌套结构由 `AppLayout` 全局布局 + `router-view` 承载；详情通过 query 参数（`?sid=`、`?id=`）而非动态段表达。`AppLayout` 挂载 `useAppRefreshCoordinator`（WebSocket + 降级轮询的唯一 owner）和 `useWebSocket`。
 
 源码依据：`web/src/router/index.ts`、`web/src/components/layout/AppLayout.vue`
 
 ### 核心组合函数
 
-- `useChannelHealth`：提供 `getChannelRisks(channel, capabilities)` 纯函数和 `useChannelHealth(channelRef, capabilitiesRef)` 组合函数。风险覆盖自动录制缺少直播间 ID、回放来源未配置、自动 ASR 能力不可用、自动发布缺少发布 Cookie、发布能力不可用；返回 `risks`、`riskCount`、`healthy`。
-- `usePolling`：通用页面轮询。默认 5 秒间隔、默认立即执行；返回 `active`、`start`、`stop`。内部在卸载时停止定时器，回调异常交由调用方或 API 层处理。
-- `useWebSocket`：同源构造 `/ws` 地址，支持传入自定义 URL；维护 `connected` 状态、指数退避重连、30 秒消息心跳检测；解析 `task_progress` 后通过 mitt 分发。`useEventBus` 暴露同一个事件总线给布局和 store 协作。
+`web/src/composables/` 共 7 个跨域复用 hook：
 
-源码依据：`web/src/composables/useChannelHealth.ts`、`web/src/composables/usePolling.ts`、`web/src/composables/useWebSocket.ts`
+- `useAdminToken`：管理员令牌读写（X-Admin-Token header 注入）。
+- `useAppRefreshCoordinator`：【核心】应用刷新 ownership 唯一（WebSocket 连接 + 降级轮询 + 终态会话刷新的唯一 owner，避免并发重复拉取）。
+- `useDiscoverReplay`：发现回放抽屉可见性 + 执行后刷新（RecapsView/HomeView 共用）。
+- `useExpertMode`：专家模式开关（控制高级字段显隐）。
+- `usePolling`：通用页面轮询。默认 5 秒间隔、默认立即执行；返回 `active`、`start`、`stop`。内部在卸载时停止定时器，回调异常交由调用方或 API 层处理。
+- `useRecapModels`：回顾模型列表/选择（按厂商分组，全局/主播级复用）。
+- `useWebSocket`：同源构造 `/ws` 地址，支持传入自定义 URL；维护 `connected` 状态、指数退避重连、30 秒消息心跳检测；解析 `task_progress` 后通过 mitt 事件总线转发给 tasks store。
+
+源码依据：`web/src/composables/` 下 7 个文件（useAdminToken/useAppRefreshCoordinator/useDiscoverReplay/useExpertMode/usePolling/useRecapModels/useWebSocket）
 
 ### 生命周期引擎
 
@@ -1027,61 +1187,65 @@ Pinia store 采用组合式写法，每个 store 暴露 `ref` 状态、`loading`
 - 能力检测：`getDisabledReason` 检查动作依赖的 `Capabilities` 字段；能力未加载时返回等待提示，能力不可用时优先使用后端 reason，再回退到 `ACTION_DISABLED_REASON`。
 - 时间推导：来源、媒体、上传、发布节点分别优先使用 `started_at/created_at`、`ended_at`、`uploaded_at`、`published_at`，当前步骤使用 `updated_at`。
 
-源码依据：`web/src/utils/lifecycle.ts`、`web/src/components/session/SessionLifecycleMini.vue`、`web/src/components/session/SessionLifecycleTimeline.vue`、`web/src/components/session/SessionActionPanel.vue`
+源码依据：`web/src/utils/lifecycle.ts`（`LIFECYCLE_STEPS`/`STATUS_STEP_MAP`/`formatLifecycleForDisplay`/`ACTION_META`/`getNextAction`/`getDisabledReason`）。6 步流程的 UI 渲染已下沉到 `web/src/features/recaps/components/`（RecapDrawerV10/SessionTableV10 等）和 `web/src/views/HomeView.vue`。
 
 ### 组件架构
 
-#### session 组件族
+V10 重写后组件按 `components/`（跨域复用）和 `features/`（业务域）组织：
 
-- `SessionLifecycleMini`：场次列表和工作台中的 6 步圆点指示器。
-- `SessionLifecycleTimeline`：详情页生命周期网格，展示节点状态、时间、错误和下一步动作。
-- `SessionActionPanel`：根据生命周期引擎输出主操作和次要操作，向页面 emit 具体动作。
-- `SessionArtifactSummary`：按媒体、ASR、回顾、归档等产物维度汇总关键文件。
-- `SessionFilterBar`：集中处理关键词、主播、来源、生命周期状态过滤。
-- `DiscoverResultDrawer`：展示发现回放结果，按新建、跳过、错误分组。
-- `ImportSessionDrawer`：手动导入表单，包含媒体文件、弹幕文件和后续处理选项。
-- `SessionFileTree`、`SessionStatusBadge`、`SessionActions`：分别负责文件树、状态徽章和旧版操作按钮。
+#### UI 组件库（`components/ui/`，自建 H* 组件库，已移除 Element Plus）
 
-#### channel 组件族
+19 个 Vue 组件：HInput/HSelect/HCombobox/HButton/HCheckbox/HSwitch/HDialog/HDrawer/HTable/HCard/HPill/HProgress/HEmpty/HDescriptions/HCollapse/HCollapseItem/HTextarea/HToast + ConfirmHost.vue。命令式基础设施：HMessage（`message.ts`）、HConfirm/HAlert/HPrompt（`HConfirm.ts`）、HToast。`web/src/styles/design-tokens.css` 锁定设计 token。15 个组件有单测保护。
 
+#### session 组件族（`components/session/`，3 个抽屉）
+
+- `DiscoverResultDrawer`：发现回放两步式抽屉（预览勾选 → 执行下载）。
+- `DownloadByURLDrawer`：单链接（BV 号等）触发下载。
+- `ImportSessionDrawer`：手动导入表单（媒体文件 + 弹幕文件 + 后续处理选项）。
+
+#### channel 组件族（`components/channel/`，4 个）
+
+- `BiliQRCodeLoginDialog`：B 站扫码登录对话框。
 - `ChannelIdentifyDialog`：根据输入识别主播并保存。
-- `GlossaryEditor`：可复用术语表编辑器，支持 global/channel 作用域、词条 CRUD、批量操作、Markdown/JSON 导入和 JSON 导出。
-- `ChannelListTable`、`ChannelFormDialog`、`ChannelGlossaryDialog`：保留的旧组件，部分能力已由新版详情页和 `GlossaryEditor` 替代。
+- `GlossaryEditor`：可复用术语表编辑器（global/channel 作用域、CRUD、批量操作、Markdown/JSON 导入、JSON 导出）。
+- `RecapTemplateEditor`：回顾模板编辑器（全局 + per-channel）。
 
-#### layout 组件族
+#### onboarding 组件族（`components/onboarding/`）
 
-- `AppLayout`：全局应用布局，包含侧边导航、工作/配置分组、WebSocket 连接状态、运行中任务数、失败任务数和能力告警入口；挂载后初始化任务与运行时状态，并订阅 WebSocket 任务事件。
+- `OnboardingWizard`：首次启动引导向导。
 
-源码依据：`web/src/components/session/*.vue`、`web/src/components/channel/*.vue`、`web/src/components/layout/AppLayout.vue`
+#### layout 组件族（`components/layout/`）
+
+- `AppLayout`：全局应用布局，含侧边导航、WebSocket 连接状态、运行中任务数、失败任务数和能力告警；挂载 `useAppRefreshCoordinator` 和 `useWebSocket`，初始化任务与运行时状态。
+
+源码依据：`web/src/components/ui/*.vue`、`web/src/components/session/*.vue`、`web/src/components/channel/*.vue`、`web/src/components/onboarding/*.vue`、`web/src/components/layout/AppLayout.vue`
 
 ### 页面视图详解
 
-- `DashboardView`：工作台首页。整合任务、场次、主播、运行时能力和直播状态，提供检查直播、发现回放、手动导入入口；展示能力风险条、6 个指标卡片、运行中任务、待处理场次和最近场次。
-- `SessionsView`：场次列表。组合 `SessionFilterBar`、生命周期指示器、下一步快捷操作、发现结果抽屉和导入抽屉；支持按关键词、主播、来源、生命周期状态过滤，并提供清空失败场次、清空失败任务等批处理入口。
-- `SessionDetailView`：场次详情。顶部 hero 展示标题、状态和主操作；信息条展示主播、来源、时间、文件状态；主体由生命周期时间线、操作面板、产物摘要、任务列表、文件树、回顾预览和元数据标签组成。
-- `ChannelsView`：主播列表。展示主播基础信息、UID/Room、自动化状态、发布状态、术语数量和健康风险；使用 `getChannelRisks` 计算风险标签，支持搜索、风险过滤、启停和进入配置。
-- `LiveView`：直播控制台。按录制中、直播未录制、异常、未开播分组展示启用主播；支持关键词和状态过滤、立即检查全部、开始录制、停止录制，并用 `usePolling` 定期刷新直播和任务状态。
-- `SettingsView`：设置中心。左侧导航分区包括系统能力、API 密钥、全局发布、全局术语；系统能力展示 ASR、回顾、上传、发布可用性、配置摘要和外部工具；API 密钥支持编辑/清除；全局发布编辑默认发布配置；全局术语内嵌 `GlossaryEditor`。
-- `ChannelDetailView`：主播详情和新建页。以标签组织概览、来源与录制、自动化、发布覆盖、术语表；结合直播状态、最近场次、能力状态和 `useChannelHealth` 展示风险；发布覆盖页展示全局默认、主播覆盖、最终生效值。
-- `TasksView`：任务队列。按状态和类型过滤任务，展示主播、场次、类型、状态、进度、消息和操作；支持失败任务重试、运行任务取消、任务删除、清空失败任务。
+视图层（`web/src/views/`）已退化为薄路由壳，数据加载分发、store 编排、动作处理在此，业务 UI 委托给 `features/` 子组件。共 4 个真实视图：
 
-源码依据：`web/src/views/DashboardView.vue`、`web/src/views/SessionsView.vue`、`web/src/views/SessionDetailView.vue`、`web/src/views/ChannelsView.vue`、`web/src/views/LiveView.vue`、`web/src/views/SettingsView.vue`、`web/src/views/ChannelDetailView.vue`、`web/src/views/TasksView.vue`
+- `HomeView`：首页。整合任务、场次、主播、运行时能力和直播状态，提供检查直播、发现回放、手动导入入口；展示能力风险条、运行中任务、待处理场次、最近场次和统计仪表板。业务子组件在 `features/home/`（RunningTasksSection + useElapsedDuration 等）。
+- `StreamersView`：我的主播。主播列表 + 通过 `?id=` 打开详情/编辑抽屉（`features/streamers/` 下 StreamerDrawer + useStreamerDetail）；支持识别、自动化配置、per-channel 回顾模板/术语表、B 站账号关联。
+- `RecapsView`：回顾。场次回顾 + 任务列表，拆「录播/回放」子 tab（`isReplaySource` 隐藏回放类的发布/编辑/删除动作）；组合 `features/recaps/components/`（RecapToolbar/SessionFilters/SessionTableV10/RecapDrawerV10）+ `sessionActions.ts` 动作矩阵；支持发现回放两步式抽屉、单链接下载、手动导入、重新生成回顾。
+- `SettingsView`：设置中心。左侧 sidebar 4 折叠分组：总览（grp-overview，能力总览）、流水线配置（grp-pipeline，dashscope/asr-s3/recap/webdav/publish/archive/template/glossary 共 8 section）、账号与备份（grp-accounts，accounts/admin-token/backup）、高级（grp-advanced，tools）。支持 `?section=` 滚动定位、配置导入 reload、ASR 后端 hint、B 站 QR 登录。
+
+源码依据：`web/src/views/HomeView.vue`、`web/src/views/StreamersView.vue`、`web/src/views/RecapsView.vue`、`web/src/views/SettingsView.vue`
 
 ### API 层设计
 
 - `api/client.ts` 创建共享 Axios 实例，`baseURL` 为空以使用同源请求，超时 30 秒。
 - 响应拦截器统一处理错误：后端错误优先读取 `data.error`，其次读取 `data.reason`，否则使用 HTTP status；无响应时提示网络错误；错误继续 `Promise.reject` 交由调用方保持控制流。
 - 通用方法 `get<T>`、`post<T>`、`put<T>` 返回 `response.data`；`del` 返回 `Promise<void>`（不解析响应体）；`delJson<T>` 返回解析后的 JSON（用于批量删除等需读取响应体的 DELETE 请求）。业务 API 文件不直接暴露 Axios 响应对象。
-- 模块化封装按资源拆分：`channels.ts`、`sessions.ts`、`tasks.ts`、`live.ts`、`health.ts`、`settings.ts`、`glossary.ts`；`types.ts` 集中维护 Channel、Session、Task、LiveStatus、RuntimeStatus、Capabilities、PublishConfig、Glossary、WebSocket 事件等类型。
+- 模块化封装按资源拆分（`web/src/api/` 共 14 个文件）：`channels.ts`、`sessions.ts`、`tasks.ts`、`live.ts`、`health.ts`、`settings.ts`、`glossary.ts`、`bili.ts`、`recap-templates.ts`、`stats.ts`、`client.ts`（共享实例）、`index.ts`（barrel）、`generated.ts`（openapi-typescript 自动生成，契约源）、`types-derived.ts`（从 generated.ts 派生 + 兼容性补齐，集中维护 Channel/Session/Task/LiveStatus/RuntimeStatus/Capabilities/PublishConfig/Glossary/WebSocket 事件等类型）。
 - 批量删除接口统一使用 `delJson<T>` 调用 `DELETE /api/sessions/failed` 和 `DELETE /api/tasks/failed`，走 Axios 拦截器统一错误处理。
 
-源码依据：`web/src/api/client.ts`、`web/src/api/channels.ts`、`web/src/api/sessions.ts`、`web/src/api/tasks.ts`、`web/src/api/live.ts`、`web/src/api/health.ts`、`web/src/api/settings.ts`、`web/src/api/glossary.ts`、`web/src/api/types.ts`
+源码依据：`web/src/api/client.ts`、`web/src/api/channels.ts`、`web/src/api/sessions.ts`、`web/src/api/tasks.ts`、`web/src/api/live.ts`、`web/src/api/health.ts`、`web/src/api/settings.ts`、`web/src/api/glossary.ts`、`web/src/api/bili.ts`、`web/src/api/recap-templates.ts`、`web/src/api/stats.ts`、`web/src/api/generated.ts`、`web/src/api/types-derived.ts`
 
 ### 与后端交互模式
 
 - REST API 是主要交互通道：页面通过 API 模块调用 `/api/channels`、`/api/sessions`、`/api/tasks`、`/api/live`、`/api/health/runtime`、`/api/secrets`、`/api/config/publish`、`/api/glossary` 等后端接口。
 - WebSocket 用于任务实时推送：前端连接同源 `/ws`，后端广播 `task_progress`，前端由 `useWebSocket` 解析并分发，`tasks` store 增量更新任务队列。
-- 轮询用于低频状态刷新：`LiveView` 通过 `usePolling` 定期刷新直播状态和任务列表，避免为直播状态单独引入实时协议。
+- 轮询用于低频状态刷新：`HomeView`/`StreamersView` 通过 `usePolling` 定期刷新直播状态和任务列表，避免为直播状态单独引入实时协议。
 - 能力状态贯穿动作控制：`runtime` store 获取 `Capabilities`，生命周期引擎和页面根据 `asr_submit`、`recap_generate`、`webdav_upload`、`publish_opus` 决定按钮可用性和禁用原因。
 - 嵌入式 SPA 部署：生产环境中 Go 服务同时提供 REST、WebSocket 和静态前端资源；前端使用同源相对路径调用后端，刷新或直接访问前端路由时由服务端静态路由回退到 SPA。
 
@@ -1135,7 +1299,7 @@ Pinia store 采用组合式写法，每个 store 暴露 `ref` 状态、`loading`
 
 ### 覆盖缺口
 
-- 前端当前未配置 Vitest 或端到端测试。
+- 前端已配置 Vitest（@vue/test-utils + happy-dom），共 **26 个测试文件、180 个 it 用例**，覆盖自建 H* 组件库（15 个组件单测含 HCombobox）、Pinia stores（sessions）、utils（format/friendlyStatus/lifecycle）、features（home 的 RunningTasksSection + useElapsedDuration、streamers 的 useStreamerDetail、recaps 的 SessionTableV10 + sessionActions 48 用例、settings 的 TemplateCardV10）；当前无端到端（Playwright/Cypress 等）测试。
 - `cmd/hikami/main.go` 启动编排没有专门测试。
 - 真实外部工具和真实第三方 API 调用主要通过接口抽象和 fake 覆盖，没有端到端联网测试。
 
@@ -1160,7 +1324,7 @@ make tidy
 
 1. 复制并编辑 `config.example.yaml`。
 2. 运行 `./hikami -config config.yaml` 或 `make run`。
-3. 默认监听 `:8080`。
+3. 默认监听 `127.0.0.1:6334`（仅回环；外网/内网访问需改 `web.listen` 并配置 `admin_token`）。
 
 源码依据：`README.md`、`CLAUDE.md`、`cmd/hikami/main.go`
 
@@ -1168,7 +1332,7 @@ make tidy
 
 - Go module：`hikami-go`，Go 版本 1.25.0。
 - 主要 Go 依赖：Gin、gorilla/websocket、Viper、modernc.org/sqlite、robfig/cron。
-- 前端依赖：Vue、Vue Router、Pinia、Element Plus、Axios、marked、mitt、Vite、TypeScript。
+- 前端依赖：Vue、Vue Router、Pinia、Axios、marked、mitt、dompurify、qrcode（devDependencies：Vite、TypeScript、vue-tsc、vitest、`@vue/test-utils`、happy-dom）；UI 组件为自建 H\* 组件库，不使用任何第三方 UI 框架。
 - 硬依赖外部工具：`ffmpeg`、`ffprobe`，启动时不可用会导致 `StartupError`。
 - 可选外部工具：`yt-dlp`、`rclone`、`claude`、`codex`；不可用会降低对应 capability。
 

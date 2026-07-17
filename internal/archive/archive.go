@@ -9,8 +9,8 @@
 // Register 时声明 worker.WithBypassFailState()，worker 据此在 syncSessionState 透传
 // bypass 标志，cmd/hikami 的 FailSessionStateFunc 收到后仅写 last_error，不调
 // Apply(EventTaskFailed)（否则全局 EventTaskFailed 会把 published 降级为 failed，
-// 丢失 UI 已发布入口）。详见 plans/archive/auto-upload-after-publish.md §4.2.1 与
-// plans/archive/pipeline-autopilot-hardening.md §4.3。
+// 丢失 UI 已发布入口）。状态旁路任务的设计详见历史归档设计文档（设计 4.3，
+// 原计划文档已随仓库重建清理）。
 package archive
 
 import (

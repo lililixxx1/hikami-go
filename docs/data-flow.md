@@ -14,7 +14,7 @@
 配置加载 (config.yaml)
   → 日志初始化 (slog, JSON/text)
   → 目录创建 (output_root, raw/, package/, recap/, asr/)
-  → 数据库打开+迁移 (SQLite, v27)
+  → 数据库打开+迁移 (SQLite, 38 个物理迁移元素,业务语义到 v35)
   → 密钥加载 (secrets → 环境变量)
   → 术语表初始化 (数据库 + 旧 glossary_file 自动导入)
   → 回顾模板初始化 (TemplateStore)
@@ -61,7 +61,7 @@ channelStore ─→ sessionStore ─→ stateStore
     → 录制过程中持续写入 raw/ 目录
   → 录制完成
     → normalizeHandler.HandleTask()
-      → 音频标准化 (→ package/audio.wav)
+      → 音频标准化 (→ asr/audio.asr.mp3)
       → 弹幕解析合并 (raw/*.jsonl → package/danmaku.json)
       → 生成元数据 (package/metadata.json)
     → 状态: recording → media_ready
@@ -417,7 +417,7 @@ Gin 路由 (`internal/handler/server.go`)：
 
 ## 8. 数据存储
 
-### SQLite 表结构 (v27)
+### SQLite 表结构 (业务语义 v35)
 
 | 表 | 用途 |
 |----|------|
@@ -441,8 +441,8 @@ Gin 路由 (`internal/handler/server.go`)：
 │       │   ├── live.raw.json       — 录制元数据 (流 URL 脱敏)
 │       │   ├── audio.webm          — 原始音频
 │       │   └── danmaku.jsonl       — 原始弹幕
-│       ├── package/                — 标准化产物
-│       │   ├── audio.wav           — 标准音频
+│       ├── asr/                    — 标准化 + ASR 产物
+│       │   ├── audio.asr.mp3       — 标准音频(供 ASR 提交)
 │       │   ├── transcript.txt      — 转写文本
 │       │   ├── transcript.srt/vtt  — 带时间戳转写
 │       │   ├── segments.json       — ASR 分段数据

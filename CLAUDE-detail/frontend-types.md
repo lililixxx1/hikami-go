@@ -118,7 +118,7 @@ interface ToolStatus {
 | `updatePublishConfig(config)` | 更新全局发布配置 |
 | `getRecapConfig()` | 获取回顾 AI 配置 |
 | `updateRecapConfig(config)` | 更新回顾 AI 配置 |
-| `getRecapModels()` | 获取推荐回顾模型列表（按厂商分组，下拉快捷选项） |
+| `getRecapModels()` | 获取推荐回顾模型列表（2026-07-15 起精简到 DeepSeek 2 个 flash/pro；前端用 `HCombobox` 组件承载，支持手动输入任意模型名 + 下拉快捷选项，clearable 提供清空回路） |
 | `getWebDAVConfig()` | 获取 WebDAV 配置 |
 | `updateWebDAVConfig(config)` | 更新 WebDAV 配置 |
 | `exportConfig()` | 全量配置导出（返回 Blob 附件） |
@@ -129,6 +129,10 @@ interface ToolStatus {
 | 函数 | 说明 |
 |------|------|
 | `getDashboardStats()` | 获取专家模式统计仪表板数据 |
+
+### UI 组件:HCombobox（`components/ui/HCombobox.vue`，2026-07-15 新增）
+
+回顾模型选择原先用 `HSelect`（原生 `<select>`）只能从预设选。`HCombobox` 是 input + 原生 datalist 组合框：可输入任意文本 + 下拉快捷选项，`clearable` 有值时显示清空按钮（emit 空串，用于主播级"留空跟随全局"），渐进增强（旧浏览器/读屏不支持 datalist 时降级为普通 input）。被 `RecapCardV10.vue`（设置页回顾 AI 卡）和 `StreamerDrawer.vue`（主播抽屉回顾模型）使用。
 
 ### sessions.ts
 

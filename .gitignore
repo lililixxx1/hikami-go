@@ -38,8 +38,9 @@ OPUS_DRAFT_EMPTY_CONTENT_INVESTIGATION.md
 WEB_OPTIMIZATION_SUGGESTIONS.md
 直播回顾_*.md
 
-# Agent / review working notes
-plans/
+# Agent / review working notes(plans/archive/ 放行:已落地的历史计划归档)
+plans/*
+!plans/archive/
 reviews/
 
 # MCP / tool caches

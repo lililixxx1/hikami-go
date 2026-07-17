@@ -4,7 +4,7 @@
 > 创建:2026-07-06
 > 修订:2026-07-06(v3,落实 codex 审核 v1 的 6 条 + v2 复审的 2 条必改项,均 APPROVED)
 > 合并来源:
-> - `docs/plan-auto-recap-default-false.md`(已审批未执行,本次落地)
+> - `plan-auto-recap-default-false.md`(已审批未执行,本次落地,同目录 plans/archive/)
 > - `docs/archive/investigations/风控-352-剩余端点加固计划.md`(P0 已落地,P1/P2 本次落地)
 >
 > 本计划是对上述两份文档的**重新审核 + 统一执行版**。审核结论:

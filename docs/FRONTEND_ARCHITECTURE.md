@@ -1,14 +1,14 @@
 # 前端架构
 
 > **本文档是前端架构的权威描述**(当前落地状态)。
-> 日期:2026-06-21
+> 日期:2026-07-17
 
 ---
 
 ## 0. 技术栈
 
 Vue 3 (Composition API, `<script setup>`) + Pinia + vue-router 4 + Vite + TypeScript。
-**V10 自定义组件库**(`web/src/components/ui/`):16 个 H* 组件(HInput/HSelect/HButton/HCheckbox/HSwitch/HDialog/HDrawer/HTable/HCard/HPill/HProgress/HEmpty/HDescriptions/HCollapse/HTextarea/HToast)+ HMessage/HConfirm/HToast 命令式基础设施,`design-tokens.css` 锁定设计 token。已移除 Element Plus(Phase 6)。
+**V10 自定义组件库**(`web/src/components/ui/`):18 个 H* 组件(HInput/HSelect/**HCombobox**/HButton/HCheckbox/HSwitch/HDialog/HDrawer/HTable/HCard/HPill/HProgress/HEmpty/HDescriptions/HCollapse/**HCollapseItem**/HTextarea/HToast)+ ConfirmHost.vue = 19 个 Vue 组件;HMessage/HConfirm/HToast 命令式基础设施(`message.ts`/`HConfirm.ts`);`web/src/styles/design-tokens.css` 锁定设计 token。已移除 Element Plus(Phase 6)。
 axios 单 client(`api/client.ts`)注入 X-Admin-Token,401 自动补登,错误 toast。
 WebSocket 仅 `task_progress`(后端不推 session/live 实时事件)。
 
@@ -28,13 +28,14 @@ web/src/
 │   ├── tasks.ts                 #   handleTaskProgress(WS 增量)+ 未知任务全量兜底
 │   ├── runtime.ts               #   30s 节流 + force=true
 │   └── liveStatus.ts            #   statusMap(后端无 live WS,只能轮询)
-├── composables/                 # 跨域复用 hook
+├── composables/                 # 跨域复用 hook(共 7 个)
 │   ├── useAdminToken.ts         #   X-Admin-Token 本地存储
+│   ├── useAppRefreshCoordinator.ts  # 【核心】刷新 ownership 唯一(§6)
+│   ├── useDiscoverReplay.ts     #   发现回放抽屉可见性 + 执行后刷新
 │   ├── useExpertMode.ts         #   专家开关
 │   ├── usePolling.ts            #   通用轮询(onUnmounted 自动清)
 │   ├── useRecapModels.ts        #   模型下拉分组
-│   ├── useWebSocket.ts          #   WS 连接/心跳/重连(mitt 事件总线转发)
-│   └── useAppRefreshCoordinator.ts  # 【核心】刷新 ownership 唯一(§6)
+│   └── useWebSocket.ts          #   WS 连接/心跳/重连(mitt 事件总线转发)
 ├── features/                    # 按业务领域聚合
 │   ├── recaps/
 │   │   ├── sessionActions.ts    #   UI 动作矩阵(表A 行 / 表B 抽屉;§3)

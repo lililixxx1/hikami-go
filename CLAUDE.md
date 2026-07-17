@@ -49,7 +49,7 @@ discovered --> downloading/recording/importing --> media_ready
 | 定时任务 | robfig/cron/v3 |
 | 外部工具 | ffmpeg, ffprobe, yt-dlp, rclone |
 | AI | DashScope ASR + OpenAI-compatible/Anthropic 回顾生成 |
-| 前端 | Vue 3 + Element Plus + Vite (内嵌 SPA) |
+| 前端 | Vue 3 + Vite (内嵌 SPA)；V10 自建 H* 组件库（19 个），已移除 Element Plus |
 
 ## 模块结构图
 
@@ -125,7 +125,7 @@ graph TD
 
 | 路径 | 职责 | 测试用例 | 文档 |
 |------|------|----------|------|
-| `cmd/hikami` | CLI 入口、服务启动、自动触发链（normalize→asr→recap→publish→archive 的 SetOnSuccess 回调）、归档注入与旁路注册、初始化 | 0 | [CLAUDE.md](./cmd/hikami/CLAUDE.md) |
+| `cmd/hikami` | CLI 入口、服务启动、自动触发链（normalize→asr→recap→publish→archive 的 SetOnSuccess 回调）、归档注入与旁路注册、初始化、Windows 系统托盘（systray tag，shutdownCoordinator sync.Once 幂等关闭 + 桌面模式文件日志 %LOCALAPPDATA%，2026-07-14） | 0 | [CLAUDE.md](./cmd/hikami/CLAUDE.md) |
 | `internal/config` | YAML 配置加载、校验、默认值、DownloaderConfig、ASRS3Config、ArchiveConfig、ToolsConfig（yt-dlp/rclone 路径 web 可编辑）、Effective\* 默认方法、AdminToken/loopback 校验、ApplyOverrides（runtimeconfig 持久化覆盖，含 tools 段） | 34 | [CLAUDE.md](./internal/config/CLAUDE.md) |
 | `internal/db` | SQLite 打开与 schema 迁移 (v35，含 runtime_settings 7 段 CHECK/archived_at/auto_recap/bypass_fail_state)、DB 文件权限 0600 | 9 | [CLAUDE.md](./internal/db/CLAUDE.md) |
 | `internal/fsutil` | 原子文件写入辅助（WriteFileAtomic/WriteJSONAtomic） | 4 | [CLAUDE.md](./internal/fsutil/CLAUDE.md) |
@@ -136,14 +136,14 @@ graph TD
 | `internal/session` | 场次 CRUD、去重、统计（GetStats/GetDashboardStats）、失败重试、local_available/archived_at 标记；CreateLive 同槽冲突返回 ErrAlreadyLive（不再复用/重置） | 40 | [CLAUDE.md](./internal/session/CLAUDE.md) |
 | `internal/state` | 场次聚合状态机与失败恢复、ApplyWithPublishTarget（published 为终态，无 publish_reverted 出口） | 11 | [CLAUDE.md](./internal/state/CLAUDE.md) |
 | `internal/worker` | 任务池、任务存储、Hub 广播、重试取消、Register+WithBypassFailState（状态旁路任务元数据）、任务实例级 BypassFailState（重新生成等非推进型任务失败不降级主状态）、live_record 进程接管回调、recoverRunning 两阶段（running 类型分发 + pending 孤儿重入队解除 scheduler 死锁） | 42 | [CLAUDE.md](./internal/worker/CLAUDE.md) |
-| `internal/handler` | Gin REST API、WebSocket、引导、诊断、配置导出/导入（6 段配置+secrets 事务化持久化到 runtime_settings）、回顾模型列表、DashScope/ASR S3/archive/tools 配置端点、stats/dashboard（单连接查询，已修复自死锁）、recap/regenerate 重新生成端点、glossary JSON 双格式导入、GET /channels/:id、运行时状态代际校验、admin token 认证中间件 | 75 | [CLAUDE.md](./internal/handler/CLAUDE.md) |
+| `internal/handler` | Gin REST API、WebSocket、引导、诊断、配置导出/导入（6 段配置+secrets 事务化持久化到 runtime_settings）、回顾模型列表（2026-07-15 精简到 DeepSeek 2 个，前端 HCombobox 支持手动输入）、DashScope/ASR S3/archive/tools 配置端点、stats/dashboard（单连接查询，已修复自死锁）、recap/regenerate 重新生成端点、glossary JSON 双格式导入、GET /channels/:id、运行时状态代际校验、admin token 认证中间件 | 98 | [CLAUDE.md](./internal/handler/CLAUDE.md) |
 | `internal/discover` | B 站回放发现（两步式预览勾选下载：PreviewAll 预览→Execute 执行；保留一步式 DiscoverAll 作回退；title_prefix 匹配原始标题在 CleanReplayTitle 之前） | 16 | [CLAUDE.md](./internal/discover/CLAUDE.md) |
-| `internal/download` | 回放音频下载（native 单 P/多 P + yt-dlp 双后端，concat list 路径转义）、单链接触发、CookieAccountStore cookie 解析 | 49 | [CLAUDE.md](./internal/download/CLAUDE.md) |
+| `internal/download` | 回放音频下载（native 单 P/多 P + yt-dlp 双后端，concat list 路径转义；2026-07-15 yt-dlp 注入 --ffmpeg-location + 单 P 补弹幕抓取）、单链接触发、CookieAccountStore cookie 解析 | 56 | [CLAUDE.md](./internal/download/CLAUDE.md) |
 | `internal/live_record` | 直播音频与弹幕录制、ffmpeg 进程接管（Adopt）、-352 频道级阶梯冷却（5/10/20m，CheckLive RefreshKeys+Invalidate 重试 + ErrRiskControl352 哨兵 + jitter）、重连按错误类型分支（selectStream→maxReconnect / CDN 瞬时→cdnRetryBudget）、HTTP 412/403/429 风控冷却（ErrHTTPRiskControl）、0 字节僵尸文件检测（ErrZeroByteStalled）+ 不增长检测（ErrRecordingNotGrowing）、probe 失败独立预算重连 | 89 | [CLAUDE.md](./internal/live_record/CLAUDE.md) |
 | `internal/importer` | 手动 multipart 导入 | 15 | [CLAUDE.md](./internal/importer/CLAUDE.md) |
 | `internal/normalize` | 媒体标准化、弹幕解析（JSONL/XML/多 P 合并）、元数据生成 | 68 | [CLAUDE.md](./internal/normalize/CLAUDE.md) |
 | `internal/asr` | DashScope ASR、S3 存储后端、本地临时音频、公网 IP 检测、弹幕校正 | 63 | [CLAUDE.md](./internal/asr/CLAUDE.md) |
-| `internal/recap` | AI 回顾、模板、分段、续写、术语发现、符号化纯文本文章输出（emoji 前缀分行）、署名识别（hasGeneratedNotice 兼容改名过渡期变体）、local_available 守卫、CapabilityChecker 能力 gate、disabledProvider 禁用即禁用、CreateRegenTask（重新生成，覆盖本地 md 不碰 B站，带 BypassFailState） | 100 | [CLAUDE.md](./internal/recap/CLAUDE.md) |
+| `internal/recap` | AI 回顾、模板、分段、续写、术语发现、符号化纯文本文章输出（emoji 前缀分行）、署名识别（hasGeneratedNotice 兼容改名过渡期变体）、术语校正词边界感知替换（replaceTermBoundaryAware，2026-07-16）、ResolvedTemplate snake_case json tag、local_available 守卫、CapabilityChecker 能力 gate、disabledProvider 禁用即禁用、CreateRegenTask（重新生成，覆盖本地 md 不碰 B站，带 BypassFailState） | 105 | [CLAUDE.md](./internal/recap/CLAUDE.md) |
 | `internal/upload` | WebDAV 归档上传（rclone + 原生 WebDAV）、前置产物校验、清理策略+local_available 闭环 | 38 | [CLAUDE.md](./internal/upload/CLAUDE.md) |
 | `internal/publisher` | B 站专栏草稿/发布与 Markdown 转 Opus，含 -352 风控自动处理（buvid 注入 via 共享 BuvidStore + gaia 验证 + WBI 刷新重试）、封面来源解析（recap cover > 配置 cover_url 本地路径自动上传/网络 URL 原样）、local_available 守卫（专栏只能手动去 B站管理，本系统不删不改） | 67 | [CLAUDE.md](./internal/publisher/CLAUDE.md) |
 | `internal/archive` | 发布后 WebDAV 归档（状态旁路任务：从 published 出发，不推进主状态仅写 archived_at），复用 upload.Copier/Deleter，与 upload 互斥 | 13 | [CLAUDE.md](./internal/archive/CLAUDE.md) |
@@ -152,7 +152,7 @@ graph TD
 | `internal/runtimeconfig` | 全局运行时配置覆盖持久化（runtime_settings 表 per-section JSON 7 段含 tools，SaveTx/WithTx 与 secrets 原子写入；启动由 ApplyOverrides 覆盖 config.yaml 基线） | 9 | [CLAUDE.md](./internal/runtimeconfig/CLAUDE.md) |
 | `internal/glossary` | 术语表与 AI 术语发现候选（ImportJSON 双格式：对象/裸数组 fallback，ErrInvalidJSON→400） | 68 | [CLAUDE.md](./internal/glossary/CLAUDE.md) |
 | `internal/notify` | 通知事件与发送器 | 12 | [CLAUDE.md](./internal/notify/CLAUDE.md) |
-| `web` | Vue 3 前端管理界面（V10 自建 H* 组件库移除 Element Plus；features 分域 + composables 收敛 + Vitest 测试 161 例；设置页 4 折叠分组 V10 重写 + 录播/回放子 tab + 两步式发现回放抽屉 + 抽屉内重新生成回顾） | 161 | [CLAUDE.md](./web/CLAUDE.md) |
+| `web` | Vue 3 前端管理界面（V10 自建 H* 组件库 19 个含 HCombobox，移除 Element Plus；features 分域 + composables 收敛 + Vitest 测试 180 例/26 文件；设置页 4 折叠分组 V10 重写 + 录播/回放子 tab + 两步式发现回放抽屉 + 抽屉内重新生成回顾 + 回顾模型 HCombobox 手动输入） | 180 | [CLAUDE.md](./web/CLAUDE.md) |
 
 完整路径、入口文件、测试数量见下方「精简模块索引」表。
 
@@ -165,7 +165,7 @@ graph TD
 | [frontend-types.md](./CLAUDE-detail/frontend-types.md) | TypeScript 类型定义与前端 API 模块说明 |
 | [development.md](./CLAUDE-detail/development.md) | 构建、运行、配置（20 项）、完整编码规范、完整 AI 使用指引（逐模块深度） |
 | [testing.md](./CLAUDE-detail/testing.md) | 测试策略和现有测试覆盖 |
-| [plans/](./plans/) | 活跃设计文档（当前无活跃计划）。已落地计划归档于 [plans/archive/](./plans/archive/)：[archive/auto-upload-after-publish.md](./plans/archive/auto-upload-after-publish.md)（发布后归档「状态旁路任务」全套设计，已落地）、[archive/pipeline-autopilot-hardening.md](./plans/archive/pipeline-autopilot-hardening.md)（自动触发链加固 设计 4.1/4.3/4.5，落地于 `5fadea4`）、[archive/settings-cards-consolidated.md](./plans/archive/settings-cards-consolidated.md)（整合的设置卡片，已落地；吸收了 asr-s3/asr-keys/channel-recap-template 三份子计划）、[archive/source-mode-plan.md](./plans/archive/source-mode-plan.md)、[archive/stats-dashboard-self-deadlock-fix.md](./plans/archive/stats-dashboard-self-deadlock-fix.md)（dashboard 自死锁修复，`a651fec` 已落地） |
+| [plans/](./plans/) | 活跃设计文档（当前无活跃计划）。已落地的历史计划归档于 [plans/archive/](./plans/archive/)（12 份，2026-07-17 自 `docs/plan-*` 迁入）：录播稳定性异常 #10/#11/P2 修复、auto_recap 默认值反转 + -352 风控加固、config + UI 修复、ASR 成本/失败清理/title_prefix 三项 issue、recap 模型手动输入、调查问题修复 2026-07-15、调查问题修复 2026-07-16（TemplateCardV10/术语词边界/ResolvedTemplate json tag） |
 
 > 架构、技术栈、模块结构图、场次状态机、变更记录已并入本文（根 CLAUDE.md），不再单独拆分为 CLAUDE-detail 子文件，以消除拆分维护导致的漂移。
 
@@ -246,6 +246,21 @@ systemctl status hikami      # 状态
 优先运行与改动相关的最小测试；跨模块、迁移、API 或前端类型变更后运行 `make test`，前端变更运行 `cd web && npm run type-check` 或 `make web-build`。
 
 ## 变更记录 (Changelog)
+
+### 2026-07-16 · 术语校正词边界 + ResolvedTemplate json tag + TemplateCardV10 添加变量修复
+
+- **术语校正词边界感知替换**（`0ec038f`）：`glossary_correction.go`/`transcript_correction.go` 两处 `strings.ReplaceAll` 纯子串匹配，含 ASCII 字母数字的 term 嵌在更长单词里时被误替换（AI 嵌 MAIL、277 嵌 123277456）。新增 `replaceTermBoundaryAware`/`hasAlphanumeric`/`isASCIIAlphanumeric`，对含 `[A-Za-z0-9]` 的 term 强制词边界、纯 CJK 回落 ReplaceAll 零回归。位置B 顺带修正 applied 记录准确性。
+- **ResolvedTemplate 补 json tag**（`0ec038f`）：`template.go:57-63` 4 字段无 tag → Go 用 PascalCase 序列化 → 前端按 snake_case 访问得 undefined，主播级模板「跟随全局」预览全空。补 `json:"snake_case"` tag，同步 OpenAPI spec 4 文件 + 重新生成 `generated.ts`。
+- **TemplateCardV10「添加变量」无效**（`09548ab`）：`kvRows` writable computed 读写环 + setter 过早丢弃空 key，点「+ 添加变量」后新行立即被销毁。改为独立 ref + 保存时 flush；`:key` 从数组索引改稳定 id；composable 的 loadData/save/importTemplateFile 返回 `Promise<boolean>`（成功/失败协议，codex BLOCKING）。
+
+### 2026-07-15 · 回顾模型手动输入 + HCombobox + 4 个调查问题修复
+
+- **回顾模型支持手动输入 + HCombobox**（`e17fa9c` + merge `797a8e4`）：回顾模型选择原先用 `HSelect` 只能从预设选。新增 `HCombobox.vue`（input + datalist 组合框，可输入任意模型名 + 下拉快捷选项，clearable 清空回路，渐进增强），H* 组件库 16→19。`RecapCardV10`/`StreamerDrawer` 两处改用 HCombobox。后端 `recommendedRecapModels` 精简到 DeepSeek 2 个（flash + pro），`TestGetRecapModels` 改精确集合+顺序断言。
+- **4 个调查问题修复**（`a1a595d`，codex 计划+执行审核 APPROVED）：① **download yt-dlp `--ffmpeg-location` 注入**：`ytDlpArgs()` 原只处理 `--cookies`，致 yt-dlp 后处理（`-x` 音频提取）找不到 ffmpeg；重写注入 `--ffmpeg-location <dir>` + `ffmpegLocationDir()` helper（裸命令名/空值返回空保持 PATH 回退）。② **download 单 P 弹幕抓取缺失**：`downloadSingleP` 原无弹幕抓取；新增 `singlePCid()`（bvid→view API→Pages[0].CID），成功后调 `fetchDanmakuShared` 写 `raw/danmaku.xml`，失败不阻断。③ **ui RecapDrawerV10 面板 z-index 缺失**：面板 `recap-drawer-panel` class 全前端无 CSS 定义 → 被 z-index:100 遮罩盖住；class 改为 `drawer rtl open recap-drawer-panel` 复用 ui.css fixed+z-index:101。④ **channel B站扫码二维码首次不显示**：真实根因是 `watch(visible)` 缺 `immediate:true`（v-if 挂载、visible 初值即 true，watch 默认只在变化时触发 → startLogin 永不调用）；主修复加 `{ immediate: true }`，补充 `renderQRCode` 加 `await nextTick()`。
+
+### 2026-07-14 · Windows 系统托盘 + 隐藏控制台 + 文件日志
+
+- **Windows 系统托盘**（`ad34a15`）：为 Windows 桌面用户优化，双击 exe 无控制台黑窗、托盘图标可打开管理界面/退出、日志自动落盘。① 新增 `cmd/hikami/tray_windows.go`（`//go:build windows && systray`，基于 `fyne.io/systray`）+ `tray_other.go`（等价占位，build tag 互斥保证全平台可编译）+ `trayicon.go`/`trayicon.ico`（`//go:embed` 图标字节）；② **关闭流程重构为 `shutdownCoordinator`**（sync.Once 幂等）：托盘「退出」/信号都走 `requestShutdown`，关 HTTP 后调 `systray.Quit()` 让 `systray.Run()` 返回、main 继续 defer 链（LIFO），**不调 os.Exit** 保证 defer 执行；③ **桌面模式文件日志**：`initLogFile` 在 Windows+systray 下优先写 `%LOCALAPPDATA%/Hikami-Go/hikami.log`（失败回退 exe 同目录便携模式），其他平台返回 stdout；④ Makefile 新增 `build-windows-desktop`/`-lite` target（`-tags 'embed_ffmpeg,embedded_web,systray'` + `-ldflags='-H windowsgui -s -w'`）；⑤ CI release.yml windows 矩阵新增 `desktop: true` 变体。依赖：`go.mod` 新增 `fyne.io/systray v1.12.2`。
 
 ### 2026-07-13 · 嵌入裁剪版 ffmpeg + Windows exe 闪退修复 + 不再创建空 logs/
 

@@ -435,7 +435,7 @@ flowchart LR
 
 - **位置**: `internal/asr/dashscope.go` `NewConfiguredTranscriber()`
 - **逻辑**: 当环境变量中存在 API Key 且配置了 `ASRTemp.RcloneRemote` 和 `ASRTemp.PublicBaseURL` 时，使用 `DashScopeTranscriber`；否则 fallback 到 `LocalTranscriber`（占位结果）。
-- **模型选择**: 根据配置的模型名自动选择请求格式（`file_url` vs `file_urls`），默认使用 `qwen3-asr-flash-filetrans`。
+- **模型选择**: 根据配置的模型名自动选择请求格式（`file_url` vs `file_urls`），默认使用 `fun-asr`。
 
 ---
 

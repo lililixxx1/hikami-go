@@ -18,7 +18,7 @@
 | `danmaku_analysis.go` | 弹幕分析子函数：多因子评分、突发时刻检测、话题聚类、高权重弹幕 |
 | `segmentation.go` | 话题驱动分段：检测静音间隔和弹幕密度变化，生成分段建议 |
 | `transcript_summarizer.go` | 转写摘要器：长文本压缩为精简摘要+关键引用+话题列表 |
-| `glossary_correction.go` | 最终 Markdown 术语兜底、ensureFinalAddressSection（"致..."章节文末保证） |
+| `glossary_correction.go` | 最终 Markdown 术语兜底、ensureFinalAddressSection（"致..."章节文末保证）、`replaceTermBoundaryAware`/`hasAlphanumeric`（2026-07-16，对含 ASCII 字母数字的 term 强制词边界判断防误替换，纯 CJK 回落 `strings.ReplaceAll`） |
 | `transcript_correction.go` | 回顾前术语校正转写：buildCorrectionRules、correctedTranscriptForPrompt、校正产物写入 |
 | `danmaku.go` | 弹幕分析入口：analyzeDanmaku、rawDanmakuItem 类型、工具函数 |
 | `template.go` | TemplateStore CRUD + Resolve 合并 |

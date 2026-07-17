@@ -170,7 +170,9 @@ type Provider interface {
 
 ## 测试与质量
 
-- `recap_test.go`: 72 个测试用例，覆盖：
+- **测试总数**: 105（`grep -c "^func Test"` 函数口径：recap_test.go 76 + template_test.go 27 + 2 个真实 API 端到端；运行时表驱动展开为 138 用例）
+
+- `recap_test.go`: 76 个测试用例，覆盖：
   - CreateTask: 成功、状态错误、文件缺失、活跃冲突、场次不存在
   - Provider: LocalProvider（正常/空 prompt/system prompt）
   - 辅助函数: firstParagraph、safeName、parseChatCompletionContent、parseAnthropicResult
@@ -186,10 +188,11 @@ type Provider interface {
   - 署名识别: `hasGeneratedNotice` 兼容历史 Hazel 与新 Hikami 署名/变体（改名过渡期 AI 可能吐回旧签名，`TestHasGeneratedNotice`）
   - Handler: NewHandlerNilTemplateStore
 
-- `template_test.go`: 26 个测试用例，覆盖：
+- `template_test.go`: 27 个测试用例，覆盖：
   - TemplateStore CRUD: GetGlobal、GetByChannel、Upsert、Delete、ListGlobal
   - Resolve 合并逻辑: 7 种场景
   - RenderTemplate: 8 种场景
+  - **ResolvedTemplate JSON 键名**（2026-07-16，`TestResolvedTemplateJSONKeys`）：断言 4 字段序列化为 snake_case（`system_prompt`/`user_format`/`fan_name`/`extra_vars`），不再有 PascalCase
 
 - `test_recap_main_test.go`: 1 个端到端集成测试（TestGenerateRecapFromRealData，使用真实 API）
 
