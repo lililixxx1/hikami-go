@@ -96,3 +96,7 @@ config.yaml.bak*
 
 # Codex review reports (codex-review skill 产物,开发过程文件)
 /reviews/
+
+# ZCode agent 工作目录(会话计划/缓存,不应入库)
+.zcode/
+
