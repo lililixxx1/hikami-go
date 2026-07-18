@@ -86,7 +86,8 @@ cd web && npx vitest run                     # 单测
 - **入口/编排**:`cmd/hikami`(main)、`handler`(Gin 路由 + WebSocket)、`runtime`(启动编排 + 能力探测)、`config`、`db`(SQLite)。
 - **生命周期**:`session`(场次状态机)、`state`、`scheduler`(调度)、`worker`(任务执行)、`channel`、`live_record`、`discover`。
 - **业务流水线**:`download` → `asr`(语音转写)→ `recap`(AI 回顾生成)→ `glossary`(术语表)→ `normalize` → `upload` → `publisher`(发布)→ `archive` → `notify`(通知)。
-- **支撑**:`aiprovider`(AI provider 抽象)、`secrets`、`runtimeconfig`(全局运行时配置覆盖持久化,与 secrets 共享事务)、`fsutil`、`importer`、`biliutil`。
+- **支撑**:`aiprovider`(AI provider 抽象)、`secrets`、`runtimeconfig`(全局运行时配置覆盖持久化,与 secrets 共享事务)、`fsutil`、`importer`、`biliutil`、`executil`(跨平台子进程辅助,见下「平台兼容性」)。
+- **平台兼容性 / `executil`**(2026-07-18 新增):桌面模式(`-H windowsgui`)派生 ffmpeg/yt-dlp/rclone/cmd 等控制台子进程时,Windows 会新建控制台窗口闪现。所有 `exec.Cmd` 在 `Start/Run/Output/CombinedOutput` **之前**必须调 `executil.HideWindow(cmd)`(Windows OR 进 `CREATE_NO_WINDOW=0x08000000`,非 Windows no-op)。位置选 `executil` 而非 `runtime`,规避 `runtime/probe.go→asr` 的 import cycle。新增调用点时照此办理。
 
 ### 模块依赖概览(Mermaid)
 
@@ -138,6 +139,7 @@ graph LR
         NOTIFY["notify"]
         BILIUTIL["biliutil"]
         FSUTIL["fsutil"]
+        EXECUTIL["executil<br/>跨平台子进程辅助"]
     end
 
     管道 --> SESSION
@@ -225,6 +227,8 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
 | 各模块深度说明 | 根 `CLAUDE.md` + 各 `internal/<模块>/CLAUDE.md` |
 
 ## 变更记录
+
+- 2026-07-18(四):**`/init-project` 增量核对 — 测试计数口径统一**(无代码改动,纯文档漂移修复)。上次文档同步 = HEAD `b21ab4e`(零新代码提交),本轮核心任务为核对现有文档与代码一致性。**全量逐包核对测试计数**(27 internal 包 `^func Test` 机械统计 vs 根 CLAUDE.md 模块索引表声称值):**26/27 包零偏差**,仅 `handler` 一处口径漂移。**根因**:根索引 `handler` 行用**运行时用例口径**(98,含表驱动子测试展开),全表其余 26 行用**函数口径**(`grep -c "^func Test"`),口径混用——项目早在 2026-06-21 normalize 校正时确立"统一函数口径"惯例(`internal/normalize/CLAUDE.md:127`),handler 是漏网的旧运行时口径。**修复 3 处**:① 根 `CLAUDE.md` 模块索引 `handler` 行 98→**75**(函数口径,对齐全表);② `internal/handler/CLAUDE.md` 测试段 `server_test.go` 条目运行时用例数 92→**98**(实测 `go test -v | rg "=== RUN"`,旧值 92 过时)+ 补注函数口径总数 75(server 59 + config_export 11 + auth 5);③ handler CLAUDE.md 补 07-18 changelog 说明本次口径统一,07-15 历史 changelog 的"运行时口径 75→98"保留为事实记录(不改写历史)。**核实通过(无需改)**:`web.listen` 默认 `127.0.0.1:6334`(`config.go:751`)、vite 代理 `/api`+`/ws` → `127.0.0.1:6334`、executil 模块索引行已存在(132 行)、28 个模块 CLAUDE.md 面包屑齐全、前端 vitest 26 文件/180 测试与索引一致、全量 `go test ./...` 27 包全绿(handler 包 `ok 3.074s`)。**前置**:上次 `/init`(紧接本次之前)已给 AGENTS.md 后端结构段 + Mermaid 图补登 `executil`(静态结构漂移)。**验证**:git diff 3 文件 +6/-3,handler 包测试通过。文档:根 CLAUDE.md + handler CLAUDE.md + 本文件 changelog。
 
 - 2026-07-18(四):**Windows 子进程闪窗 + B 站扫码二维码 修复**(branch `fix/investigations-2026-07-18`,codex 计划审核 APPROVED + 执行审核待补;2 份调查文档 + 合并计划 `plans/plan-investigations-2026-07-18.md`)。**两份调查文档均误标"✅ 已修复",实际仓库未落地**(与 07-15 同款情况:代码停在别处/分支不存在)。**① Issue A 子进程闪窗**(后端):桌面模式(`-H windowsgui`)下派生 ffmpeg/yt-dlp/rclone/cmd 等控制台子进程时黑色窗口闪现——Win32 机制:GUI 子系统父进程无控制台,子进程为控制台程序时 Windows 新建控制台窗口。新增零依赖小包 `internal/executil/`(`exec_windows.go` + `exec_other.go`,build constraint 互斥),helper `HideWindow(cmd)` 仅 OR 进 `CREATE_NO_WINDOW (0x08000000)`,非 Windows no-op;**11 个生产文件 / 18 处调用点**(`cmd/hikami/main.go` openBrowser 三分支共享一处 + normalize/importer/download×5/live_record×3/upload×2/asr×2/discover/recap claude+codex CLI)在 `Start/Run/Output/CombinedOutput` 前加一行。位置选 `executil` 而非 `runtime`:规避 `runtime/probe.go→asr` 的 import cycle 风险(`asr/dashscope.go` 是调用点之一)。与 `cmd.Cancel`(ffmpeg 录制 SIGTERM)正交、与 stdin/stdout pipe 兼容。**② Issue B 扫码二维码**(前端):设置页首次点击必现空白(根因:`AccountsCardV10.vue` 的 `watch(qrSession.url)` 在 `<div v-if="qrSession">` 内 canvas 挂载前同步触发,`!canvasRef.value` 直接 return → 永不画)+ 主播页偶发空白/全黑(根因:canvas HTML width/height 属性未设,默认 300×150,QRCode 库时序敏感,codex Medium 提示此因果链未从库实现完全证明,定位为防御性加固)+ 设置页「刷新状态」按钮被拉成 1505px 长条(flex 容器缺 `align-items: flex-start`)。修复:`BiliQRCodeLoginDialog.vue` canvas 加 `:width="220" :height="220"` + renderQRCode 显式设位图尺寸 + 失败 console.warn;`AccountsCardV10.vue` watch 抽 `renderQRCode`(nextTick + requestAnimationFrame 双等 + 一帧重试)、canvas 加 `:width="200" :height="200"` + CSS 尺寸、flex 容器加 `align-items: flex-start`。**保留 07-15 的 `{ immediate: true }` 不改回 onMounted**(调查文档建议但本计划不采纳,避免无收益回归面)。**测试**:后端 27 包全过、4 种编译目标(windows-desktop/-lite/windows-amd64/linux)全过、go vet/gofmt 通过;前端 vitest 26 文件 180 测试全过、type-check 0 error、build 通过。**codex 计划审核**(路由 pppzzz,`reviews/main--r12.md`):VERDICT APPROVED,0 Critical/0 High/2 Medium(canvas 根因措辞过强 + 静态验收 grep 易误报)/2 Low(文件计数 + ffmpeg 顺序措辞)/1 Suggestion(设置页加一帧重试),全部纳入计划。文档:2 份调查文档订正(状态 + 7 处 API 标注错误:`importer/download×3/dashscope/claude_cli/codex_cli` 的 `Run()` 与 `CombinedOutput()` 混淆)+ 新建 `internal/executil/CLAUDE.md` + 本文件 changelog + 根 CLAUDE.md + web/CLAUDE.md。**待回归**:Windows 实机走一场完整回顾流水线确认零闪窗 + chrome-devtools-mcp 像素级确认二维码黑白像素各半。
 
