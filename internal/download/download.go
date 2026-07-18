@@ -18,6 +18,7 @@ import (
 	"hikami-go/internal/biliutil"
 	"hikami-go/internal/channel"
 	"hikami-go/internal/config"
+	"hikami-go/internal/executil"
 	"hikami-go/internal/fsutil"
 	"hikami-go/internal/normalize"
 	"hikami-go/internal/session"
@@ -121,6 +122,7 @@ func (d YTDLPDownloader) listPlaylist(ctx context.Context, command, sourceURL st
 		sourceURL,
 	)
 	cmd := exec.CommandContext(ctx, command, args...)
+	executil.HideWindow(cmd)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("yt-dlp list playlist failed: %w", err)
@@ -158,6 +160,7 @@ func (d YTDLPDownloader) downloadSingleP(ctx context.Context, command, sourceURL
 		sourceURL,
 	)
 	cmd := exec.CommandContext(ctx, command, args...)
+	executil.HideWindow(cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("yt-dlp download failed: %w: %s", err, string(output))
@@ -225,6 +228,7 @@ func (d YTDLPDownloader) downloadMultiP(ctx context.Context, command, sourceURL,
 			entry.WebpageURL,
 		)
 		cmd := exec.CommandContext(ctx, command, args...)
+		executil.HideWindow(cmd)
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("yt-dlp download part %d failed: %w: %s", entry.Index, err, string(output))
@@ -324,6 +328,7 @@ func probeDuration(ffprobe string, audioPath string) (float64, error) {
 		"-of", "default=noprint_wrappers=1:nokey=1",
 		audioPath,
 	)
+	executil.HideWindow(cmd)
 	output, err := cmd.Output()
 	if err != nil {
 		return 0, fmt.Errorf("ffprobe duration failed: %w", err)
@@ -347,6 +352,7 @@ func concatAudio(ffmpeg string, concatListPath, outputPath string) error {
 		"-c", "copy",
 		outputPath,
 	)
+	executil.HideWindow(cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("ffmpeg concat failed: %w: %s", err, string(output))

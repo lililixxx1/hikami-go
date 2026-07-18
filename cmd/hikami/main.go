@@ -25,6 +25,7 @@ import (
 	"hikami-go/internal/db"
 	"hikami-go/internal/discover"
 	"hikami-go/internal/download"
+	"hikami-go/internal/executil"
 	"hikami-go/internal/glossary"
 	"hikami-go/internal/handler"
 	"hikami-go/internal/importer"
@@ -534,6 +535,7 @@ func openBrowser(logger *slog.Logger, url string) {
 	default:
 		cmd = exec.Command("xdg-open", url)
 	}
+	executil.HideWindow(cmd) // 桌面模式下抑制派生子进程的黑色控制台窗口闪现
 	if err := cmd.Start(); err != nil {
 		logger.Warn("open browser failed", "url", url, "error", err)
 		return

@@ -11,6 +11,7 @@ import (
 
 	"hikami-go/internal/channel"
 	"hikami-go/internal/download"
+	"hikami-go/internal/executil"
 	"hikami-go/internal/session"
 	"hikami-go/internal/worker"
 )
@@ -48,6 +49,7 @@ func (l YTDLPLister) List(ctx context.Context, sourceURL string, cookieFile stri
 	}
 	args = append(args, sourceURL)
 	cmd := exec.CommandContext(ctx, command, args...)
+	executil.HideWindow(cmd)
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {

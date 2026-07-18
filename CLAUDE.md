@@ -129,6 +129,7 @@ graph TD
 | `internal/config` | YAML 配置加载、校验、默认值、DownloaderConfig、ASRS3Config、ArchiveConfig、ToolsConfig（yt-dlp/rclone 路径 web 可编辑）、Effective\* 默认方法、AdminToken/loopback 校验、ApplyOverrides（runtimeconfig 持久化覆盖，含 tools 段） | 34 | [CLAUDE.md](./internal/config/CLAUDE.md) |
 | `internal/db` | SQLite 打开与 schema 迁移 (v35，含 runtime_settings 7 段 CHECK/archived_at/auto_recap/bypass_fail_state)、DB 文件权限 0600 | 9 | [CLAUDE.md](./internal/db/CLAUDE.md) |
 | `internal/fsutil` | 原子文件写入辅助（WriteFileAtomic/WriteJSONAtomic） | 4 | [CLAUDE.md](./internal/fsutil/CLAUDE.md) |
+| `internal/executil` | 子进程窗口隐藏辅助（HideWindow，Windows 桌面模式 `-H windowsgui` 下抑制子进程黑色控制台闪现；非 Windows no-op） | 0 | [CLAUDE.md](./internal/executil/CLAUDE.md) |
 | `internal/aiprovider` | AI Provider 共享返回类型 | 5 | [CLAUDE.md](./internal/aiprovider/CLAUDE.md) |
 | `internal/runtime` | 外部工具探测、FFmpeg 自动解析/下载/嵌入、健康检查、磁盘/Cookie 检查 | 26 | [CLAUDE.md](./internal/runtime/CLAUDE.md) |
 | `internal/biliutil` | B 站 Cookie、登录、WBI、UA、加密工具、视频链接解析、view/playurl/弹幕 XML/seg.so API 客户端、buvid 设备指纹（-352 风控对抗共享层：GetBuvids 24h 缓存 + Invalidate 失效重试 + InjectBuvids replace 注入）、封面下载/回放标题清洗 | 84 | [CLAUDE.md](./internal/biliutil/CLAUDE.md) |
@@ -246,6 +247,16 @@ systemctl status hikami      # 状态
 优先运行与改动相关的最小测试；跨模块、迁移、API 或前端类型变更后运行 `make test`，前端变更运行 `cd web && npm run type-check` 或 `make web-build`。
 
 ## 变更记录 (Changelog)
+
+### 2026-07-18 · Windows 子进程闪窗 + B 站扫码二维码 修复
+
+- **背景**：2 份调查文档（`docs/子进程闪窗问题分析.md`、`docs/扫码二维码问题分析.md`）均误标"✅ 已修复"，实际仓库未落地（与 07-15 同款情况）。合并计划 `plans/plan-investigations-2026-07-18.md`，codex 计划审核 APPROVED（`reviews/main--r12.md`，路由 pppzzz，0 Critical/0 High）。
+- **Issue A 子进程闪窗（后端）**：桌面模式（`-H windowsgui`）下派生控制台子进程（ffmpeg/yt-dlp/rclone/cmd）时黑色窗口闪现（Win32：GUI 子系统父进程无控制台 → 子进程新建控制台）。新增零依赖小包 `internal/executil/`（`HideWindow(cmd)`：Windows OR 进 `CREATE_NO_WINDOW 0x08000000`，非 Windows no-op；build constraint 互斥）。改造 **11 个生产文件 / 18 处调用点**（main.go openBrowser 三分支共享一处 + normalize/importer/download×5/live_record×3/upload×2/asr×2/discover/recap claude+codex CLI）。位置选 `executil` 而非 `runtime`：规避 `runtime/probe.go→asr` 的 import cycle 风险。与 `cmd.Cancel`（ffmpeg SIGTERM）正交、与 pipe 兼容。
+- **Issue B 扫码二维码（前端）**：设置页首次点击必现空白（`AccountsCardV10.vue` 的 `watch(qrSession.url)` 在 `<div v-if="qrSession">` 内 canvas 挂载前同步触发，`!canvasRef.value` → return → 永不画）+ 主播页偶发空白（canvas 默认 300×150 隐患，防御性加固）+ 设置页「刷新状态」按钮被拉成 1505px 长条（flex 缺 `align-items: flex-start`）。修复：两处 canvas 加 `:width/:height` + renderQRCode 显式设位图尺寸；设置页 watch 抽 renderQRCode（nextTick + rAF + 一帧重试）；flex 容器加 `align-items: flex-start`。**保留 07-15 `{ immediate: true }` 不改回 onMounted**（避免无收益回归面）。
+- **测试**：后端 27 包全过、4 种编译目标（windows-desktop/-lite/windows-amd64/linux）全过、go vet/gofmt 通过；前端 vitest 26 文件 180 测试全过、type-check 0 error、build 通过。
+- **codex 计划审核**：路由 pppzzz，VERDICT APPROVED，2 Medium（canvas 根因措辞 + 静态验收 grep）/2 Low（文件计数 + ffmpeg 顺序措辞）/1 Suggestion（一帧重试），全部纳入计划。
+- **文档订正**：2 份调查文档（状态 + 7 处 API 标注错误）+ 新建 `internal/executil/CLAUDE.md` + AGENTS.md changelog + web/CLAUDE.md + 本段。
+- **待回归**：Windows 实机走一场完整回顾流水线确认零闪窗 + chrome-devtools-mcp 像素级确认二维码。
 
 ### 2026-07-17 · 子文件夹文档漂移全面修复 + 计划归档 + vite 端口 bug
 

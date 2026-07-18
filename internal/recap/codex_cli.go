@@ -9,6 +9,7 @@ import (
 
 	"hikami-go/internal/aiprovider"
 	"hikami-go/internal/config"
+	"hikami-go/internal/executil"
 	"hikami-go/internal/session"
 )
 
@@ -37,6 +38,7 @@ func (p *CodexCLIProvider) Generate(ctx context.Context, systemPrompt string, pr
 	fullPrompt := "--- System Instructions ---\n" + systemPrompt + "\n\n--- User Request ---\n" + prompt
 	args := []string{"exec", "--model", recapModelFromContext(ctx, p.cfg.RecapAI.Model), "-"}
 	cmd := exec.CommandContext(ctx, cliPath, args...)
+	executil.HideWindow(cmd)
 	cmd.Stdin = bytes.NewReader([]byte(fullPrompt))
 
 	var stdout, stderr bytes.Buffer

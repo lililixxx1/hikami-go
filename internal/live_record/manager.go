@@ -23,6 +23,7 @@ import (
 	"hikami-go/internal/biliutil"
 	"hikami-go/internal/channel"
 	"hikami-go/internal/config"
+	"hikami-go/internal/executil"
 	"hikami-go/internal/normalize"
 	"hikami-go/internal/notify"
 	"hikami-go/internal/session"
@@ -1333,6 +1334,7 @@ func escapeConcatPath(path string) string {
 
 var runFFmpegConcat = func(ctx context.Context, command string, args ...string) error {
 	cmd := exec.CommandContext(ctx, command, args...)
+	executil.HideWindow(cmd)
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
@@ -1357,6 +1359,7 @@ func (r *FFmpegRecorder) RecordWithProcessStart(ctx context.Context, stream Stre
 	defer response.Body.Close()
 
 	cmd := exec.CommandContext(ctx, command, args...)
+	executil.HideWindow(cmd)
 	cmd.Cancel = func() error {
 		return cmd.Process.Signal(syscall.SIGTERM)
 	}

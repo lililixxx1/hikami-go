@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"hikami-go/internal/config"
+	"hikami-go/internal/executil"
 	"hikami-go/internal/session"
 )
 
@@ -195,6 +196,7 @@ func (t *DashScopeTranscriber) publishAudio(ctx context.Context, audioPath strin
 		command = "rclone"
 	}
 	cmd := exec.CommandContext(ctx, command, "copyto", audioPath, remotePath)
+	executil.HideWindow(cmd)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return "", "", fmt.Errorf("publish asr audio failed: %w: %s", err, string(output))
 	}
@@ -215,7 +217,9 @@ func (t *DashScopeTranscriber) cleanupRemote(ctx context.Context, remotePath str
 	if command == "" {
 		command = "rclone"
 	}
-	_ = exec.CommandContext(ctx, command, "deletefile", remotePath).Run()
+	delCmd := exec.CommandContext(ctx, command, "deletefile", remotePath)
+	executil.HideWindow(delCmd)
+	_ = delCmd.Run()
 }
 
 func (t *DashScopeTranscriber) submit(ctx context.Context, publicURL string, vocabulary map[string]int) (string, map[string]any, error) {

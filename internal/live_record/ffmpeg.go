@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"hikami-go/internal/executil"
 )
 
 type FFmpegRecorder struct {
@@ -36,6 +38,7 @@ func (r *FFmpegRecorder) Record(ctx context.Context, stream StreamInfo, outputPa
 	defer response.Body.Close()
 
 	cmd := exec.CommandContext(ctx, command, args...)
+	executil.HideWindow(cmd) // 桌面模式下抑制派生子进程的黑色控制台窗口闪现（与下方 cmd.Cancel 正交）
 	// 优雅停止：context 取消时发 SIGTERM 而非 SIGKILL，让 ffmpeg 写完容器头
 	cmd.Cancel = func() error {
 		return cmd.Process.Signal(syscall.SIGTERM)

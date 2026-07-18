@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"hikami-go/internal/config"
+	"hikami-go/internal/executil"
 	"hikami-go/internal/session"
 	"hikami-go/internal/state"
 	"hikami-go/internal/worker"
@@ -46,6 +47,7 @@ func (c RcloneCopier) Copy(ctx context.Context, source string, target string) er
 		command = "rclone"
 	}
 	cmd := exec.CommandContext(ctx, command, "copy", source, target)
+	executil.HideWindow(cmd)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("rclone copy failed: %w: %s", err, string(output))
 	}
@@ -58,6 +60,7 @@ func (c RcloneCopier) Delete(ctx context.Context, target string) error {
 		command = "rclone"
 	}
 	cmd := exec.CommandContext(ctx, command, "delete", target)
+	executil.HideWindow(cmd)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("rclone delete failed: %w: %s", err, string(output))
 	}

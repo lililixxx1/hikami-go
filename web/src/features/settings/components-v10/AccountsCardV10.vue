@@ -8,7 +8,7 @@
   L3 视觉验证,无单测。
 -->
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import QRCode from 'qrcode'
 import { HCard, HButton, HPill, HInput, HEmpty } from '@/components/ui'
 import type { BiliCookieAccount, QRCodeSession, QRCodePollResult } from '@/api/types-derived'
@@ -42,12 +42,33 @@ function avatarText(account: BiliCookieAccount): string {
   return String(account.uid).slice(0, 1)
 }
 
-// QR canvas 渲染:session.url 变化时重绘
+// QR canvas 渲染：抽成 renderQRCode，先等 DOM 挂载（QR 区是 v-if="qrSession" 条件渲染）再画。
+// 根因：原 watch 同步触发时 canvas 尚未挂载，canvasRef.value 为 null → 直接 return → 永不画二维码。
+async function renderQRCode(url: string): Promise<void> {
+  // QR 区是 <div v-if="qrSession"> 条件渲染，首次 url 变化时 canvas 尚未挂载。
+  // nextTick 等 Vue 完成 DOM flush（qrSession 变化触发 v-if 挂载），
+  // requestAnimationFrame 等浏览器完成布局/样式计算，两者配合确保 canvasRef 绑定 + CSS 稳定。
+  await nextTick()
+  await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+  if (!canvasRef.value) {
+    // 再等一帧重试一次（应对快速切换/父状态抖动），仍失败再 warn
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+  }
+  if (!canvasRef.value) {
+    console.warn('[AccountsCardV10] canvas 未就绪，跳过二维码渲染')
+    return
+  }
+  // 显式设位图尺寸（HTML width/height 属性），消除默认 300×150 隐患（根因 1，防御性加固）
+  canvasRef.value.width = 200
+  canvasRef.value.height = 200
+  await QRCode.toCanvas(canvasRef.value, url, { width: 200, margin: 1, errorCorrectionLevel: 'M' })
+}
+
 watch(
   () => props.qrSession?.url,
   async (url) => {
-    if (!url || !canvasRef.value) return
-    await QRCode.toCanvas(canvasRef.value, url, { width: 200, margin: 1, errorCorrectionLevel: 'M' })
+    if (!url) return
+    await renderQRCode(url)
   },
 )
 
@@ -116,11 +137,15 @@ function handleSave() {
     <div v-if="qrSession" style="margin-top: 16px; border-top: 1px solid var(--border-light); padding-top: 14px;">
       <div class="form-label" style="margin-bottom: 8px;">扫码登录</div>
       <div style="display: flex; gap: 16px; align-items: flex-start;">
-        <canvas ref="canvasRef" style="border: 1px solid var(--border-light); border-radius: var(--radius-md);" />
+        <canvas
+          ref="canvasRef"
+          :width="200" :height="200"
+          style="border: 1px solid var(--border-light); border-radius: var(--radius-md); width: 200px; height: 200px;"
+        />
         <div style="flex: 1;">
           <div class="form-hint">状态:{{ pollStatusText }}</div>
           <div class="form-hint">剩余有效期:{{ countdown }}</div>
-          <div style="margin-top: 8px; display: flex; flex-direction: column; gap: 8px;">
+          <div style="margin-top: 8px; display: flex; flex-direction: column; align-items: flex-start; gap: 8px;">
             <HButton variant="secondary" size="sm" @click="emit('poll')">刷新状态</HButton>
             <template v-if="pollResult?.status === 'succeeded'">
               <HInput v-model="nickname" placeholder="账号备注名(可选)" />

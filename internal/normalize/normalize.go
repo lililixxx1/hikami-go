@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"hikami-go/internal/config"
+	"hikami-go/internal/executil"
 	"hikami-go/internal/session"
 	"hikami-go/internal/state"
 	"hikami-go/internal/worker"
@@ -48,6 +49,7 @@ func (c FFmpegConverter) Convert(ctx context.Context, inputPath string, outputPa
 		"-f", "mp3",
 		outputPath,
 	)
+	executil.HideWindow(cmd)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("ffmpeg normalize failed: %w: %s", err, string(output))
 	}

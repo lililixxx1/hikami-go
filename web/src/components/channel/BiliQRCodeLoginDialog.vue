@@ -32,7 +32,15 @@ async function renderQRCode(text: string): Promise<void> {
   // immediate watch 在组件挂载极早期触发 startLogin，HDialog 的 v-if 可能还未完成 canvas 挂载。
   // await nextTick 确保 canvasRef 就绪，避免静默 return 导致二维码不显示。
   await nextTick()
-  if (!canvasRef.value) return // nextTick 后仍无 canvas 属异常（组件已卸载），此时放弃
+  if (!canvasRef.value) {
+    // nextTick 后仍无 canvas 属异常（组件已卸载），让放弃可见，避免静默失败
+    console.warn('[BiliQRCode] canvas 未就绪，跳过二维码渲染（组件可能已卸载）')
+    return
+  }
+  // 防御性加固：显式设置位图尺寸，避免默认尺寸（300×150）和早期挂载时序带来的渲染不确定性。
+  // 模板已绑 :width="220" :height="220"，这里再显式设一次作双保险。
+  canvasRef.value.width = 220
+  canvasRef.value.height = 220
   await QRCode.toCanvas(canvasRef.value, text, {
     width: 220,
     margin: 1,
@@ -92,7 +100,7 @@ function selectUsage(value: QRCodeCookieUsage): void {
     <div class="qr-login-body">
       <!-- 状态驱动展示:loading 骨架 / 二维码 / 状态提示 -->
       <div v-if="creating && !session" class="qr-skeleton" />
-      <canvas v-show="session" ref="canvasRef" class="qr-canvas" />
+      <canvas v-show="session" ref="canvasRef" class="qr-canvas" :width="220" :height="220" />
 
       <div class="status-alert" :class="`alert-${state}`">
         {{ statusText }}

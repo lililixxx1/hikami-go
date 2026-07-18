@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"hikami-go/internal/config"
+	"hikami-go/internal/executil"
 	"hikami-go/internal/normalize"
 	"hikami-go/internal/session"
 	"hikami-go/internal/state"
@@ -42,6 +43,7 @@ func (c FFmpegConverter) Convert(ctx context.Context, inputPath string, outputPa
 		"-c:a", "aac",
 		outputPath,
 	)
+	executil.HideWindow(cmd)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("ffmpeg import failed: %w: %s", err, string(output))
 	}
