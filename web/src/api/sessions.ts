@@ -13,6 +13,17 @@ export function previewDiscoverSessions(): Promise<ListResponse<DiscoverResult>>
   return post('/api/sessions/discover/preview')
 }
 
+// previewDiscoverSessionsByURL 是 2026-07-19 解耦改动新增的「按 URL 发现」入口。
+// 用户直接粘贴一个 B 站 URL（收藏夹/合集/UP 主主页），后端调 yt-dlp 列出该 URL 下所有回放，
+// 不依赖主播管理页的 channel 配置。返回的每条带 exists 标记；不选主播时 channel_id = '_unassigned'。
+export function previewDiscoverSessionsByURL(input: {
+  url: string
+  cookie_file?: string
+  title_prefix?: string
+}): Promise<ListResponse<DiscoverResult>> {
+  return post('/api/sessions/discover/preview-by-url', input)
+}
+
 // executeDiscoverSessions 是两步式发现的「第二步执行」：按前端勾选的 entry 列表建场次 + 入队下载。
 // 不重跑 yt-dlp，复用预览阶段已拿到的 entry 信息；CreateDownload 幂等，已存在的不会重复下载。
 export function executeDiscoverSessions(items: DiscoverPickItem[]): Promise<ListResponse<DiscoverResult>> {

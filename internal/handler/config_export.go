@@ -156,7 +156,7 @@ func (s *Server) handleExportConfig(ctx *gin.Context) {
 	}
 
 	// Channels
-	chList, err := s.channels.List(ctx.Request.Context())
+	chList, err := s.channels.ListVisible(ctx.Request.Context())
 	if err != nil {
 		writeError(ctx, err)
 		return

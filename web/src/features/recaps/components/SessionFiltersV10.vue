@@ -9,6 +9,9 @@ const props = defineProps<{
   statusFilter: string
   channelFilter: string
   channels: Channel[]
+  /** 当前 tab:'live'(录播) | 'replay'(回放)。replay tab 隐藏主播筛选下拉
+   * (2026-07-19:回放类不再绑真实主播,可挂 _unassigned「未分类」)。 */
+  activeTab?: 'live' | 'replay'
 }>()
 
 const emit = defineEmits<{
@@ -26,10 +29,14 @@ const statusOptions = computed(() => [
   { label: '失败', value: 'failed' },
 ])
 
+// 主播筛选下拉选项(2026-07-19:只在 'live' tab 显示;replay tab 隐藏)
 const channelOptions = computed(() => [
   { label: '全部主播', value: '' },
   ...props.channels.map((c) => ({ label: c.name, value: c.id })),
 ])
+
+// 是否显示主播筛选下拉(只有录播 tab 才有意义)
+const showChannelFilter = computed(() => props.activeTab !== 'replay')
 </script>
 
 <template>
@@ -45,6 +52,7 @@ const channelOptions = computed(() => [
       @update:model-value="emit('update:statusFilter', String($event))"
     />
     <HSelect
+      v-if="showChannelFilter"
       :model-value="channelFilter"
       :options="channelOptions"
       @update:model-value="emit('update:channelFilter', String($event))"

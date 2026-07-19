@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -2250,5 +2252,170 @@ func TestUpdateASRS3ConfigEnvClearedToDefaultMigratesSecret(t *testing.T) {
 	}
 	if v := os.Getenv("CUSTOM_S3_KEY"); v != "" {
 		t.Fatalf("CUSTOM_S3_KEY = %q, want empty (no orphan)", v)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 解耦改动测试 (2026-07-19): 下载/导入空 channel_id 兜底 + preview-by-url 新端点
+// ---------------------------------------------------------------------------
+
+// TestDownloadByURLNoChannelFallsBackToUnassigned:
+// 回放页「下载」抽屉不选主播时,后端应自动挂到系统占位 channel _unassigned。
+// 不再返回 400「channel_id is required」(2026-07-19 解耦)。
+func TestDownloadByURLNoChannelFallsBackToUnassigned(t *testing.T) {
+	server := newTestServer(t)
+	// 配置 replay_download 能力为 true(handler 在 download-by-url 入口检查此能力)
+	server.setRuntimeStatus(&runtime.Status{Capabilities: runtime.Capabilities{ReplayDownload: true}})
+	// 关键:测试 DB 必须先有占位 channel,否则 FK 约束失败(Handler 兜底填 _unassigned 但 DB 里没记录)
+	if err := server.channels.EnsureUnassigned(context.Background()); err != nil {
+		t.Fatalf("ensure unassigned: %v", err)
+	}
+
+	body := strings.NewReader(`{"url":"https://www.bilibili.com/video/BV1xx"}"`)
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/download-by-url", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var task worker.Task
+	if err := json.Unmarshal(rec.Body.Bytes(), &task); err != nil {
+		t.Fatalf("unmarshal task: %v", err)
+	}
+	if task.ChannelID != channel.UnassignedID {
+		t.Errorf("task.ChannelID = %q, want %q (空 channel_id 应兜底到占位)", task.ChannelID, channel.UnassignedID)
+	}
+}
+
+// TestImportSessionNoChannelFallsBackToUnassigned:
+// 回放页「导入」抽屉不选主播时,后端应自动挂到系统占位 channel _unassigned。
+// 仅 title 必填(原行为:channel_id+title 都必填,现在 channel_id 可空)。
+func TestImportSessionNoChannelFallsBackToUnassigned(t *testing.T) {
+	server := newTestServer(t)
+	// 关键:测试 DB 必须先有占位 channel,否则 FK 约束失败(Handler 兜底填 _unassigned 但 DB 里没记录)
+	if err := server.channels.EnsureUnassigned(context.Background()); err != nil {
+		t.Fatalf("ensure unassigned: %v", err)
+	}
+
+	// multipart:不传 channel_id,只传 title + media_file(1 字节文件)
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	_ = writer.WriteField("title", "未分类测试")
+	part, _ := writer.CreateFormFile("media_file", "test.m4a")
+	_, _ = part.Write([]byte("x"))
+	writer.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/import", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rec := httptest.NewRecorder()
+	server.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var task worker.Task
+	if err := json.Unmarshal(rec.Body.Bytes(), &task); err != nil {
+		t.Fatalf("unmarshal task: %v", err)
+	}
+	if task.ChannelID != channel.UnassignedID {
+		t.Errorf("task.ChannelID = %q, want %q (不选主播应兜底到占位)", task.ChannelID, channel.UnassignedID)
+	}
+}
+
+// TestImportSessionStillRejectsEmptyTitle:
+// 解耦改动只放开 channel_id,title 仍必填。
+func TestImportSessionStillRejectsEmptyTitle(t *testing.T) {
+	server := newTestServer(t)
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	_ = writer.WriteField("channel_id", "") // 不选主播
+	// 不传 title
+	part, _ := writer.CreateFormFile("media_file", "test.m4a")
+	_, _ = part.Write([]byte("x"))
+	writer.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/import", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rec := httptest.NewRecorder()
+	server.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (title 仍必填), body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "title is required") {
+		t.Errorf("body = %s, want contains 'title is required'", rec.Body.String())
+	}
+}
+
+// TestDiscoverPreviewByURL:
+// 新端点 POST /api/sessions/discover/preview-by-url 接受 JSON body {url, cookie_file?, title_prefix?},
+// 返回 200 + {items: [DiscoverResult]},ChannelID 默认占位 _unassigned。
+func TestDiscoverPreviewByURL(t *testing.T) {
+	server := newTestServer(t)
+
+	// 1. 缺 url → 400
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/discover/preview-by-url",
+		strings.NewReader(`{"cookie_file":""}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	server.Router().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("[empty url] status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	}
+
+	// 2. 正常请求 → 200 + items(fakeLister 返回 BV1)
+	req = httptest.NewRequest(http.MethodPost, "/api/sessions/discover/preview-by-url",
+		strings.NewReader(`{"url":"https://space.bilibili.com/1/lists/1","title_prefix":"【直播回放】"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	server.Router().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("[normal] status = %d, want 200, body = %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Items []discover.Result `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].SourceID != "BV1" {
+		t.Fatalf("items = %+v, want only BV1 (fakeLister + title_prefix 匹配)", resp.Items)
+	}
+	if resp.Items[0].ChannelID != channel.UnassignedID {
+		t.Errorf("items[0].ChannelID = %q, want %q (默认占位)", resp.Items[0].ChannelID, channel.UnassignedID)
+	}
+}
+
+// TestListChannelsExcludesUnassigned:
+// 主播管理页 GET /api/channels 不应返回占位 _unassigned(三重保险的第三重,避免误删/误改)。
+func TestListChannelsExcludesUnassigned(t *testing.T) {
+	server := newTestServer(t)
+	// 先 ensure 占位存在(handler 路径走 _unassigned 时 Get 才能找到)
+	if err := server.channels.EnsureUnassigned(context.Background()); err != nil {
+		t.Fatalf("ensure unassigned: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/channels", nil)
+	rec := httptest.NewRecorder()
+	server.Router().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var resp struct {
+		Items []channel.Channel `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, c := range resp.Items {
+		if c.ID == channel.UnassignedID {
+			t.Errorf("GET /api/channels 返回了占位 channel _unassigned: %+v", c)
+		}
 	}
 }

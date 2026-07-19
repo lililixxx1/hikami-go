@@ -134,7 +134,7 @@ func NewManager(channels *channel.Store, sessions *session.Store, workers *worke
 }
 
 func (m *Manager) DiscoverAll(ctx context.Context) ([]Result, error) {
-	channels, err := m.channels.List(ctx)
+	channels, err := m.channels.ListVisible(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +168,7 @@ func (m *Manager) DiscoverAll(ctx context.Context) ([]Result, error) {
 // 一次性下载超出配额的回放——codex 审核 P1）。
 // 供两步式发现的「第一步预览」使用。
 func (m *Manager) PreviewAll(ctx context.Context) ([]Result, error) {
-	channels, err := m.channels.List(ctx)
+	channels, err := m.channels.ListVisible(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -433,24 +433,58 @@ func (m *Manager) DiscoverChannel(ctx context.Context, item channel.Channel) ([]
 }
 
 // PreviewChannel lists discovered replays for a channel without creating sessions.
-func (m *Manager) PreviewChannel(ctx context.Context, item channel.Channel) ([]Result, error) {
-	entries, err := m.lister.List(ctx, item.ReplaySourceURL, item.DownloadCookieFile)
+// PreviewInput 是不绑定主播表的预览入参(2026-07-19 解耦改动)。
+// 用于回顾管理·回放页「发现回放」的独立 URL 入口——用户直接粘贴 B 站收藏夹/合集/UP 主主页 URL,
+// 不再依赖主播管理页的 channel 配置。
+type PreviewInput struct {
+	SourceURL   string // yt-dlp 输入 URL(B 站收藏夹/合集/UP 主主页)
+	CookieFile  string // 可选 cookie 文件路径(语义同 channel.DownloadCookieFile)
+	TitlePrefix string // 可选标题前缀过滤(逗号分隔,语义同 channel.TitlePrefix)
+	ChannelID   string // 可选;空串时填 channel.UnassignedID。用于 annotateExists 去重键与 Result.ChannelID
+}
+
+// Preview 不绑定 channel 表的预览(2026-07-19)。
+//
+// 与 PreviewChannel 的区别:无需频道实体,SourceURL/CookieFile/TitlePrefix 直接由调用方提供;
+// ChannelID 为空时填 channel.UnassignedID。
+// 内部:**自动调 annotateExists 标注 Exists 字段**(handler 不需要单独调),便于前端区分「新」「已处理」。
+func (m *Manager) Preview(ctx context.Context, in PreviewInput) ([]Result, error) {
+	if strings.TrimSpace(in.ChannelID) == "" {
+		in.ChannelID = channel.UnassignedID
+	}
+	results, err := m.previewCore(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	// 标注 exists(codex r13b SUGGESTION:Preview 内部调,不暴露 annotate)。
+	// 标注失败不致命(前端最多把已处理项误判为新),降级返回不带标记的结果。
+	if err := annotateExists(ctx, m.sessions, results); err != nil {
+		slog.Warn("discover preview: annotate exists failed", "error", err)
+	}
+	return results, nil
+}
+
+// previewCore 是 PreviewChannel/Preview 共享的核心预览逻辑(不标注 exists)。
+// 调用方负责后续的 annotateExists(PreviewAll 外层批量标注一次,Preview 内部标注一次,
+// 避免双重标注——codex r13b MEDIUM #3)。
+func (m *Manager) previewCore(ctx context.Context, in PreviewInput) ([]Result, error) {
+	entries, err := m.lister.List(ctx, in.SourceURL, in.CookieFile)
 	if err != nil {
 		return nil, err
 	}
 
 	results := make([]Result, 0, len(entries))
-	titlePrefix := strings.TrimSpace(item.TitlePrefix)
+	titlePrefix := strings.TrimSpace(in.TitlePrefix)
 	for _, entry := range entries {
-		// title_prefix 匹配用原始标题（同 DiscoverChannel 逻辑，详见其注释）。
+		// title_prefix 匹配用原始标题(同 DiscoverChannel 逻辑,详见其注释)。
 		if titlePrefix != "" && strings.TrimSpace(entry.Title) != "" && !matchAnyPrefix(entry.Title, titlePrefix) {
-			slog.Info("discover preview skipped replay", "channel_id", item.ID, "source_id", entry.ID, "reason", "title_prefix_mismatch", "title", entry.Title, "title_prefix", titlePrefix)
+			slog.Info("discover preview skipped replay", "channel_id", in.ChannelID, "source_id", entry.ID, "reason", "title_prefix_mismatch", "title", entry.Title, "title_prefix", titlePrefix)
 			continue
 		}
-		title := m.resolveTitle(ctx, item.ID, entry.ID, entry.Title)
-		slog.Info("discover preview accepted replay", "channel_id", item.ID, "source_id", entry.ID, "title", title)
+		title := m.resolveTitle(ctx, in.ChannelID, entry.ID, entry.Title)
+		slog.Info("discover preview accepted replay", "channel_id", in.ChannelID, "source_id", entry.ID, "title", title)
 		results = append(results, Result{
-			ChannelID: item.ID,
+			ChannelID: in.ChannelID,
 			SourceID:  entry.ID,
 			Title:     title,
 			SourceURL: entryURL(entry),
@@ -460,6 +494,18 @@ func (m *Manager) PreviewChannel(ctx context.Context, item channel.Channel) ([]R
 		return []Result{}, nil
 	}
 	return results, nil
+}
+
+// PreviewChannel lists discovered replays for a channel without creating sessions.
+// 2026-07-19 重构:转发到 previewCore(不标注 exists),保持向后兼容。
+// PreviewAll 在外层对聚合的所有频道结果做一次批量 annotateExists,避免每频道重复标注。
+func (m *Manager) PreviewChannel(ctx context.Context, item channel.Channel) ([]Result, error) {
+	return m.previewCore(ctx, PreviewInput{
+		SourceURL:   item.ReplaySourceURL,
+		CookieFile:  item.DownloadCookieFile,
+		TitlePrefix: item.TitlePrefix,
+		ChannelID:   item.ID,
+	})
 }
 
 func normalizeEntry(entry Entry) Entry {

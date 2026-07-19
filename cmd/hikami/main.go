@@ -203,6 +203,11 @@ func main() {
 		logger.Error("bootstrap channels failed", "error", err)
 		os.Exit(1)
 	}
+	// 2026-07-19 解耦:确保占位 channel _unassigned 存在(回放页下载/导入不选主播时的兜底)。
+	// 幂等:已存在则 INSERT OR IGNORE 跳过。失败不致命(继续启动;handler 用到时自然报错可见)。
+	if err := channelStore.EnsureUnassigned(context.Background()); err != nil {
+		logger.Warn("ensure unassigned channel failed", "error", err)
+	}
 
 	taskStore := worker.NewStore(database)
 	taskHub := worker.NewHub()

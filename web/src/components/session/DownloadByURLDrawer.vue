@@ -35,13 +35,15 @@ const drawerVisible = computed({
 const replayAvailable = computed(() => Boolean(runtimeStore.status?.capabilities.replay_download))
 const replayReason = computed(() => runtimeStore.status?.capabilities.reason || 'yt-dlp 不可用')
 
-const channelOptions = computed(() =>
-  channelsStore.items.map((c) => ({ label: c.name, value: c.id })),
-)
+const channelOptions = computed(() => [
+  // 2026-07-19 解耦:主播可选。第一项 value='' 表示「不选」(后端挂到 _unassigned「未分类」)。
+  { label: '(不选) 归入未分类', value: '' },
+  ...channelsStore.items.map((c) => ({ label: c.name, value: c.id })),
+])
 
 function validate(): boolean {
   const e: { channel_id?: string; url?: string } = {}
-  if (!form.value.channel_id) e.channel_id = '请选择主播'
+  // 2026-07-19 解耦:主播字段改为可选(不选则后端挂到系统占位 channel _unassigned,即「未分类」)。
   if (!form.value.url.trim()) e.url = '请输入视频链接'
   errors.value = e
   return Object.keys(e).length === 0
@@ -93,7 +95,10 @@ onMounted(() => {
   >
     <div class="download-drawer">
       <section class="form-section">
-        <label class="field-label">主播 <span v-if="errors.channel_id" class="field-error">{{ errors.channel_id }}</span></label>
+        <label class="field-label">
+          主播 <span class="field-optional">(可选)</span>
+          <span v-if="errors.channel_id" class="field-error">{{ errors.channel_id }}</span>
+        </label>
         <HSelect v-model="form.channel_id" :options="channelOptions" />
       </section>
 
@@ -176,6 +181,12 @@ onMounted(() => {
   color: var(--danger, #e03e2d);
   font-weight: 400;
   margin-left: 6px;
+}
+
+.field-optional {
+  color: var(--text-muted, var(--text-secondary));
+  font-weight: 400;
+  font-size: 12px;
 }
 
 .process-line,

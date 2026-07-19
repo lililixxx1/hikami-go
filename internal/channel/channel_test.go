@@ -1301,3 +1301,125 @@ func TestUpdateWritesLocalTimezoneUpdatedAt(t *testing.T) {
 	}
 	mustBeLocalRFC3339(t, updated.UpdatedAt)
 }
+
+// ---------------------------------------------------------------------------
+// Unassigned + ListVisible tests (2026-07-19 解耦改动)
+// ---------------------------------------------------------------------------
+
+// TestEnsureUnassignedInsert: 首次调用插入占位 channel,字段齐全(uid=0, source_mode=live_only, max_continuations=-1)。
+func TestEnsureUnassignedInsert(t *testing.T) {
+	store := NewStore(setupDB(t))
+	ctx := context.Background()
+
+	if err := store.EnsureUnassigned(ctx); err != nil {
+		t.Fatalf("ensure unassigned: %v", err)
+	}
+
+	ch, err := store.Get(ctx, UnassignedID)
+	if err != nil {
+		t.Fatalf("get unassigned after ensure: %v", err)
+	}
+	if ch.ID != UnassignedID {
+		t.Errorf("ID = %q, want %q", ch.ID, UnassignedID)
+	}
+	if ch.Name != "未分类" {
+		t.Errorf("Name = %q, want 未分类", ch.Name)
+	}
+	if ch.UID != 0 {
+		t.Errorf("UID = %d, want 0", ch.UID)
+	}
+	if ch.Enabled {
+		t.Errorf("Enabled = true, want false (防止被 scheduler discover 遍历)")
+	}
+	if ch.SourceMode != "live_only" {
+		t.Errorf("SourceMode = %q, want live_only (第二重保险)", ch.SourceMode)
+	}
+	if ch.MaxContinuations != -1 {
+		t.Errorf("MaxContinuations = %d, want -1 (哨兵值表示用全局配置,codex r13b MEDIUM #1)", ch.MaxContinuations)
+	}
+}
+
+// TestEnsureUnassignedIdempotent: 重复调用不报错也不创建第二条(INSERT OR IGNORE)。
+func TestEnsureUnassignedIdempotent(t *testing.T) {
+	store := NewStore(setupDB(t))
+	ctx := context.Background()
+
+	if err := store.EnsureUnassigned(ctx); err != nil {
+		t.Fatalf("first ensure: %v", err)
+	}
+	if err := store.EnsureUnassigned(ctx); err != nil {
+		t.Fatalf("second ensure: %v", err)
+	}
+	if err := store.EnsureUnassigned(ctx); err != nil {
+		t.Fatalf("third ensure: %v", err)
+	}
+
+	// 确认只有一条 _unassigned
+	channels, err := store.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	count := 0
+	for _, c := range channels {
+		if c.ID == UnassignedID {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("found %d _unassigned records, want 1 (幂等性失败)", count)
+	}
+}
+
+// TestListVisibleExcludesUnassigned: ListVisible 不返回占位 channel,List 仍返回全部。
+func TestListVisibleExcludesUnassigned(t *testing.T) {
+	store := NewStore(setupDB(t))
+	ctx := context.Background()
+
+	// 先加一个真实频道,再加占位
+	if _, err := store.Create(ctx, UpsertInput{ID: "real_1", Name: "RealStreamer", UID: 100, Enabled: true}); err != nil {
+		t.Fatalf("create real: %v", err)
+	}
+	if err := store.EnsureUnassigned(ctx); err != nil {
+		t.Fatalf("ensure unassigned: %v", err)
+	}
+
+	// List(原方法)返回全部 2 条(含占位)
+	all, err := store.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("List len = %d, want 2 (含占位)", len(all))
+	}
+
+	// ListVisible 返回 1 条(过滤占位)
+	visible, err := store.ListVisible(ctx)
+	if err != nil {
+		t.Fatalf("list visible: %v", err)
+	}
+	if len(visible) != 1 {
+		t.Fatalf("ListVisible len = %d, want 1 (不含占位)", len(visible))
+	}
+	if visible[0].ID != "real_1" {
+		t.Errorf("visible[0].ID = %q, want real_1", visible[0].ID)
+	}
+}
+
+// TestListVisibleEmptyAfterEnsureUnassigned: 单独调了 EnsureUnassigned,ListVisible 仍为空(占位被过滤)。
+// 这保证主播管理页在没有任何真实频道时仍显示「请添加主播」而非一条 _unassigned。
+func TestListVisibleEmptyAfterEnsureUnassigned(t *testing.T) {
+	store := NewStore(setupDB(t))
+	ctx := context.Background()
+
+	if err := store.EnsureUnassigned(ctx); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+
+	visible, err := store.ListVisible(ctx)
+	if err != nil {
+		t.Fatalf("list visible: %v", err)
+	}
+	if len(visible) != 0 {
+		t.Fatalf("ListVisible len = %d, want 0(占位应被过滤,用户应看到空列表)", len(visible))
+	}
+}

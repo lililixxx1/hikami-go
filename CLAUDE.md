@@ -126,19 +126,19 @@ graph TD
 | 路径 | 职责 | 测试用例 | 文档 |
 |------|------|----------|------|
 | `cmd/hikami` | CLI 入口、服务启动、自动触发链（normalize→asr→recap→publish→archive 的 SetOnSuccess 回调）、归档注入与旁路注册、初始化、Windows 系统托盘（systray tag，shutdownCoordinator sync.Once 幂等关闭 + 桌面模式文件日志 %LOCALAPPDATA%，2026-07-14） | 0 | [CLAUDE.md](./cmd/hikami/CLAUDE.md) |
-| `internal/config` | YAML 配置加载、校验、默认值、DownloaderConfig、ASRS3Config、ArchiveConfig、ToolsConfig（yt-dlp/rclone 路径 web 可编辑）、Effective\* 默认方法、AdminToken/loopback 校验、ApplyOverrides（runtimeconfig 持久化覆盖，含 tools 段） | 34 | [CLAUDE.md](./internal/config/CLAUDE.md) |
+| `internal/config` | YAML 配置加载、校验、默认值、DownloaderConfig、ASRS3Config、ArchiveConfig、ToolsConfig（yt-dlp/rclone 路径 web 可编辑）、Effective\* 默认方法、AdminToken/loopback 校验、ApplyOverrides（runtimeconfig 持久化覆盖，含 tools 段）。2026-07-19:`cron.discovery` 默认值 `@every 20m`→`""`(禁用,回放页发现回放改为独立 URL 入口,scheduler 不再自动遍历主播表下载;旧 config.yaml 显式配置维持不变) | 34 | [CLAUDE.md](./internal/config/CLAUDE.md) |
 | `internal/db` | SQLite 打开与 schema 迁移 (v35，含 runtime_settings 7 段 CHECK/archived_at/auto_recap/bypass_fail_state)、DB 文件权限 0600 | 9 | [CLAUDE.md](./internal/db/CLAUDE.md) |
 | `internal/fsutil` | 原子文件写入辅助（WriteFileAtomic/WriteJSONAtomic） | 4 | [CLAUDE.md](./internal/fsutil/CLAUDE.md) |
 | `internal/executil` | 子进程窗口隐藏辅助（HideWindow，Windows 桌面模式 `-H windowsgui` 下抑制子进程黑色控制台闪现；非 Windows no-op） | 0 | [CLAUDE.md](./internal/executil/CLAUDE.md) |
 | `internal/aiprovider` | AI Provider 共享返回类型 | 5 | [CLAUDE.md](./internal/aiprovider/CLAUDE.md) |
 | `internal/runtime` | 外部工具探测、FFmpeg 自动解析/下载/嵌入、健康检查、磁盘/Cookie 检查 | 26 | [CLAUDE.md](./internal/runtime/CLAUDE.md) |
 | `internal/biliutil` | B 站 Cookie、登录、WBI、UA、加密工具、视频链接解析、view/playurl/弹幕 XML/seg.so API 客户端、buvid 设备指纹（-352 风控对抗共享层：GetBuvids 24h 缓存 + Invalidate 失效重试 + InjectBuvids replace 注入）、封面下载/回放标题清洗 | 84 | [CLAUDE.md](./internal/biliutil/CLAUDE.md) |
-| `internal/channel` | 主播 CRUD、识别（-352 风控对抗：buvid 注入 + WBI 签名）、自动化配置（auto_record/auto_asr/auto_publish/auto_recap 三态）、per-channel 发布配置 | 62 | [CLAUDE.md](./internal/channel/CLAUDE.md) |
+| `internal/channel` | 主播 CRUD、识别（-352 风控对抗：buvid 注入 + WBI 签名）、自动化配置（auto_record/auto_asr/auto_publish/auto_recap 三态）、per-channel 发布配置。2026-07-19:`UnassignedID` 占位 channel + `EnsureUnassigned` 启动幂等 + `ListVisible` 过滤占位(回放页下载/导入不选主播时的兜底) | 66 | [CLAUDE.md](./internal/channel/CLAUDE.md) |
 | `internal/session` | 场次 CRUD、去重、统计（GetStats/GetDashboardStats）、失败重试、local_available/archived_at 标记；CreateLive 同槽冲突返回 ErrAlreadyLive（不再复用/重置） | 40 | [CLAUDE.md](./internal/session/CLAUDE.md) |
 | `internal/state` | 场次聚合状态机与失败恢复、ApplyWithPublishTarget（published 为终态，无 publish_reverted 出口） | 11 | [CLAUDE.md](./internal/state/CLAUDE.md) |
 | `internal/worker` | 任务池、任务存储、Hub 广播、重试取消、Register+WithBypassFailState（状态旁路任务元数据）、任务实例级 BypassFailState（重新生成等非推进型任务失败不降级主状态）、live_record 进程接管回调、recoverRunning 两阶段（running 类型分发 + pending 孤儿重入队解除 scheduler 死锁） | 42 | [CLAUDE.md](./internal/worker/CLAUDE.md) |
-| `internal/handler` | Gin REST API、WebSocket、引导、诊断、配置导出/导入（6 段配置+secrets 事务化持久化到 runtime_settings）、回顾模型列表（2026-07-15 精简到 DeepSeek 2 个，前端 HCombobox 支持手动输入）、DashScope/ASR S3/archive/tools 配置端点、stats/dashboard（单连接查询，已修复自死锁）、recap/regenerate 重新生成端点、glossary JSON 双格式导入、GET /channels/:id、运行时状态代际校验、admin token 认证中间件 | 75 | [CLAUDE.md](./internal/handler/CLAUDE.md) |
-| `internal/discover` | B 站回放发现（两步式预览勾选下载：PreviewAll 预览→Execute 执行；保留一步式 DiscoverAll 作回退；title_prefix 匹配原始标题在 CleanReplayTitle 之前） | 16 | [CLAUDE.md](./internal/discover/CLAUDE.md) |
+| `internal/handler` | Gin REST API、WebSocket、引导、诊断、配置导出/导入（6 段配置+secrets 事务化持久化到 runtime_settings）、回顾模型列表（2026-07-15 精简到 DeepSeek 2 个，前端 HCombobox 支持手动输入）、DashScope/ASR S3/archive/tools 配置端点、stats/dashboard（单连接查询，已修复自死锁）、recap/regenerate 重新生成端点、glossary JSON 双格式导入、GET /channels/:id、运行时状态代际校验、admin token 认证中间件。2026-07-19:下载/导入空 channel_id 兜底 _unassigned + 新端点 POST /api/sessions/discover/preview-by-url(回放页 URL 驱动发现,解耦主播管理) | 80 | [CLAUDE.md](./internal/handler/CLAUDE.md) |
+| `internal/discover` | B 站回放发现（两步式预览勾选下载：PreviewAll 预览→Execute 执行；保留一步式 DiscoverAll 作回退；title_prefix 匹配原始标题在 CleanReplayTitle 之前）。2026-07-19:新增 `Preview(ctx, PreviewInput)` 不绑定 channel 表的预览(回放页 URL 驱动入口) | 20 | [CLAUDE.md](./internal/discover/CLAUDE.md) |
 | `internal/download` | 回放音频下载（native 单 P/多 P + yt-dlp 双后端，concat list 路径转义；2026-07-15 yt-dlp 注入 --ffmpeg-location + 单 P 补弹幕抓取）、单链接触发、CookieAccountStore cookie 解析 | 56 | [CLAUDE.md](./internal/download/CLAUDE.md) |
 | `internal/live_record` | 直播音频与弹幕录制、ffmpeg 进程接管（Adopt）、-352 频道级阶梯冷却（5/10/20m，CheckLive RefreshKeys+Invalidate 重试 + ErrRiskControl352 哨兵 + jitter）、重连按错误类型分支（selectStream→maxReconnect / CDN 瞬时→cdnRetryBudget）、HTTP 412/403/429 风控冷却（ErrHTTPRiskControl）、0 字节僵尸文件检测（ErrZeroByteStalled）+ 不增长检测（ErrRecordingNotGrowing）、probe 失败独立预算重连 | 89 | [CLAUDE.md](./internal/live_record/CLAUDE.md) |
 | `internal/importer` | 手动 multipart 导入 | 15 | [CLAUDE.md](./internal/importer/CLAUDE.md) |
@@ -148,7 +148,7 @@ graph TD
 | `internal/upload` | WebDAV 归档上传（rclone + 原生 WebDAV）、前置产物校验、清理策略+local_available 闭环 | 38 | [CLAUDE.md](./internal/upload/CLAUDE.md) |
 | `internal/publisher` | B 站专栏草稿/发布与 Markdown 转 Opus，含 -352 风控自动处理（buvid 注入 via 共享 BuvidStore + gaia 验证 + WBI 刷新重试）、封面来源解析（recap cover > 配置 cover_url 本地路径自动上传/网络 URL 原样）、local_available 守卫（专栏只能手动去 B站管理，本系统不删不改） | 67 | [CLAUDE.md](./internal/publisher/CLAUDE.md) |
 | `internal/archive` | 发布后 WebDAV 归档（状态旁路任务：从 published 出发，不推进主状态仅写 archived_at），复用 upload.Copier/Deleter，与 upload 互斥 | 13 | [CLAUDE.md](./internal/archive/CLAUDE.md) |
-| `internal/scheduler` | 定时发现、直播检查、告警任务 | 13 | [CLAUDE.md](./internal/scheduler/CLAUDE.md) |
+| `internal/scheduler` | 定时发现、直播检查、告警任务。2026-07-19:`cron.discovery` 默认禁用(config.go SetDefault 改空串),scheduler 不再自动遍历主播表下载;CheckAll/CheckAndStartAll 用 ListVisible 过滤占位 | 13 | [CLAUDE.md](./internal/scheduler/CLAUDE.md) |
 | `internal/secrets` | API Key 管理 | 9 | [CLAUDE.md](./internal/secrets/CLAUDE.md) |
 | `internal/runtimeconfig` | 全局运行时配置覆盖持久化（runtime_settings 表 per-section JSON 7 段含 tools，SaveTx/WithTx 与 secrets 原子写入；启动由 ApplyOverrides 覆盖 config.yaml 基线） | 9 | [CLAUDE.md](./internal/runtimeconfig/CLAUDE.md) |
 | `internal/glossary` | 术语表与 AI 术语发现候选（ImportJSON 双格式：对象/裸数组 fallback，ErrInvalidJSON→400） | 68 | [CLAUDE.md](./internal/glossary/CLAUDE.md) |

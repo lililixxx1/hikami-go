@@ -32,10 +32,9 @@ import {
   submitASR,
   uploadSession,
   getRecapContent,
-  // 发现回放两步式:预览 / 执行 / 一键全下(壳编排,DiscoverPreviewDrawer 仅展示)。
-  previewDiscoverSessions,
+  // 发现回放(2026-07-19 解耦重写:URL 驱动入口)。
+  previewDiscoverSessionsByURL,
   executeDiscoverSessions,
-  discoverSessions,
   deleteFailedSessions,
 } from '@/api/sessions'
 import { retryTask } from '@/api/tasks'
@@ -83,6 +82,7 @@ const downloadDrawerVisible = ref(false)
 const discoverDrawerVisible = ref(false)
 const discoverItems = ref<DerivedDiscoverResult[]>([])
 const discoverExecuting = ref(false)
+const discoverLoading = ref(false)
 
 // ---------- 动作 loading ----------
 const actionLoadingId = ref('')
@@ -399,26 +399,36 @@ async function handleRetry(session: DerivedSession) {
   }
 }
 
-// ---------- 发现回放(壳编排:openDiscover 拉 preview;execute/discover-all 提交) ----------
-// DiscoverPreviewDrawer 是纯展示组件,preview/execute/discover-all 的 API 调用搬到这里。
-async function openDiscover() {
+// ---------- 发现回放(壳编排:openDiscover 打开抽屉;preview-submit 按 URL 发现;execute 提交) ----------
+// DiscoverPreviewDrawer 是纯展示组件,preview-by-url/execute 的 API 调用搬到这里。
+// 2026-07-19 解耦重写:不再「打开即自动遍历主播表」,改为用户在抽屉里输入 URL 后才调 preview-by-url。
+function openDiscover() {
   discoverDrawerVisible.value = true
   discoverItems.value = []
   discoverExecuting.value = false
+  discoverLoading.value = false
+}
+
+// 用户在抽屉里点「发现」:调 previewDiscoverSessionsByURL(后端 POST /api/sessions/discover/preview-by-url)。
+async function handleDiscoverSubmit(input: { url: string; cookie_file?: string; title_prefix?: string }) {
+  discoverLoading.value = true
+  discoverItems.value = []
   try {
-    const result = await previewDiscoverSessions()
+    const result = await previewDiscoverSessionsByURL(input)
     discoverItems.value = result.items as unknown as DerivedDiscoverResult[]
     const validNew = result.items.filter((i) => !i.error && !i.exists && i.channel_id && i.source_id).length
     const errorCount = result.items.filter((i) => i.error).length
     if (validNew > 0) {
-      HMessage.info(`预览到 ${validNew} 条新回放，请勾选后下载`)
+      HMessage.info(`发现 ${validNew} 条新回放，请勾选后下载`)
     } else if (errorCount > 0) {
-      HMessage.warning(`部分主播发现失败（${errorCount} 条错误），其余回放均已处理`)
+      HMessage.warning(`部分发现失败（${errorCount} 条错误），其余回放均已处理`)
     } else {
-      HMessage.info('未发现新回放（全部已处理）')
+      HMessage.info('未发现新回放（全部已处理或该 URL 无回放）')
     }
   } catch {
-    // previewDiscoverSessions 失败由 client.ts 拦截器统一 toast;items 为空,抽屉展示空态
+    // previewDiscoverSessionsByURL 失败由 client.ts 拦截器统一 toast;items 为空,抽屉展示空态
+  } finally {
+    discoverLoading.value = false
   }
 }
 
@@ -437,23 +447,6 @@ async function handleDiscoverExecute(picks: DerivedDiscoverPickItem[]) {
     const created = result.items.filter((i) => i.created && !i.error).length
     if (created > 0) HMessage.success(`已开始下载 ${created} 个新回放`)
     else HMessage.info('选中项均已处理，无新下载')
-    await onDiscoverExecuted()
-    discoverDrawerVisible.value = false
-  } finally {
-    discoverExecuting.value = false
-  }
-}
-
-async function handleDiscoverAll() {
-  if (!(await HConfirm('将立即下载所有新回放（不经过勾选），确定继续？', {
-    title: '全部下载', confirmText: '全部下载', cancelText: '取消', type: 'warning',
-  }))) return
-  discoverExecuting.value = true
-  try {
-    const result = await discoverSessions()
-    const created = result.items.filter((i) => i.created && !i.error).length
-    if (created > 0) HMessage.success(`已开始下载 ${created} 个新回放`)
-    else HMessage.info('未发现新回放')
     await onDiscoverExecuted()
     discoverDrawerVisible.value = false
   } finally {
@@ -522,6 +515,7 @@ onMounted(async () => {
       v-model:status-filter="statusFilter"
       v-model:channel-filter="channelFilter"
       :channels="channels"
+      :active-tab="activeTab"
     />
 
     <SessionTableV10
@@ -562,8 +556,9 @@ onMounted(async () => {
       v-model:visible="discoverDrawerVisible"
       :items="discoverItems"
       :executing="discoverExecuting"
+      :loading="discoverLoading"
+      @preview-submit="handleDiscoverSubmit"
       @execute="handleDiscoverExecute"
-      @discover-all="handleDiscoverAll"
     />
 
     <ImportSessionDrawer

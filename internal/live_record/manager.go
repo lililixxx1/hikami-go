@@ -206,7 +206,7 @@ func downloadCookieFileForChannel(ch channel.Channel, bootstrap []config.Bootstr
 }
 
 func (m *Manager) CheckAll(ctx context.Context) ([]Status, error) {
-	channels, err := m.channels.List(ctx)
+	channels, err := m.channels.ListVisible(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -228,7 +228,7 @@ func (m *Manager) CheckAll(ctx context.Context) ([]Status, error) {
 }
 
 func (m *Manager) CheckAndStartAll(ctx context.Context) ([]Status, error) {
-	channels, err := m.channels.List(ctx)
+	channels, err := m.channels.ListVisible(ctx)
 	if err != nil {
 		return nil, err
 	}

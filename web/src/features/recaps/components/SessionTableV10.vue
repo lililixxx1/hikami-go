@@ -67,9 +67,15 @@ function statusVariant(s: Session): 'success' | 'warning' | 'danger' | 'info' {
   return 'info'
 }
 
+// UnassignedChannelLabel 是系统占位 channel _unassigned 的展示标签(2026-07-19 解耦改动)。
+// 回放类下载/导入不选主播时场次挂到 _unassigned,UI 统一显示「未分类」而非原始 id。
+const UnassignedChannelID = '_unassigned'
+const UnassignedChannelLabel = '未分类'
+
 function channelName(s: Session): string {
   // 优先用 session 自带 channel_name(后端已填充),回退到 channels prop
-  if (s.channel_name) return s.channel_name
+  if (s.channel_name && s.channel_name !== UnassignedChannelID) return s.channel_name
+  if (s.channel_id === UnassignedChannelID) return UnassignedChannelLabel
   return props.channels.find((c) => c.id === s.channel_id)?.name || s.channel_id
 }
 

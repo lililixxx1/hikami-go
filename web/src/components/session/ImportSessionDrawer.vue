@@ -43,9 +43,11 @@ const errors = ref<{ channel_id?: string; title?: string }>({})
 const mediaFiles = ref<ImportFile[]>([])
 const danmakuFiles = ref<ImportFile[]>([])
 
-const channelOptions = computed(() =>
-  channelsStore.items.map((c) => ({ label: c.name, value: c.id })),
-)
+const channelOptions = computed(() => [
+  // 2026-07-19 解耦:主播可选。第一项 value='' 表示「不选」(后端挂到 _unassigned「未分类」)。
+  { label: '(不选) 归入未分类', value: '' },
+  ...channelsStore.items.map((c) => ({ label: c.name, value: c.id })),
+])
 
 const drawerVisible = computed({
   get: () => props.visible,
@@ -81,7 +83,7 @@ function toRFC3339(localValue: string): string {
 
 function validate(): boolean {
   const e: { channel_id?: string; title?: string } = {}
-  if (!form.value.channel_id) e.channel_id = '请选择主播'
+  // 2026-07-19 解耦:主播字段改为可选(不选则后端挂到系统占位 channel _unassigned,即「未分类」)。
   if (!form.value.title.trim()) e.title = '请输入标题'
   errors.value = e
   return Object.keys(e).length === 0
@@ -114,10 +116,10 @@ async function handleSubmit(): Promise<void> {
     }
     if (form.value.source_url) formData.append('source_url', form.value.source_url)
     for (const file of mediaFiles.value) {
-      formData.append('media', file.raw)
+      formData.append('media_file', file.raw)
     }
     for (const file of danmakuFiles.value) {
-      formData.append('danmaku', file.raw)
+      formData.append('danmaku_file', file.raw)
     }
 
     const task = await importSession(formData)
@@ -195,7 +197,7 @@ onMounted(() => {
       <section class="form-section">
         <h3>1. 基本信息</h3>
         <div class="field">
-          <label class="field-label">主播 <span v-if="errors.channel_id" class="field-error">{{ errors.channel_id }}</span></label>
+          <label class="field-label">主播 <span class="field-optional">(可选)</span> <span v-if="errors.channel_id" class="field-error">{{ errors.channel_id }}</span></label>
           <HSelect v-model="form.channel_id" :options="channelOptions" />
         </div>
         <div class="field">
@@ -256,7 +258,8 @@ onMounted(() => {
           <HPill variant="success">media_ready</HPill>
         </div>
         <div class="capability-line">
-          <span>该主播自动 ASR：{{ selectedChannel?.auto_asr ? '开' : '关' }}</span>
+          <span v-if="selectedChannel">该主播自动 ASR：{{ selectedChannel.auto_asr ? '开' : '关' }}</span>
+          <span v-else>未选主播，使用全局 ASR 配置</span>
           <span>
             ASR 能力：
             <HPill :variant="asrAvailable ? 'success' : 'warning'">
@@ -336,6 +339,12 @@ onMounted(() => {
   color: var(--danger, #e03e2d);
   font-weight: 400;
   margin-left: 6px;
+}
+
+.field-optional {
+  color: var(--text-muted, var(--text-secondary));
+  font-weight: 400;
+  font-size: 12px;
 }
 
 .datetime-input {

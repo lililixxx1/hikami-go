@@ -303,6 +303,7 @@ func (s *Server) routes() {
 
 	p.POST("/api/sessions/discover", s.discoverSessions)
 	p.POST("/api/sessions/discover/preview", s.discoverPreviewAll)
+	p.POST("/api/sessions/discover/preview-by-url", s.discoverPreviewByURL)
 	p.POST("/api/sessions/discover/execute", s.discoverExecute)
 	p.GET("/api/sessions", s.listSessions)
 	p.GET("/api/sessions/:sid", s.getSession)
@@ -509,7 +510,7 @@ func (s *Server) runtimeHealth(ctx *gin.Context) {
 }
 
 func (s *Server) listChannels(ctx *gin.Context) {
-	channels, err := s.channels.List(ctx.Request.Context())
+	channels, err := s.channels.ListVisible(ctx.Request.Context())
 	if err != nil {
 		writeError(ctx, err)
 		return
@@ -1032,6 +1033,45 @@ func (s *Server) discoverPreviewAll(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, gin.H{"items": results})
 }
 
+// discoverPreviewByURL 是 2026-07-19 解耦改动新增的「按 URL 发现」端点。
+//
+// 与 discoverPreviewAll(遍历所有主播表)的区别:用户直接粘贴一个 B 站 URL(收藏夹/合集/UP 主主页),
+// 后端调 yt-dlp flat-playlist 列出该 URL 下的所有回放,不依赖主播管理页的任何配置。
+// 这是「主播管理 ↔ 回顾管理·回放」解耦的核心入口。
+//
+// 请求 JSON body:
+//
+//	{ "url": "https://space.bilibili.com/...", "cookie_file": "", "title_prefix": "" }
+//
+// 响应:200 + `{items: [DiscoverResult]}`,每条带 exists 标记(供前端区分「新」「已处理」)。
+// 不选主播时所有结果的 channel_id 为系统占位 _unassigned。
+func (s *Server) discoverPreviewByURL(ctx *gin.Context) {
+	var input struct {
+		URL         string `json:"url"`
+		CookieFile  string `json:"cookie_file"`
+		TitlePrefix string `json:"title_prefix"`
+	}
+	if err := ctx.ShouldBindJSON(&input); err != nil {
+		writeBadRequest(ctx, "invalid json body")
+		return
+	}
+	if strings.TrimSpace(input.URL) == "" {
+		writeBadRequest(ctx, "url is required")
+		return
+	}
+	results, err := s.discoveries.Preview(ctx.Request.Context(), discover.PreviewInput{
+		SourceURL:   input.URL,
+		CookieFile:  input.CookieFile,
+		TitlePrefix: input.TitlePrefix,
+		// ChannelID 留空,Preview 内部填占位 _unassigned(与下载/导入抽屉不选主播的语义一致)。
+	})
+	if err != nil {
+		writeError(ctx, err)
+		return
+	}
+	ctx.JSON(http.StatusOK, gin.H{"items": results})
+}
+
 // discoverExecute 按前端勾选的 entry 列表建 download 场并入队下载任务，供两步式发现的「第二步执行」。
 // 不重跑 yt-dlp：复用预览阶段已拿到的 entry 信息。复用 CreateDownload 幂等性去重。
 func (s *Server) discoverExecute(ctx *gin.Context) {
@@ -1086,8 +1126,9 @@ func (s *Server) downloadSessionByURL(ctx *gin.Context) {
 		return
 	}
 	if input.ChannelID == "" {
-		writeBadRequest(ctx, "channel_id is required")
-		return
+		// 2026-07-19 解耦:回放页「下载」抽屉主播字段改为可选。
+		// 不选主播时挂到系统占位 channel _unassigned(语义化为「未分类」)。
+		input.ChannelID = channel.UnassignedID
 	}
 	if input.URL == "" {
 		writeBadRequest(ctx, "url is required")
@@ -1135,8 +1176,12 @@ func (s *Server) importSession(ctx *gin.Context) {
 	}
 	channelID := ctx.PostForm("channel_id")
 	title := ctx.PostForm("title")
-	if channelID == "" || title == "" {
-		writeBadRequest(ctx, "channel_id and title are required")
+	// 2026-07-19 解耦:回放页「导入」抽屉主播字段改为可选。不选主播时挂到占位 channel。
+	if channelID == "" {
+		channelID = channel.UnassignedID
+	}
+	if title == "" {
+		writeBadRequest(ctx, "title is required")
 		return
 	}
 	startedAt, err := parseOptionalTime(ctx.PostForm("started_at"))
@@ -3844,7 +3889,7 @@ func (s *Server) handleOnboardingStatus(ctx *gin.Context) {
 	dismissed := err == nil
 
 	// Check if channels exist
-	channels, err := s.channels.List(c)
+	channels, err := s.channels.ListVisible(c)
 	hasChannels := err == nil && len(channels) > 0
 
 	// Check tools status
@@ -4007,7 +4052,7 @@ type cookieDetail struct {
 
 func (s *Server) handleCookieStatus(c *gin.Context) {
 	ctx := c.Request.Context()
-	channels, err := s.channels.List(ctx)
+	channels, err := s.channels.ListVisible(ctx)
 	if err != nil {
 		writeError(c, err)
 		return

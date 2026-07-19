@@ -1,27 +1,35 @@
 <!-- web/src/features/recaps/components/DiscoverPreviewDrawer.vue -->
 <!--
-  两步式发现回放预览抽屉(Phase 4,L3 视觉验证)。
-  纯展示型:壳负责 preview/execute API 调用(见 DiscoverResultDrawer 的旧实现),本组件只接收
-  预览结果 items + 执行态,本地维护勾选索引集合,提交时把勾选项映射成 DiscoverPickItem 回传。
+  按 URL 发现回放预览抽屉(2026-07-19 解耦重写)。
+  纯展示型:壳(RecapsView)负责 preview-by-url/execute API 调用,本组件接收预览结果 items +
+  执行态,本地维护勾选索引集合,提交时把勾选项映射成 DiscoverPickItem 回传。
+  - 顶部 URL 输入区:用户粘贴 B 站收藏夹/合集/UP 主主页 URL + 可选 cookie 路径 + 可选 title_prefix,
+    点「发现」emit('preview-submit', input) 让壳调 preview-by-url。
   - exists=true 的项灰显 + 标「已存在」+ 禁止勾选(幂等,已建过 download 场次)。
-  - footer:「全部下载」(直连旧一键下载) + 「执行勾选」(空选禁用)。
+  - footer:「执行勾选」(空选禁用)。原「全部下载」按钮已删除(URL 模式下用「全选新回放」+「执行勾选」替代)。
 -->
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { HDrawer, HButton, HCheckbox, HPill } from '@/components/ui'
+import { HDrawer, HButton, HCheckbox, HPill, HInput } from '@/components/ui'
 import type { DiscoverResult, DiscoverPickItem } from '@/api/types-derived'
 
 const props = defineProps<{
   visible: boolean
   items: DiscoverResult[]
   executing: boolean
+  loading: boolean
 }>()
 
 const emit = defineEmits<{
   'update:visible': [value: boolean]
+  'preview-submit': [input: { url: string; cookie_file?: string; title_prefix?: string }]
   execute: [picked: DiscoverPickItem[]]
-  'discover-all': []
 }>()
+
+// URL 输入区状态(2026-07-19 新增,替代旧「打开即自动遍历主播表」行为)
+const previewUrl = ref('')
+const previewCookieFile = ref('')
+const previewTitlePrefix = ref('')
 
 // 勾选索引集合(以 items 数组下标为 key;Set 不响应式,变更时整体替换)
 const picked = ref<Set<number>>(new Set())
@@ -40,6 +48,21 @@ const allNewPicked = computed(() => {
   if (pickableCount.value === 0) return false
   return pickableIndices.value.every(({ it, idx }) => it.exists || picked.value.has(idx))
 })
+
+// URL 必填校验
+const urlError = computed(() => {
+  if (!previewUrl.value.trim()) return ''
+  try {
+    // 简单 URL 格式校验,不强制 bilibili 域(用户可能粘别的源)
+    // eslint-disable-next-line no-new
+    new URL(previewUrl.value.trim())
+    return ''
+  } catch {
+    return 'URL 格式不正确'
+  }
+})
+
+const canSubmit = computed(() => Boolean(previewUrl.value.trim()) && !urlError.value && !props.loading)
 
 function isPicked(idx: number): boolean {
   return picked.value.has(idx)
@@ -62,6 +85,16 @@ function toggleAll(checked: boolean): void {
   picked.value = next
 }
 
+// 「发现」按钮:把输入区状态打包 emit 给壳,壳调 previewDiscoverSessionsByURL。
+function handlePreviewSubmit(): void {
+  if (!canSubmit.value) return
+  emit('preview-submit', {
+    url: previewUrl.value.trim(),
+    cookie_file: previewCookieFile.value.trim() || undefined,
+    title_prefix: previewTitlePrefix.value.trim() || undefined,
+  })
+}
+
 // 提交:把勾选索引映射成 DiscoverPickItem(channel_id/source_id/title/source_url)。
 function handleExecute(): void {
   const picks: DiscoverPickItem[] = []
@@ -79,7 +112,7 @@ function handleExecute(): void {
   emit('execute', picks)
 }
 
-// 抽屉打开/关闭时重置勾选
+// 抽屉打开/关闭时重置(URL 输入区不重置,方便用户重复发现;勾选重置)
 watch(
   () => props.visible,
   (v) => {
@@ -91,21 +124,60 @@ watch(
 <template>
   <HDrawer
     :visible="visible"
-    title="发现回放预览"
+    title="发现回放"
     size="560px"
     @update:visible="emit('update:visible', $event)"
   >
     <div class="discover-preview">
+      <!-- URL 输入区(2026-07-19 新增:回放页独立入口,不依赖主播管理页配置) -->
+      <div class="url-input-block">
+        <div class="form-row">
+          <label class="form-label">B 站链接 <span class="required">*</span></label>
+          <HInput
+            v-model="previewUrl"
+            placeholder="收藏夹/合集/UP 主主页 URL,如 https://space.bilibili.com/123/lists/456"
+          />
+          <div v-if="urlError" class="form-error">{{ urlError }}</div>
+        </div>
+        <details class="advanced">
+          <summary>高级(可选)</summary>
+          <div class="form-row">
+            <label class="form-label">Cookie 文件路径</label>
+            <HInput v-model="previewCookieFile" placeholder="可选,如 /data/.cookies/bilibili/123.txt" />
+          </div>
+          <div class="form-row">
+            <label class="form-label">标题前缀过滤</label>
+            <HInput v-model="previewTitlePrefix" placeholder="可选,逗号分隔,如 【直播回放】" />
+          </div>
+        </details>
+        <HButton
+          variant="primary"
+          size="sm"
+          :disabled="!canSubmit"
+          :loading="loading"
+          @click="handlePreviewSubmit"
+        >
+          发现
+        </HButton>
+        <div class="hint">不选主播时,所有结果归到「未分类」。</div>
+      </div>
+
       <!-- 错误项(频道级 yt-dlp 失败等),单独展示、不可勾选 -->
       <div v-if="items.some((i) => i.error)" class="error-block">
-        <div class="error-block-title">发现失败的主播</div>
+        <div class="error-block-title">发现失败</div>
         <div v-for="(item, idx) in items.filter((i) => i.error)" :key="`err-${idx}`" class="error-row">
           <span class="row-title">{{ item.channel_id || '-' }}</span>
           <span class="row-error">{{ item.error }}</span>
         </div>
       </div>
 
-      <div v-if="pickableIndices.length === 0" class="empty">未发现任何回放</div>
+      <!-- 空态:仅在已经发起过预览(loading=false 且 url 已提交)且 items 为空时显示 -->
+      <div v-if="!loading && pickableIndices.length === 0 && items.length === 0" class="empty">
+        请输入 B 站链接后点「发现」
+      </div>
+      <div v-else-if="!loading && pickableIndices.length === 0" class="empty">
+        未发现任何回放
+      </div>
 
       <!-- 全选栏(仅对「新」项有效) -->
       <div v-if="pickableCount > 0" class="select-all-row">
@@ -133,7 +205,8 @@ watch(
                 <HPill v-else variant="success">新</HPill>
               </div>
               <div class="row-sub">
-                <span v-if="it.channel_id">{{ it.channel_id }}</span>
+                <span v-if="it.channel_id && it.channel_id !== '_unassigned'">{{ it.channel_id }}</span>
+                <span v-else class="unassigned-tag">未分类</span>
                 <span v-if="it.source_url" class="row-url">{{ it.source_url }}</span>
               </div>
             </div>
@@ -142,9 +215,6 @@ watch(
       </div>
 
       <div class="drawer-footer">
-        <HButton variant="secondary" size="sm" :loading="executing" @click="emit('discover-all')">
-          全部下载
-        </HButton>
         <HButton
           variant="primary"
           size="sm"
@@ -164,6 +234,65 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* URL 输入区(2026-07-19 新增) */
+.url-input-block {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.form-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.required {
+  color: var(--danger, #f56c6c);
+}
+
+.form-error {
+  font-size: 12px;
+  color: var(--danger, #f56c6c);
+}
+
+.advanced {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.advanced summary {
+  cursor: pointer;
+  user-select: none;
+  padding: 2px 0;
+}
+
+.advanced[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hint {
+  font-size: 11px;
+  color: var(--text-muted, var(--text-secondary));
+}
+
+.unassigned-tag {
+  color: var(--text-muted, var(--text-secondary));
+  font-style: italic;
 }
 
 .error-block {

@@ -647,3 +647,129 @@ func (emptyTitleListerMany) List(_ context.Context, _ string, _ string) ([]Entry
 		{ID: "BV3", Title: "", WebpageURL: "https://www.bilibili.com/video/BV3"},
 	}, nil
 }
+
+// ---------------------------------------------------------------------------
+// Preview (URL 驱动入口) tests (2026-07-19 解耦改动)
+// ---------------------------------------------------------------------------
+
+// TestPreviewUnassigned: 不绑定 channel 表的 Preview,ChannelID 空串时自动填占位 _unassigned。
+// 这是「回顾管理·回放」页独立入口的核心契约。
+func TestPreviewUnassigned(t *testing.T) {
+	database := newDiscoverTestDB(t)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, fakeLister{})
+
+	results, err := manager.Preview(context.Background(), PreviewInput{
+		SourceURL: "https://space.bilibili.com/999/lists/1",
+		// ChannelID 留空 → Preview 内部填 channel.UnassignedID
+	})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+
+	// fakeLister 返回 BV1(【直播回放】测试)+ BV2(普通投稿),无 title_prefix 过滤,都进结果
+	if len(results) != 2 {
+		t.Fatalf("len(results) = %d, want 2", len(results))
+	}
+	for _, r := range results {
+		if r.ChannelID != channel.UnassignedID {
+			t.Errorf("ChannelID = %q, want %q (空 ChannelID 应自动填占位)", r.ChannelID, channel.UnassignedID)
+		}
+	}
+}
+
+// TestPreviewWithExplicitChannelID: 显式传 ChannelID 时不被覆盖为占位(用于后续绑定真实主播)。
+func TestPreviewWithExplicitChannelID(t *testing.T) {
+	database := newDiscoverTestDB(t)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, fakeLister{})
+
+	results, err := manager.Preview(context.Background(), PreviewInput{
+		SourceURL: "https://space.bilibili.com/1/lists/1",
+		ChannelID: "bili_123",
+	})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	for _, r := range results {
+		if r.ChannelID != "bili_123" {
+			t.Errorf("ChannelID = %q, want bili_123 (显式传值应保留)", r.ChannelID)
+		}
+	}
+}
+
+// TestPreviewAnnotatesExists: Preview 内部自动调 annotateExists,不需要 handler 单独调。
+// 这验证 codex r13b SUGGESTION 的封装设计:handler 不接触标注逻辑。
+func TestPreviewAnnotatesExists(t *testing.T) {
+	database := newDiscoverTestDB(t)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, fakeLister{})
+
+	// 先 Execute 建一次 BV1 场次(让它变成 Exists)
+	manager.Execute(context.Background(), []ExecuteItem{
+		{ChannelID: "huize", SourceID: "BV1", Title: "测试", SourceURL: "https://www.bilibili.com/video/BV1"},
+	})
+
+	// 用相同的 ChannelID="huize" 再 Preview,BV1 应被标注 Exists=true
+	results, err := manager.Preview(context.Background(), PreviewInput{
+		SourceURL:   "https://space.bilibili.com/1/lists/1",
+		TitlePrefix: "【直播回放】", // 与 fakeLister 的 BV1 标题匹配,BV2 被过滤
+		ChannelID:   "huize",
+	})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	// 只 BV1 通过 title_prefix
+	if len(results) != 1 || results[0].SourceID != "BV1" {
+		t.Fatalf("results = %+v, want only BV1", results)
+	}
+	if !results[0].Exists {
+		t.Errorf("BV1.Exists = false, want true (Preview 内部应自动调 annotateExists)")
+	}
+}
+
+// TestPreviewChannelForwardsToPreview: 旧 PreviewChannel 转发到新 Preview,行为等价(零回归)。
+// 验证 PreviewChannel(ctx, item) 与 Preview(ctx, PreviewInput{...}) 对相同 channel 返回一致结果。
+func TestPreviewChannelForwardsToPreview(t *testing.T) {
+	database := newDiscoverTestDB(t)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	store := channel.NewStore(database)
+	manager := NewManager(store, session.NewStore(database), pool, fakeLister{})
+
+	ctx := context.Background()
+	ch, err := store.Get(ctx, "huize")
+	if err != nil {
+		t.Fatalf("get channel: %v", err)
+	}
+
+	oldResults, err := manager.PreviewChannel(ctx, ch)
+	if err != nil {
+		t.Fatalf("PreviewChannel: %v", err)
+	}
+
+	newResults, err := manager.Preview(ctx, PreviewInput{
+		SourceURL:   ch.ReplaySourceURL,
+		CookieFile:  ch.DownloadCookieFile,
+		TitlePrefix: ch.TitlePrefix,
+		ChannelID:   ch.ID,
+	})
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+
+	// 两者条数一致(注意:PreviewChannel 不标注 exists,Preview 标注;比较 ChannelID/SourceID/Title)
+	if len(oldResults) != len(newResults) {
+		t.Fatalf("len mismatch: PreviewChannel=%d Preview=%d", len(oldResults), len(newResults))
+	}
+	for i := range oldResults {
+		if oldResults[i].ChannelID != newResults[i].ChannelID {
+			t.Errorf("[%d] ChannelID: PreviewChannel=%q Preview=%q", i, oldResults[i].ChannelID, newResults[i].ChannelID)
+		}
+		if oldResults[i].SourceID != newResults[i].SourceID {
+			t.Errorf("[%d] SourceID: PreviewChannel=%q Preview=%q", i, oldResults[i].SourceID, newResults[i].SourceID)
+		}
+		if oldResults[i].Title != newResults[i].Title {
+			t.Errorf("[%d] Title: PreviewChannel=%q Preview=%q", i, oldResults[i].Title, newResults[i].Title)
+		}
+	}
+}

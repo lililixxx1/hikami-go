@@ -104,8 +104,55 @@ const (
 	CookieUsagePublish  CookieUsage = "publish"
 )
 
+// UnassignedID 是占位 channel id,用于「回顾管理·回放」页的下载/导入抽屉不选主播时的兜底
+// (2026-07-19 解耦改动)。它让 session.channel_id 的 NOT NULL + FK 约束得以保留,
+// 同时让用户无需先在主播管理页添加主播就能在回放页直接下载/导入。
+//
+// 该 channel 在启动时由 EnsureUnassigned 幂等创建,具有以下属性让其对主播管理页和 scheduler 完全不可见:
+//   - enabled = false      → scheduler discover 跳过(第一重保险)
+//   - source_mode = 'live_only' → discover 即便 enabled 也跳过(第二重保险)
+//   - ListVisible 过滤    → 主播管理页 listChannels 不返回(第三重保险)
+//
+// 文件系统路径沿用全链路统一模板:data/_unassigned/<slug>/(语义化为「未分类」)。
+const UnassignedID = "_unassigned"
+
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
+}
+
+// EnsureUnassigned 启动时幂等插入占位 channel(2026-07-19)。
+//
+// 用裸 SQL + INSERT OR IGNORE(基于 PK 冲突幂等),不走 Store.Create:
+// Create 的 validate() 要求 UID > 0,占位记录 UID=0 会被拒绝。
+//
+// 补全所有 NOT NULL 列(uid=0, live_room_id=0, 各 publish_* 哨兵值);
+// max_continuations=-1 是「使用全局配置」的哨兵值(0 会覆盖全局导致禁用续写,codex r13b MEDIUM #1)。
+func (s *Store) EnsureUnassigned(ctx context.Context) error {
+	now := nowRFC3339()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT OR IGNORE INTO channels (
+			id, name, uid, live_room_id,
+			replay_source_url, space_url, title_prefix,
+			cookie_file, download_cookie_file, download_account_id,
+			enabled, auto_record, auto_asr, auto_recap, record_danmaku,
+			source_mode, discover_limit,
+			publish_enabled, publish_mode, publish_category_id, publish_list_id,
+			publish_private_pub, publish_original, auto_publish,
+			publish_aigc, publish_timer_pub_time, publish_cover_url, publish_topics,
+			recap_model, max_continuations, created_at, updated_at
+		) VALUES (
+			?, ?, 0, 0,
+			'', '', '',
+			'', '', NULL,
+			0, 0, 0, 0, 0,
+			'live_only', 0,
+			0, '', 0, -1,
+			0, -1, 0,
+			-1, 0, '', '',
+			'', -1, ?, ?
+		)`,
+		UnassignedID, "未分类", now, now)
+	return err
 }
 
 func (s *Store) Bootstrap(ctx context.Context, channels []config.BootstrapChannel) error {
@@ -202,6 +249,37 @@ func (s *Store) Bootstrap(ctx context.Context, channels []config.BootstrapChanne
 
 func (s *Store) List(ctx context.Context) ([]Channel, error) {
 	rows, err := s.db.QueryContext(ctx, listSQL)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var channels []Channel
+	for rows.Next() {
+		channel, err := scanChannel(rows)
+		if err != nil {
+			return nil, err
+		}
+		channels = append(channels, channel)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if channels == nil {
+		return []Channel{}, nil
+	}
+	return channels, nil
+}
+
+// ListVisible 返回除系统占位 channel(_unassigned)外的所有频道(2026-07-19 解耦改动)。
+//
+// 用于「用户/业务可见」场景:主播管理页 listChannels、scheduler discover/live_check、
+// onboarding status、cookie status、config export 等——这些场景都不应看到占位记录。
+//
+// List(原方法)保留,返回所有记录(含占位),给需要完整枚举的内部调用方:
+// identify.go(按 UID 识别主播)、runtime.CheckCookieExpiry(检查所有频道 cookie)等。
+func (s *Store) ListVisible(ctx context.Context) ([]Channel, error) {
+	rows, err := s.db.QueryContext(ctx, listVisibleSQL, UnassignedID)
 	if err != nil {
 		return nil, err
 	}
@@ -593,6 +671,7 @@ const selectColumns = `
 `
 
 const listSQL = `SELECT ` + selectColumns + ` FROM channels ORDER BY id`
+const listVisibleSQL = `SELECT ` + selectColumns + ` FROM channels WHERE id != ? ORDER BY id`
 const getSQL = `SELECT ` + selectColumns + ` FROM channels WHERE id = ?`
 
 const createSQL = `

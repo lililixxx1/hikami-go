@@ -491,7 +491,8 @@ type ArchiveSectionDTO struct {
 // ToolsSectionDTO 对应 updateToolsConfig 管理的字段。
 // 只含软依赖工具路径(yt_dlp/rclone);ffmpeg/ffprobe 不在此暴露
 // (其 required=true,改错路径会导致下次启动 fatal,web 不可达无法纠正,
-//  风险过高;仍只能通过 config.yaml 修改)。
+//
+//	风险过高;仍只能通过 config.yaml 修改)。
 type ToolsSectionDTO struct {
 	YTDLP  *string `json:"yt_dlp,omitempty"`
 	Rclone *string `json:"rclone,omitempty"`
@@ -754,7 +755,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("worker.auto_retry", false)
 	v.SetDefault("worker.max_retry_attempts", 3)
 	v.SetDefault("worker.retry_delay_seconds", 30)
-	v.SetDefault("cron.discovery", "@every 20m")
+	// cron.discovery 默认禁用(2026-07-19):回顾管理·回放页的「发现回放」改为独立 URL 入口,
+	// 不再自动遍历主播表下载。用户若需要 scheduler 自动发现,在 config.yaml 显式配置
+	// cron.discovery: "@every 20m" 即可恢复旧行为(viper 用户配置优先级高于 SetDefault)。
+	// scheduler.go:85 的 `if discoverySpec != ""` 会跳过空串的 cron 注册。
+	v.SetDefault("cron.discovery", "")
 	v.SetDefault("cron.live_check", "@every 30s")
 	v.SetDefault("live_record.enabled", true)
 	v.SetDefault("live_record.audio_only", false)

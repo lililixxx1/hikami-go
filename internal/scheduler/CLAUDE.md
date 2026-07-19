@@ -42,5 +42,6 @@
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-07-19 | 配置变更 | **`cron.discovery` 默认禁用**(branch `fix/decouple-recap-replay-2026-07-18`,主播管理 ↔ 回顾管理·回放解耦)。config.go 的 `SetDefault("cron.discovery", "@every 20m")` 改为 `""`,`scheduler.go:85` 的 `if discoverySpec != ""` 跳过 cron 注册。旧 config.yaml 显式配置的用户维持原行为(viper 用户配置 > SetDefault),未显式配置的(默认 config.example.yaml)变为不自动发现——这是用户诉求。`CheckAll`/`CheckAndStartAll` 内部 channels.List 改用 channels.ListVisible(过滤占位 _unassigned,见 channel 模块)。 |
 | 2026-05-17 | 更新 | Scheduler 持有 ctx/cancel 实现上下文传播；cron 任务使用 scheduler context 替代 context.Background()；Stop 优雅关闭先 cancel() 再 cron.Stop() |
 | 2026-05-01 | 新建 | 首次生成模块文档 |
