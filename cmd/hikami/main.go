@@ -351,6 +351,8 @@ func main() {
 		workerPool,
 		discover.YTDLPLister{Command: cfg.YTDLP},
 		discover.WithTitleResolver(downloadHandler),
+		discover.WithCookieAccountStore(cookieAccountStore),
+		discover.WithOutputRoot(cfg.OutputRoot),
 	)
 	liveManager := live_record.NewManager(
 		cfg,

@@ -1,11 +1,19 @@
 package discover
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
+	"hikami-go/internal/biliutil"
 	"hikami-go/internal/channel"
 	"hikami-go/internal/db"
 	"hikami-go/internal/session"
@@ -728,9 +736,11 @@ func TestPreviewAnnotatesExists(t *testing.T) {
 	}
 }
 
-// TestPreviewChannelForwardsToPreview: 旧 PreviewChannel 转发到新 Preview,行为等价(零回归)。
-// 验证 PreviewChannel(ctx, item) 与 Preview(ctx, PreviewInput{...}) 对相同 channel 返回一致结果。
-func TestPreviewChannelForwardsToPreview(t *testing.T) {
+// TestPreviewChannelUsesChannelCookieResolution: v3 重构后 PreviewChannel 走独立的
+// previewCoreForChannel(用 resolveChannelCookie),不再转发到 previewCore(URL 模式)。
+// 关键不变式:PreviewChannel 不标 Exists(PreviewAll 外层批量标注,避免双重标注)。
+// (旧 TestPreviewChannelForwardsToPreview 改名,因 v3 拆分后两者不再等价——codex r15c LOW #2)
+func TestPreviewChannelUsesChannelCookieResolution(t *testing.T) {
 	database := newDiscoverTestDB(t)
 	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
 	store := channel.NewStore(database)
@@ -742,43 +752,635 @@ func TestPreviewChannelForwardsToPreview(t *testing.T) {
 		t.Fatalf("get channel: %v", err)
 	}
 
-	oldResults, err := manager.PreviewChannel(ctx, ch)
+	results, err := manager.PreviewChannel(ctx, ch)
 	if err != nil {
 		t.Fatalf("PreviewChannel: %v", err)
 	}
+	if len(results) == 0 {
+		t.Fatalf("PreviewChannel returned no results, expected at least 1")
+	}
 
-	newResults, err := manager.Preview(ctx, PreviewInput{
-		SourceURL:   ch.ReplaySourceURL,
-		CookieFile:  ch.DownloadCookieFile,
-		TitlePrefix: ch.TitlePrefix,
-		ChannelID:   ch.ID,
+	// 不标 Exists 的不变式保留(避免 PreviewAll 双重标注——codex r13b MEDIUM #3)
+	for i, r := range results {
+		if r.Exists {
+			t.Errorf("[%d] PreviewChannel 标注了 Exists=true,应保持 false(PreviewAll 外层批量标注)", i)
+		}
+	}
+	// ChannelID 应等于频道 ID(走 previewCoreForChannel,而非 URL 模式的 _unassigned)
+	for i, r := range results {
+		if r.ChannelID != ch.ID {
+			t.Errorf("[%d] ChannelID = %q, want %q (PreviewChannel 应保留频道 ID)", i, r.ChannelID, ch.ID)
+		}
+	}
+}
+
+// ============================================================================
+// 发现阶段 cookie 解析测试(v3 新增,2026-07-19)
+//
+// 覆盖 codex r15c/r15b/r15 的关键场景:
+//   - URL 模式 resolveURLCookie:用户显式优先 / 默认账号回退 / 加密场景 / 空白分支
+//   - 频道模式 resolveChannelCookie:频道账号覆盖 / 默认账号 vs legacy / 纯 legacy 退化
+//   - 临时文件 cleanup 用 os.CreateTemp + os.Remove
+//
+// recordingLister 在 List 调用期间读取临时文件内容,避免 cleanup 后读不到
+// (codex r15b MEDIUM #3)
+// ============================================================================
+
+type listerRecord struct {
+	cookiePath string
+	content    []byte // 在 List 内读取(cleanup 前保存);nil 表示未读(空路径或读失败)
+	existed    bool   // 调用 List 时该路径是否存在
+}
+
+type recordingLister struct {
+	mu      sync.Mutex
+	records []listerRecord
+	entries []Entry
+	listErr error
+}
+
+func (r *recordingLister) List(ctx context.Context, sourceURL string, cookieFile string) ([]Entry, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec := listerRecord{cookiePath: cookieFile}
+	if cookieFile != "" {
+		if content, err := os.ReadFile(cookieFile); err == nil {
+			rec.content = content
+			rec.existed = true
+		}
+	}
+	r.records = append(r.records, rec)
+	if r.listErr != nil {
+		return nil, r.listErr
+	}
+	return r.entries, nil
+}
+
+func (r *recordingLister) lastRecord() (listerRecord, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.records) == 0 {
+		return listerRecord{}, false
+	}
+	return r.records[len(r.records)-1], true
+}
+
+func (r *recordingLister) callCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.records)
+}
+
+// writeTestCookieFile 用 biliutil.WriteNetscapeCookieFile 写明文 cookie 文件。
+// 若 encrypt=true 则启用 SetCookieEncryptionKey 写加密格式(测试完后清理 key)。
+// 返回落盘文件路径。
+func writeTestCookieFile(t *testing.T, dir string, uid int64, encrypt bool) string {
+	t.Helper()
+	if encrypt {
+		// 32 字节 hex key(AES-256)
+		biliutil.SetCookieEncryptionKey("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+		t.Cleanup(func() { biliutil.SetCookieEncryptionKey("") })
+	}
+	farFuture := time.Now().Add(365 * 24 * time.Hour)
+	result, err := biliutil.WriteNetscapeCookieFile([]*http.Cookie{
+		{Name: "SESSDATA", Value: "sess-" + fmtUID(uid), Expires: farFuture},
+		{Name: "bili_jct", Value: "csrf-" + fmtUID(uid), Expires: farFuture},
+		{Name: "DedeUserID", Value: fmtUID(uid), Expires: farFuture},
+	}, biliutil.CookieWriteOptions{
+		Dir:   dir,
+		UID:   uid,
+		Usage: "download",
 	})
 	if err != nil {
-		t.Fatalf("Preview: %v", err)
+		t.Fatalf("write cookie file: %v", err)
+	}
+	return result.Path
+}
+
+func fmtUID(uid int64) string {
+	return fmt.Sprintf("uid%d", uid)
+}
+
+// newDiscoverTestDBWithCookieStore 创建带 bili_cookie_accounts 表的测试 DB + 账号池。
+// 返回的 cookieAccountStore 的 allowedDirs 含 cookieDir,允许在此目录下放 cookie 文件。
+func newDiscoverTestDBWithCookieStore(t *testing.T, cookieDir string) (*sql.DB, *biliutil.CookieAccountStore) {
+	t.Helper()
+	database := newDiscoverTestDB(t)
+	// newDiscoverTestDB 已 Migrate,bili_cookie_accounts 表应已存在(v35 schema)
+	store := biliutil.NewCookieAccountStore(database, cookieDir)
+	return database, store
+}
+
+// insertBiliAccount 用裸 SQL 插入账号记录(绕过 ValidateCookiePath,测试专用)。
+// 返回 account id。
+func insertBiliAccount(t *testing.T, db *sql.DB, uid int64, nickname, cookieFile string, isDefaultDownload bool) int64 {
+	t.Helper()
+	now := time.Now().Format(time.RFC3339)
+	dl := 0
+	if isDefaultDownload {
+		dl = 1
+	}
+	res, err := db.Exec(`
+		INSERT INTO bili_cookie_accounts (uid, nickname, cookie_file, is_default_download, is_default_publish, created_at, updated_at)
+		VALUES (?, ?, ?, ?, 0, ?, ?)
+	`, uid, nickname, cookieFile, dl, now, now)
+	if err != nil {
+		t.Fatalf("insert bili account: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("last insert id: %v", err)
+	}
+	return id
+}
+
+// -------------------- URL 模式测试(resolveURLCookie / Preview) --------------------
+
+// TestPreview_NoCookieStore_UnauthMode:未注入 cookieAccounts → lister 收到空串(公开回放仍发现)
+func TestPreview_NoCookieStore_UnauthMode(t *testing.T) {
+	database := newDiscoverTestDB(t)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	rl := &recordingLister{entries: []Entry{{ID: "BV1", Title: "x"}}}
+	// 故意不调 WithCookieAccountStore
+	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, rl,
+		WithOutputRoot(t.TempDir()),
+	)
+
+	_, err := manager.Preview(context.Background(), PreviewInput{SourceURL: "https://example.com"})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	rec, ok := rl.lastRecord()
+	if !ok {
+		t.Fatal("lister not called")
+	}
+	if rec.cookiePath != "" {
+		t.Errorf("cookiePath = %q, want empty (no store injected)", rec.cookiePath)
+	}
+}
+
+// TestPreview_ExplicitCookieFileWins:用户填 CookieFile → lister 收到原路径,无临时文件
+func TestPreview_ExplicitCookieFileWins(t *testing.T) {
+	database, store := newDiscoverTestDBWithCookieStore(t, t.TempDir())
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	rl := &recordingLister{entries: []Entry{{ID: "BV1"}}}
+	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, rl,
+		WithCookieAccountStore(store),
+		WithOutputRoot(t.TempDir()),
+	)
+
+	explicit := "/tmp/explicit-by-user.txt"
+	_, err := manager.Preview(context.Background(), PreviewInput{
+		SourceURL:  "https://example.com",
+		CookieFile: explicit,
+	})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	rec, ok := rl.lastRecord()
+	if !ok {
+		t.Fatal("lister not called")
+	}
+	if rec.cookiePath != explicit {
+		t.Errorf("cookiePath = %q, want %q (用户显式应原值返回)", rec.cookiePath, explicit)
+	}
+	if rec.content != nil {
+		t.Errorf("不应读取临时文件(用户路径,我们不读)")
+	}
+}
+
+// TestPreview_DefaultAccount_WritesTempCookie:账号池有默认账号 → lister 收到临时文件路径(≠ account.CookieFile),
+// 内容含 SESSDATA(证明已解密成明文 Netscape)
+func TestPreview_DefaultAccount_WritesTempCookie(t *testing.T) {
+	cookieDir := t.TempDir()
+	database, store := newDiscoverTestDBWithCookieStore(t, cookieDir)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	rl := &recordingLister{entries: []Entry{{ID: "BV1"}}}
+	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, rl,
+		WithCookieAccountStore(store),
+		WithOutputRoot(t.TempDir()),
+	)
+
+	accountPath := writeTestCookieFile(t, cookieDir, 42, false)
+	insertBiliAccount(t, database, 42, "test", accountPath, true)
+
+	_, err := manager.Preview(context.Background(), PreviewInput{SourceURL: "https://example.com"})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	rec, ok := rl.lastRecord()
+	if !ok {
+		t.Fatal("lister not called")
+	}
+	if rec.cookiePath == "" {
+		t.Fatal("cookiePath empty, want temp file path")
+	}
+	if rec.cookiePath == accountPath {
+		t.Errorf("cookiePath = accountPath %q(应写临时文件,不能直接用账号原始路径)", accountPath)
+	}
+	if !rec.existed {
+		t.Errorf("临时文件 %q 在 List 调用期间应存在", rec.cookiePath)
+	}
+	if !bytes.Contains(rec.content, []byte("SESSDATA")) {
+		t.Errorf("临时文件内容应含 SESSDATA(明文 Netscape),实际: %q", string(rec.content))
+	}
+}
+
+// TestPreview_DefaultAccount_Encrypted:加密账号 → 临时文件不含 HIKAMI_V1 魔数(已解密)
+func TestPreview_DefaultAccount_Encrypted(t *testing.T) {
+	cookieDir := t.TempDir()
+	database, store := newDiscoverTestDBWithCookieStore(t, cookieDir)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	rl := &recordingLister{entries: []Entry{{ID: "BV1"}}}
+	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, rl,
+		WithCookieAccountStore(store),
+		WithOutputRoot(t.TempDir()),
+	)
+
+	accountPath := writeTestCookieFile(t, cookieDir, 42, true) // 启用加密
+	insertBiliAccount(t, database, 42, "enc", accountPath, true)
+
+	// 先验证 accountPath 确实是加密的(含 HIKAMI_V1)
+	rawAccount, _ := os.ReadFile(accountPath)
+	if !bytes.Contains(rawAccount, []byte("HIKAMI_V1")) {
+		t.Fatalf("setup 失败:accountPath 应含 HIKAMI_V1 魔数,实际: %q", string(rawAccount))
 	}
 
-	// 两者条数一致(注意:PreviewChannel 不标注 exists,Preview 标注;比较 ChannelID/SourceID/Title)
-	if len(oldResults) != len(newResults) {
-		t.Fatalf("len mismatch: PreviewChannel=%d Preview=%d", len(oldResults), len(newResults))
+	_, err := manager.Preview(context.Background(), PreviewInput{SourceURL: "https://example.com"})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
 	}
-	for i := range oldResults {
-		if oldResults[i].ChannelID != newResults[i].ChannelID {
-			t.Errorf("[%d] ChannelID: PreviewChannel=%q Preview=%q", i, oldResults[i].ChannelID, newResults[i].ChannelID)
-		}
-		if oldResults[i].SourceID != newResults[i].SourceID {
-			t.Errorf("[%d] SourceID: PreviewChannel=%q Preview=%q", i, oldResults[i].SourceID, newResults[i].SourceID)
-		}
-		if oldResults[i].Title != newResults[i].Title {
-			t.Errorf("[%d] Title: PreviewChannel=%q Preview=%q", i, oldResults[i].Title, newResults[i].Title)
-		}
+	rec, ok := rl.lastRecord()
+	if !ok {
+		t.Fatal("lister not called")
+	}
+	if rec.cookiePath == accountPath {
+		t.Fatalf("cookiePath = accountPath(应写临时明文文件,不能直接用加密原路径)")
+	}
+	if bytes.Contains(rec.content, []byte("HIKAMI_V1")) {
+		t.Errorf("临时文件内容含 HIKAMI_V1 魔数(应已解密为明文),实际: %q", string(rec.content))
+	}
+	if !bytes.Contains(rec.content, []byte("SESSDATA")) {
+		t.Errorf("临时文件内容应含 SESSDATA(明文 Netscape),实际: %q", string(rec.content))
+	}
+}
+
+// TestPreview_BlankCookieFile_FallsBack:CookieFile 为纯空白 → 回退默认账号(codex r15 MEDIUM #3)
+func TestPreview_BlankCookieFile_FallsBack(t *testing.T) {
+	cookieDir := t.TempDir()
+	database, store := newDiscoverTestDBWithCookieStore(t, cookieDir)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	rl := &recordingLister{entries: []Entry{{ID: "BV1"}}}
+	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, rl,
+		WithCookieAccountStore(store),
+		WithOutputRoot(t.TempDir()),
+	)
+
+	accountPath := writeTestCookieFile(t, cookieDir, 42, false)
+	insertBiliAccount(t, database, 42, "test", accountPath, true)
+
+	_, err := manager.Preview(context.Background(), PreviewInput{
+		SourceURL:  "https://example.com",
+		CookieFile: "   ", // 纯空白
+	})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	rec, ok := rl.lastRecord()
+	if !ok {
+		t.Fatal("lister not called")
+	}
+	if rec.cookiePath == "" {
+		t.Fatal("纯空白 CookieFile 应回退默认账号,但 lister 收到空串")
+	}
+	if rec.cookiePath == accountPath {
+		t.Errorf("cookiePath = accountPath(应写临时文件)")
+	}
+	if !bytes.Contains(rec.content, []byte("SESSDATA")) {
+		t.Errorf("临时文件应含 SESSDATA,实际: %q", string(rec.content))
+	}
+}
+
+// TestPreview_NoDefaultAccount_NoError:无默认账号 → 不阻断,lister 收到空串
+func TestPreview_NoDefaultAccount_NoError(t *testing.T) {
+	cookieDir := t.TempDir()
+	database, store := newDiscoverTestDBWithCookieStore(t, cookieDir)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	rl := &recordingLister{entries: []Entry{{ID: "BV1"}}}
+	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, rl,
+		WithCookieAccountStore(store),
+		WithOutputRoot(t.TempDir()),
+	)
+
+	// 账号存在但不设默认
+	accountPath := writeTestCookieFile(t, cookieDir, 42, false)
+	insertBiliAccount(t, database, 42, "non-default", accountPath, false)
+
+	_, err := manager.Preview(context.Background(), PreviewInput{SourceURL: "https://example.com"})
+	if err != nil {
+		t.Fatalf("preview: %v (无默认账号不应阻断)", err)
+	}
+	rec, ok := rl.lastRecord()
+	if !ok {
+		t.Fatal("lister not called")
+	}
+	if rec.cookiePath != "" {
+		t.Errorf("cookiePath = %q, want empty (无默认账号应回退空串)", rec.cookiePath)
+	}
+}
+
+// TestPreview_TempCookieCleanedUp:List 返回后临时文件已删除(cleanup 生效)
+func TestPreview_TempCookieCleanedUp(t *testing.T) {
+	cookieDir := t.TempDir()
+	database, store := newDiscoverTestDBWithCookieStore(t, cookieDir)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	rl := &recordingLister{entries: []Entry{{ID: "BV1"}}}
+	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, rl,
+		WithCookieAccountStore(store),
+		WithOutputRoot(t.TempDir()),
+	)
+
+	accountPath := writeTestCookieFile(t, cookieDir, 42, false)
+	insertBiliAccount(t, database, 42, "test", accountPath, true)
+
+	_, err := manager.Preview(context.Background(), PreviewInput{SourceURL: "https://example.com"})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	rec, ok := rl.lastRecord()
+	if !ok || rec.cookiePath == "" {
+		t.Fatal("无临时文件路径可供检查")
+	}
+	// Preview 返回后,cleanup 应已删除临时文件
+	if _, err := os.Stat(rec.cookiePath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("临时文件 %q 应被 cleanup 删除,实际 err = %v", rec.cookiePath, err)
+	}
+}
+
+// -------------------- 频道模式测试(resolveChannelCookie / PreviewChannel / DiscoverChannel) --------------------
+
+// helper:构造频道 + 默认账号,返回 (database, store, cookieDir, manager, channelObj)
+func setupChannelAndStore(t *testing.T, opts struct {
+	DownloadAccountID  *int64
+	DownloadCookieFile string
+	HasDefaultAccount  bool
+	DefaultUID         int64
+}) (*sql.DB, *biliutil.CookieAccountStore, string, *Manager, channel.Channel) {
+	t.Helper()
+	cookieDir := t.TempDir()
+	database, store := newDiscoverTestDBWithCookieStore(t, cookieDir)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	rl := &recordingLister{entries: []Entry{{ID: "BV1", Title: "test"}}}
+	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, rl,
+		WithCookieAccountStore(store),
+		WithOutputRoot(t.TempDir()),
+	)
+	// 修改 huize 频道加 cookie 配置
+	var accountID int64
+	if opts.HasDefaultAccount {
+		accountPath := writeTestCookieFile(t, cookieDir, opts.DefaultUID, false)
+		accountID = insertBiliAccount(t, database, opts.DefaultUID, "default", accountPath, true)
+	}
+	_, err := database.Exec(`
+		UPDATE channels
+		SET download_cookie_file = ?, download_account_id = ?
+		WHERE id = 'huize'
+	`, opts.DownloadCookieFile, sql.NullInt64{Int64: accountID, Valid: opts.DownloadAccountID != nil})
+	if err != nil {
+		t.Fatalf("update channel: %v", err)
+	}
+	chStore := channel.NewStore(database)
+	ch, err := chStore.Get(context.Background(), "huize")
+	if err != nil {
+		t.Fatalf("get channel: %v", err)
+	}
+	return database, store, cookieDir, manager, ch
+}
+
+// TestPreviewChannel_AccountIDWinsOverLegacyFile:
+// 频道同时有 DownloadAccountID 和 DownloadCookieFile → 走账号(临时文件),不走 legacy 原路径
+// (codex r15b MEDIUM #1)
+func TestPreviewChannel_AccountIDWinsOverLegacyFile(t *testing.T) {
+	database := newDiscoverTestDB(t)
+	cookieDir := t.TempDir()
+	store := biliutil.NewCookieAccountStore(database, cookieDir)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	rl := &recordingLister{entries: []Entry{{ID: "BV1"}}}
+	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, rl,
+		WithCookieAccountStore(store),
+		WithOutputRoot(t.TempDir()),
+	)
+
+	// 准备账号 A(非默认)+ 默认账号 D
+	pathA := writeTestCookieFile(t, cookieDir, 100, false)
+	idA := insertBiliAccount(t, database, 100, "A", pathA, false)
+	pathD := writeTestCookieFile(t, cookieDir, 200, false)
+	insertBiliAccount(t, database, 200, "D", pathD, true)
+
+	// 频道挂 DownloadAccountID=A + DownloadCookieFile=legacy.txt(都存在)
+	_, err := database.Exec(`
+		UPDATE channels
+		SET download_account_id = ?, download_cookie_file = ?
+		WHERE id = 'huize'
+	`, idA, filepath.Join(cookieDir, "legacy.txt"))
+	if err != nil {
+		t.Fatalf("update channel: %v", err)
+	}
+	// 写一个 legacy cookie 文件(供 ResolveCookie 退化兜底)
+	legacyPath := filepath.Join(cookieDir, "legacy.txt")
+	if err := os.WriteFile(legacyPath, []byte("# Netscape\n.bilibili.com\tTRUE\t/\tTRUE\t9999999999\tSESSDATA\tlegacy\n"), 0o600); err != nil {
+		t.Fatalf("write legacy: %v", err)
 	}
 
-	// codex r14 SUGGESTION #2:显式锁定 Exists 语义不变式。
-	// PreviewChannel(转发到 previewCore)不标 Exists;Preview(内部调 annotateExists)才标。
-	// 这是避免 PreviewAll 双重标注的关键设计(codex r13b MEDIUM #3)。
-	for i := range oldResults {
-		if oldResults[i].Exists {
-			t.Errorf("[%d] PreviewChannel 标注了 Exists=true,应保持 false(PreviewAll 外层负责批量标注)", i)
-		}
+	ch, err := channel.NewStore(database).Get(context.Background(), "huize")
+	if err != nil {
+		t.Fatalf("get channel: %v", err)
+	}
+
+	_, err = manager.PreviewChannel(context.Background(), ch)
+	if err != nil {
+		t.Fatalf("PreviewChannel: %v", err)
+	}
+	rec, ok := rl.lastRecord()
+	if !ok {
+		t.Fatal("lister not called")
+	}
+	// 应走账号 A(临时文件),不是 legacy 原路径
+	if rec.cookiePath == legacyPath {
+		t.Errorf("走 legacy 原路径,应走账号 A 的临时文件(优先级:账号覆盖 > legacy)")
+	}
+	if rec.cookiePath == pathA {
+		t.Errorf("cookiePath = 账号 A 原始路径(应写临时明文文件)")
+	}
+	if !bytes.Contains(rec.content, []byte("sess-")) {
+		// pathA 写入时 UID=100 → SESSDATA=sess-<某串>。临时文件应含此值,而非 legacy 的 "legacy"
+		t.Errorf("临时文件内容应含账号 A 的 cookie(SESSDATA=sess-*),实际: %q", string(rec.content))
+	}
+	if bytes.Contains(rec.content, []byte("legacy")) {
+		t.Errorf("走了 legacy cookie,应优先账号 A")
+	}
+}
+
+// TestPreviewChannel_DefaultAccountWinsOverLegacyFile:
+// 频道无 DownloadAccountID、有全局默认账号、有 DownloadCookieFile → 走默认账号(临时文件)
+// (codex r15b MEDIUM #2)
+func TestPreviewChannel_DefaultAccountWinsOverLegacyFile(t *testing.T) {
+	database := newDiscoverTestDB(t)
+	cookieDir := t.TempDir()
+	store := biliutil.NewCookieAccountStore(database, cookieDir)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	rl := &recordingLister{entries: []Entry{{ID: "BV1"}}}
+	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, rl,
+		WithCookieAccountStore(store),
+		WithOutputRoot(t.TempDir()),
+	)
+
+	// 默认账号 D
+	pathD := writeTestCookieFile(t, cookieDir, 200, false)
+	insertBiliAccount(t, database, 200, "D", pathD, true)
+
+	// 频道挂 DownloadCookieFile=legacy.txt(无 DownloadAccountID)
+	legacyPath := filepath.Join(cookieDir, "legacy.txt")
+	if err := os.WriteFile(legacyPath, []byte("# Netscape\n.bilibili.com\tTRUE\t/\tTRUE\t9999999999\tSESSDATA\tlegacy\n"), 0o600); err != nil {
+		t.Fatalf("write legacy: %v", err)
+	}
+	_, err := database.Exec(`UPDATE channels SET download_cookie_file = ? WHERE id = 'huize'`, legacyPath)
+	if err != nil {
+		t.Fatalf("update channel: %v", err)
+	}
+
+	ch, err := channel.NewStore(database).Get(context.Background(), "huize")
+	if err != nil {
+		t.Fatalf("get channel: %v", err)
+	}
+
+	_, err = manager.PreviewChannel(context.Background(), ch)
+	if err != nil {
+		t.Fatalf("PreviewChannel: %v", err)
+	}
+	rec, ok := rl.lastRecord()
+	if !ok {
+		t.Fatal("lister not called")
+	}
+	// 应走默认账号 D(临时文件),不是 legacy 原路径
+	if rec.cookiePath == legacyPath {
+		t.Errorf("走 legacy,应走默认账号 D 的临时文件(优先级:全局默认 > legacy)")
+	}
+	if rec.cookiePath == pathD {
+		t.Errorf("cookiePath = 默认账号 D 原始路径(应写临时明文文件)")
+	}
+	if bytes.Contains(rec.content, []byte("legacy")) {
+		t.Errorf("走了 legacy cookie,应优先默认账号 D")
+	}
+	if !bytes.Contains(rec.content, []byte("sess-")) {
+		t.Errorf("临时文件应含默认账号 D 的 cookie,实际: %q", string(rec.content))
+	}
+}
+
+// TestPreviewChannel_OnlyLegacyFile:无账号配置、无全局默认、有 DownloadCookieFile → 走 legacy 原路径(零回归)
+func TestPreviewChannel_OnlyLegacyFile(t *testing.T) {
+	database := newDiscoverTestDB(t)
+	cookieDir := t.TempDir()
+	store := biliutil.NewCookieAccountStore(database, cookieDir)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	rl := &recordingLister{entries: []Entry{{ID: "BV1"}}}
+	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, rl,
+		WithCookieAccountStore(store),
+		WithOutputRoot(t.TempDir()),
+	)
+
+	legacyPath := filepath.Join(cookieDir, "legacy.txt")
+	if err := os.WriteFile(legacyPath, []byte("# Netscape\n.bilibili.com\tTRUE\t/\tTRUE\t9999999999\tSESSDATA\tlegacy\n"), 0o600); err != nil {
+		t.Fatalf("write legacy: %v", err)
+	}
+	_, err := database.Exec(`UPDATE channels SET download_cookie_file = ? WHERE id = 'huize'`, legacyPath)
+	if err != nil {
+		t.Fatalf("update channel: %v", err)
+	}
+
+	ch, err := channel.NewStore(database).Get(context.Background(), "huize")
+	if err != nil {
+		t.Fatalf("get channel: %v", err)
+	}
+
+	_, err = manager.PreviewChannel(context.Background(), ch)
+	if err != nil {
+		t.Fatalf("PreviewChannel: %v", err)
+	}
+	rec, ok := rl.lastRecord()
+	if !ok {
+		t.Fatal("lister not called")
+	}
+	if rec.cookiePath != legacyPath {
+		t.Errorf("cookiePath = %q, want legacy %q (无账号配置应直接走 legacy)", rec.cookiePath, legacyPath)
+	}
+}
+
+// TestPreviewChannel_NoConfigAtAll:全空 → lister 收到空串(不阻断)
+func TestPreviewChannel_NoConfigAtAll(t *testing.T) {
+	database := newDiscoverTestDB(t)
+	cookieDir := t.TempDir()
+	store := biliutil.NewCookieAccountStore(database, cookieDir)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	rl := &recordingLister{entries: []Entry{{ID: "BV1"}}}
+	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, rl,
+		WithCookieAccountStore(store),
+		WithOutputRoot(t.TempDir()),
+	)
+
+	ch, err := channel.NewStore(database).Get(context.Background(), "huize")
+	if err != nil {
+		t.Fatalf("get channel: %v", err)
+	}
+	// huize 默认无 DownloadCookieFile,账号池也无账号
+
+	_, err = manager.PreviewChannel(context.Background(), ch)
+	if err != nil {
+		t.Fatalf("PreviewChannel: %v (全空不应阻断)", err)
+	}
+	rec, ok := rl.lastRecord()
+	if !ok {
+		t.Fatal("lister not called")
+	}
+	if rec.cookiePath != "" {
+		t.Errorf("cookiePath = %q, want empty (全空配置)", rec.cookiePath)
+	}
+}
+
+// TestDiscoverChannel_UsesChannelCookieResolution:DiscoverChannel 也走 resolveChannelCookie
+func TestDiscoverChannel_UsesChannelCookieResolution(t *testing.T) {
+	database := newDiscoverTestDB(t)
+	cookieDir := t.TempDir()
+	store := biliutil.NewCookieAccountStore(database, cookieDir)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	rl := &recordingLister{entries: []Entry{{ID: "BVwithPrefix", Title: "【直播回放】test"}}}
+	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, rl,
+		WithCookieAccountStore(store),
+		WithOutputRoot(t.TempDir()),
+	)
+
+	// 默认账号 + 频道无 legacy
+	pathD := writeTestCookieFile(t, cookieDir, 200, false)
+	insertBiliAccount(t, database, 200, "D", pathD, true)
+
+	ch, err := channel.NewStore(database).Get(context.Background(), "huize")
+	if err != nil {
+		t.Fatalf("get channel: %v", err)
+	}
+
+	_, err = manager.DiscoverChannel(context.Background(), ch)
+	if err != nil {
+		t.Fatalf("DiscoverChannel: %v", err)
+	}
+	rec, ok := rl.lastRecord()
+	if !ok {
+		t.Fatal("lister not called")
+	}
+	// DiscoverChannel 应走默认账号的临时文件
+	if rec.cookiePath == "" {
+		t.Fatal("cookiePath 空,应有默认账号临时文件")
+	}
+	if rec.cookiePath == pathD {
+		t.Errorf("cookiePath = 原始账号路径(应写临时明文文件)")
 	}
 }

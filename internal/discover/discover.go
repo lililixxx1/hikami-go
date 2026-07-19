@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"hikami-go/internal/biliutil"
 	"hikami-go/internal/channel"
 	"hikami-go/internal/download"
 	"hikami-go/internal/executil"
@@ -81,11 +82,13 @@ func (l YTDLPLister) List(ctx context.Context, sourceURL string, cookieFile stri
 }
 
 type Manager struct {
-	channels      *channel.Store
-	sessions      *session.Store
-	workers       *worker.Pool
-	lister        Lister
-	titleResolver TitleResolver // 可选，nil 时不解析空标题
+	channels       *channel.Store
+	sessions       *session.Store
+	workers        *worker.Pool
+	lister         Lister
+	titleResolver  TitleResolver                // 可选，nil 时不解析空标题
+	cookieAccounts *biliutil.CookieAccountStore // 可选,nil 时发现阶段不走账号池(旧行为)
+	outputRoot     string                       // 可选,临时 cookie 文件目录(默认 ".")
 }
 
 // Option 配置 Manager 的可选依赖。
@@ -95,6 +98,27 @@ type Option func(*Manager)
 // 返回空标题时通过 B站 view API 取真实标题。
 func WithTitleResolver(r TitleResolver) Option {
 	return func(m *Manager) { m.titleResolver = r }
+}
+
+// WithCookieAccountStore 注入 B 站账号池,使发现阶段在用户未显式指定 cookie 时,
+// 自动回退到账号池:
+//   - URL 模式(Preview):用全局默认下载账号的 cookie(明文临时文件给 yt-dlp)
+//   - 频道模式(PreviewChannel/DiscoverChannel):走 ResolveCookie 三级链
+//     (频道账号覆盖 → 全局默认 → channel.DownloadCookieFile legacy)
+//
+// 账号池落盘的 cookie 文件可能是加密的(HIKAMI_V1),yt-dlp 读不了,
+// 所以 helper 内部会 LoadCookie 解密到内存 + 写明文临时文件(详见 cookie.go)。
+//
+// 语义对齐 download.Handler.SetCookieAccountStore(main.go:249)。
+func WithCookieAccountStore(store *biliutil.CookieAccountStore) Option {
+	return func(m *Manager) { m.cookieAccounts = store }
+}
+
+// WithOutputRoot 注入输出根目录,用于写临时 cookie 文件(<outputRoot>/.cookies/bilibili/)。
+// 默认 "."(当前工作目录)。下载阶段从 cfg.OutputRoot 取,发现阶段用此 option 显式注入,
+// 避免 Manager 持有整个 *config.Config(最小依赖原则)。
+func WithOutputRoot(root string) Option {
+	return func(m *Manager) { m.outputRoot = root }
 }
 
 type Result struct {
@@ -361,7 +385,11 @@ func (m *Manager) resolveTitle(ctx context.Context, channelID, sourceID, current
 }
 
 func (m *Manager) DiscoverChannel(ctx context.Context, item channel.Channel) ([]Result, error) {
-	entries, err := m.lister.List(ctx, item.ReplaySourceURL, item.DownloadCookieFile)
+	cookieFile, cleanup := m.resolveChannelCookie(ctx, item.DownloadAccountID, item.DownloadCookieFile)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	entries, err := m.lister.List(ctx, item.ReplaySourceURL, cookieFile)
 	if err != nil {
 		return nil, err
 	}
@@ -438,7 +466,7 @@ func (m *Manager) DiscoverChannel(ctx context.Context, item channel.Channel) ([]
 // 不再依赖主播管理页的 channel 配置。
 type PreviewInput struct {
 	SourceURL   string // yt-dlp 输入 URL(B 站收藏夹/合集/UP 主主页)
-	CookieFile  string // 可选 cookie 文件路径(语义同 channel.DownloadCookieFile)
+	CookieFile  string // 可选,URL 模式显式覆盖 cookie 文件路径(优先级最高,详 cookie.go);空串/纯空白时回退默认账号
 	TitlePrefix string // 可选标题前缀过滤(逗号分隔,语义同 channel.TitlePrefix)
 	ChannelID   string // 可选;空串时填 channel.UnassignedID。用于 annotateExists 去重键与 Result.ChannelID
 }
@@ -464,11 +492,40 @@ func (m *Manager) Preview(ctx context.Context, in PreviewInput) ([]Result, error
 	return results, nil
 }
 
-// previewCore 是 PreviewChannel/Preview 共享的核心预览逻辑(不标注 exists)。
-// 调用方负责后续的 annotateExists(PreviewAll 外层批量标注一次,Preview 内部标注一次,
-// 避免双重标注——codex r13b MEDIUM #3)。
+// previewCore 是 URL 模式(Preview/preview-by-url)的核心预览逻辑(不标注 exists)。
+// 调用方负责后续的 annotateExists(Preview 内部标注一次)。
+//
+// Cookie 解析走 resolveURLCookie(用户显式优先,详见 cookie.go);
+// 与频道路径(previewCoreForChannel)隔离——两条路径优先级方向相反(codex r15b HIGH #1/#2)。
 func (m *Manager) previewCore(ctx context.Context, in PreviewInput) ([]Result, error) {
-	entries, err := m.lister.List(ctx, in.SourceURL, in.CookieFile)
+	cookieFile, cleanup := m.resolveURLCookie(ctx, in.CookieFile)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	return m.previewFromEntries(ctx, in, cookieFile)
+}
+
+// previewCoreForChannel 是频道模式(PreviewChannel)的核心预览逻辑(不标注 exists)。
+// PreviewAll 在外层对聚合的所有频道结果做一次批量 annotateExists,避免每频道重复标注。
+//
+// Cookie 解析走 resolveChannelCookie(ResolveCookie 三级链,与下载链路对齐);
+// 与 URL 路径(previewCore)隔离——v3 拆分,不再转发到 previewCore(codex r15b HIGH #2)。
+func (m *Manager) previewCoreForChannel(ctx context.Context, item channel.Channel) ([]Result, error) {
+	cookieFile, cleanup := m.resolveChannelCookie(ctx, item.DownloadAccountID, item.DownloadCookieFile)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	return m.previewFromEntries(ctx, PreviewInput{
+		SourceURL:   item.ReplaySourceURL,
+		TitlePrefix: item.TitlePrefix,
+		ChannelID:   item.ID,
+	}, cookieFile)
+}
+
+// previewFromEntries 共享的预览循环:title_prefix 过滤 + resolveTitle + Result 构造。
+// 不涉及 cookie 解析(已在外层 previewCore/previewCoreForChannel 完成,传入 cookieFile)。
+func (m *Manager) previewFromEntries(ctx context.Context, in PreviewInput, cookieFile string) ([]Result, error) {
+	entries, err := m.lister.List(ctx, in.SourceURL, cookieFile)
 	if err != nil {
 		return nil, err
 	}
@@ -496,16 +553,12 @@ func (m *Manager) previewCore(ctx context.Context, in PreviewInput) ([]Result, e
 	return results, nil
 }
 
-// PreviewChannel lists discovered replays for a channel without creating sessions.
-// 2026-07-19 重构:转发到 previewCore(不标注 exists),保持向后兼容。
+// PreviewChannel 列出某个频道的回放(不建场次、不入队),供两步式发现的预览阶段使用。
+// 2026-07-19 重构(v3):改走 previewCoreForChannel,使用 resolveChannelCookie(ResolveCookie 三级链),
+// 与下载阶段 cookie 语义对齐。不再转发到 previewCore(URL 模式,codex r15b HIGH #2)。
 // PreviewAll 在外层对聚合的所有频道结果做一次批量 annotateExists,避免每频道重复标注。
 func (m *Manager) PreviewChannel(ctx context.Context, item channel.Channel) ([]Result, error) {
-	return m.previewCore(ctx, PreviewInput{
-		SourceURL:   item.ReplaySourceURL,
-		CookieFile:  item.DownloadCookieFile,
-		TitlePrefix: item.TitlePrefix,
-		ChannelID:   item.ID,
-	})
+	return m.previewCoreForChannel(ctx, item)
 }
 
 func normalizeEntry(entry Entry) Entry {

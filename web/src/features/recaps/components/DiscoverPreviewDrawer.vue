@@ -143,7 +143,8 @@ watch(
           <summary>高级(可选)</summary>
           <div class="form-row">
             <label class="form-label">Cookie 文件路径</label>
-            <HInput v-model="previewCookieFile" placeholder="可选,如 /data/.cookies/bilibili/123.txt" />
+            <HInput v-model="previewCookieFile" placeholder="可选,留空时使用默认登录账号" />
+            <div class="form-hint">留空时自动使用设置中的默认登录账号;填了则覆盖默认账号。</div>
           </div>
           <div class="form-row">
             <label class="form-label">标题前缀过滤</label>
@@ -266,6 +267,11 @@ watch(
 .form-error {
   font-size: 12px;
   color: var(--danger, #f56c6c);
+}
+
+.form-hint {
+  font-size: 11px;
+  color: var(--text-muted, var(--text-secondary));
 }
 
 .advanced {
