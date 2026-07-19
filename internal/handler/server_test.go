@@ -2271,7 +2271,7 @@ func TestDownloadByURLNoChannelFallsBackToUnassigned(t *testing.T) {
 		t.Fatalf("ensure unassigned: %v", err)
 	}
 
-	body := strings.NewReader(`{"url":"https://www.bilibili.com/video/BV1xx"}"`)
+	body := strings.NewReader(`{"url":"https://www.bilibili.com/video/BV1xx"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/sessions/download-by-url", body)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

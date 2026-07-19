@@ -772,4 +772,13 @@ func TestPreviewChannelForwardsToPreview(t *testing.T) {
 			t.Errorf("[%d] Title: PreviewChannel=%q Preview=%q", i, oldResults[i].Title, newResults[i].Title)
 		}
 	}
+
+	// codex r14 SUGGESTION #2:显式锁定 Exists 语义不变式。
+	// PreviewChannel(转发到 previewCore)不标 Exists;Preview(内部调 annotateExists)才标。
+	// 这是避免 PreviewAll 双重标注的关键设计(codex r13b MEDIUM #3)。
+	for i := range oldResults {
+		if oldResults[i].Exists {
+			t.Errorf("[%d] PreviewChannel 标注了 Exists=true,应保持 false(PreviewAll 外层负责批量标注)", i)
+		}
+	}
 }
