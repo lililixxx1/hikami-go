@@ -758,6 +758,62 @@ paths:
         '401':
           $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
 
+  /api/sessions/discover/preview-by-url:
+    post:
+      tags: [场次]
+      operationId: discoverPreviewByURL
+      summary: 按 URL 预览回放(URL 驱动独立入口,2026-07-19 解耦新增)
+      description: |
+        不绑定主播表,用户直接粘贴 B 站收藏夹/合集/UP 主主页 URL,后端调 yt-dlp flat-playlist 列出回放。
+        所有结果归到系统占位频道 `_unassigned`(前端显示为「未分类」)。
+        每条 Result 带 `exists` 标记(是否已建过 download 场次)。
+        返回 200 + `{items: [DiscoverResult]}`。
+
+        **cookie 优先级**(2026-07-19 v3 重构):
+        1. 用户显式传 `cookie_file`(非空)→ 直接用该文件路径
+        2. 全局默认下载账号(`bili_cookie_accounts.is_default_download=1`)→
+           自动用该账号的 cookie(账号池落盘可能是加密的 HIKAMI_V1 格式,
+           后端会 LoadCookie 解密 + 写明文临时文件供 yt-dlp 使用)
+        3. 都没有 → 不带 cookie(公开回放仍能发现)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url:
+                  type: string
+                  description: B 站链接(收藏夹/合集/UP 主主页 URL)
+                  example: 'https://space.bilibili.com/123/lists/456'
+                cookie_file:
+                  type: string
+                  description: |
+                    可选,显式覆盖 cookie 文件路径。
+                    **留空**(默认)时自动使用设置中的默认登录账号;
+                    填了则覆盖默认账号(适合多账号场景)。
+                title_prefix:
+                  type: string
+                  description: 可选,逗号分隔的标题前缀过滤(如 `【直播回放】`)
+      responses:
+        '200':
+          description: 预览结果(未建场次)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: 'components/schemas/discover.yaml#/DiscoverResult'
+        '400':
+          description: 请求体非法或缺 url
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
   /api/sessions/discover/execute:
     post:
       tags: [场次]

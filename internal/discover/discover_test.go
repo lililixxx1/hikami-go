@@ -929,7 +929,9 @@ func TestPreview_ExplicitCookieFileWins(t *testing.T) {
 		WithOutputRoot(t.TempDir()),
 	)
 
-	explicit := "/tmp/explicit-by-user.txt"
+	// 用 t.TempDir() 下的路径(不创建文件),避免本机 /tmp 巧合存在同名文件导致非确定性
+	// codex r16 SUGGESTION
+	explicit := filepath.Join(t.TempDir(), "explicit.txt")
 	_, err := manager.Preview(context.Background(), PreviewInput{
 		SourceURL:  "https://example.com",
 		CookieFile: explicit,
@@ -1186,9 +1188,9 @@ func TestPreviewChannel_AccountIDWinsOverLegacyFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update channel: %v", err)
 	}
-	// 写一个 legacy cookie 文件(供 ResolveCookie 退化兜底)
+	// 写一个合法 legacy cookie 文件(三字段齐全,供 ResolveCookie 退化兜底——codex r16 LOW #2)
 	legacyPath := filepath.Join(cookieDir, "legacy.txt")
-	if err := os.WriteFile(legacyPath, []byte("# Netscape\n.bilibili.com\tTRUE\t/\tTRUE\t9999999999\tSESSDATA\tlegacy\n"), 0o600); err != nil {
+	if err := os.WriteFile(legacyPath, validLegacyNetscapeCookie(), 0o600); err != nil {
 		t.Fatalf("write legacy: %v", err)
 	}
 
@@ -1212,9 +1214,13 @@ func TestPreviewChannel_AccountIDWinsOverLegacyFile(t *testing.T) {
 	if rec.cookiePath == pathA {
 		t.Errorf("cookiePath = 账号 A 原始路径(应写临时明文文件)")
 	}
-	if !bytes.Contains(rec.content, []byte("sess-")) {
-		// pathA 写入时 UID=100 → SESSDATA=sess-<某串>。临时文件应含此值,而非 legacy 的 "legacy"
-		t.Errorf("临时文件内容应含账号 A 的 cookie(SESSDATA=sess-*),实际: %q", string(rec.content))
+	// 精确断言:必须走账号 A(SESSDATA=sess-uid100),不是默认账号 D(sess-uid200),
+	// 也不是 legacy(cookie 内容为 "legacy")——codex r16 LOW #3
+	if !bytes.Contains(rec.content, []byte("sess-uid100")) {
+		t.Errorf("临时文件应含账号 A 的 SESSDATA(sess-uid100),实际: %q", string(rec.content))
+	}
+	if bytes.Contains(rec.content, []byte("sess-uid200")) {
+		t.Errorf("走了默认账号 D(sess-uid200),应优先频道账号 A(codex r16 LOW #3)")
 	}
 	if bytes.Contains(rec.content, []byte("legacy")) {
 		t.Errorf("走了 legacy cookie,应优先账号 A")
@@ -1241,7 +1247,7 @@ func TestPreviewChannel_DefaultAccountWinsOverLegacyFile(t *testing.T) {
 
 	// 频道挂 DownloadCookieFile=legacy.txt(无 DownloadAccountID)
 	legacyPath := filepath.Join(cookieDir, "legacy.txt")
-	if err := os.WriteFile(legacyPath, []byte("# Netscape\n.bilibili.com\tTRUE\t/\tTRUE\t9999999999\tSESSDATA\tlegacy\n"), 0o600); err != nil {
+	if err := os.WriteFile(legacyPath, validLegacyNetscapeCookie(), 0o600); err != nil {
 		t.Fatalf("write legacy: %v", err)
 	}
 	_, err := database.Exec(`UPDATE channels SET download_cookie_file = ? WHERE id = 'huize'`, legacyPath)
@@ -1272,12 +1278,17 @@ func TestPreviewChannel_DefaultAccountWinsOverLegacyFile(t *testing.T) {
 	if bytes.Contains(rec.content, []byte("legacy")) {
 		t.Errorf("走了 legacy cookie,应优先默认账号 D")
 	}
-	if !bytes.Contains(rec.content, []byte("sess-")) {
-		t.Errorf("临时文件应含默认账号 D 的 cookie,实际: %q", string(rec.content))
+	// 精确断言:必须走默认账号 D(sess-uid200)——codex r16 LOW #3
+	if !bytes.Contains(rec.content, []byte("sess-uid200")) {
+		t.Errorf("临时文件应含默认账号 D 的 cookie(sess-uid200),实际: %q", string(rec.content))
 	}
 }
 
-// TestPreviewChannel_OnlyLegacyFile:无账号配置、无全局默认、有 DownloadCookieFile → 走 legacy 原路径(零回归)
+// TestPreviewChannel_OnlyLegacyFile:无账号配置、无全局默认、有 DownloadCookieFile → 走 legacy(零回归)
+// 关键:ResolveCookie 第 3 级 fallback 加载 legacy 成功后,helper 把它写成临时明文文件
+// (与下载链路 writeTempCookieFile 完全一致),所以 lister 收到的是临时路径而非 legacy 原路径,
+// 但临时文件的内容应来自 legacy fixture(含 legacy-sess)。codex r16 LOW #2:旧 fixture 缺字段,
+// 走的是"ResolveCookie 加载失败→退化 legacy 原路径"的错误路径,不是真正的成功 fallback。
 func TestPreviewChannel_OnlyLegacyFile(t *testing.T) {
 	database := newDiscoverTestDB(t)
 	cookieDir := t.TempDir()
@@ -1290,7 +1301,7 @@ func TestPreviewChannel_OnlyLegacyFile(t *testing.T) {
 	)
 
 	legacyPath := filepath.Join(cookieDir, "legacy.txt")
-	if err := os.WriteFile(legacyPath, []byte("# Netscape\n.bilibili.com\tTRUE\t/\tTRUE\t9999999999\tSESSDATA\tlegacy\n"), 0o600); err != nil {
+	if err := os.WriteFile(legacyPath, validLegacyNetscapeCookie(), 0o600); err != nil {
 		t.Fatalf("write legacy: %v", err)
 	}
 	_, err := database.Exec(`UPDATE channels SET download_cookie_file = ? WHERE id = 'huize'`, legacyPath)
@@ -1311,9 +1322,23 @@ func TestPreviewChannel_OnlyLegacyFile(t *testing.T) {
 	if !ok {
 		t.Fatal("lister not called")
 	}
-	if rec.cookiePath != legacyPath {
-		t.Errorf("cookiePath = %q, want legacy %q (无账号配置应直接走 legacy)", rec.cookiePath, legacyPath)
+	// legacy 通过 ResolveCookie 第 3 级加载成功,helper 把它写成临时文件(与下载链路一致)
+	if rec.cookiePath == legacyPath {
+		t.Errorf("cookiePath = legacy 原路径 %q (ResolveCookie 加载成功后应写临时文件)", legacyPath)
 	}
+	// 临时文件内容应含 legacy fixture 的 SESSDATA 值(证明用的是 legacy cookie)
+	if !bytes.Contains(rec.content, []byte("legacy-sess")) {
+		t.Errorf("临时文件应含 legacy cookie 的 SESSDATA(legacy-sess),实际: %q", string(rec.content))
+	}
+}
+
+// validLegacyNetscapeCookie 返回合法的明文 Netscape cookie(三字段齐全),供 legacy fallback 测试使用。
+// codex r16 LOW #2:旧 fixture 只含 SESSDATA,实际走的是 ResolveCookie 加载失败的错误退化路径。
+func validLegacyNetscapeCookie() []byte {
+	return []byte("# Netscape HTTP Cookie File\n" +
+		".bilibili.com\tTRUE\t/\tTRUE\t9999999999\tSESSDATA\tlegacy-sess\n" +
+		".bilibili.com\tTRUE\t/\tTRUE\t9999999999\tbili_jct\tlegacy-csrf\n" +
+		".bilibili.com\tTRUE\t/\tTRUE\t9999999999\tDedeUserID\tlegacy-uid\n")
 }
 
 // TestPreviewChannel_NoConfigAtAll:全空 → lister 收到空串(不阻断)
