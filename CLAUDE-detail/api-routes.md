@@ -46,6 +46,7 @@
 |------|------|------|
 | POST | `/api/sessions/discover` | 为所有已配置 `replay_source_url` 的主播自动发现回放并排队下载（一步式：发现+下载） |
 | POST | `/api/sessions/discover/preview` | 两步式发现·第一步：列出所有频道可发现的回放，不建场次不入队；每条返回 `exists` 标记（是否已建过 download 场次），供前端标注「已处理」 |
+| POST | `/api/sessions/discover/preview-by-url` | URL 驱动独立发现预览（2026-07-19 解耦新增）：body `{url, cookie_file?, title_prefix?}`，不绑定主播表，结果归 `_unassigned`；cookie 留空时自动使用默认登录账号（v3 拆双 helper：URL 模式走 `resolveURLCookie`，账号池 cookie 加密场景自动解密 + 写明文临时文件给 yt-dlp） |
 | POST | `/api/sessions/discover/execute` | 两步式发现·第二步：body `{items: ExecuteItem[]}`（前端勾选项），按列表建 download 场次并入队；不重跑 yt-dlp，复用 `CreateDownload` 幂等去重 |
 | POST | `/api/sessions/download` | 按 `session_id` 重跑下载任务 |
 | POST | `/api/sessions/download-by-url` | 按视频链接（BV 号等）+ `channel_id` 创建下载场次并入队；受 `ReplayDownload` 能力守卫；同 BV 重复返回 409 |
