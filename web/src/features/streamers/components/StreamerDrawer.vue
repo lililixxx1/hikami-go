@@ -5,10 +5,11 @@ import type { Channel, Session, RuntimeStatus } from '@/api/types-derived'
 import { HDrawer, HEmpty, HCollapse, HCollapseItem, HInput, HPill, HButton, HCombobox } from '@/components/ui'
 import { getFriendlySessionStatus } from '@/utils/friendlyStatus'
 import { formatDateTime } from '@/utils/format'
-import type { CookieStatus as CookieStatusValue, AutoToggleField, RecapOverrideField } from '../composables/useStreamerDetail'
+import type { CookieStatus as CookieStatusValue, AutoToggleField, RecapOverrideField, PublishOverrideField, PublishOverrideValue } from '../composables/useStreamerDetail'
 import AutoSwitches from './AutoSwitches.vue'
 import CookieStatus from './CookieStatus.vue'
 import ChannelAdvancedConfig from './ChannelAdvancedConfig.vue'
+import ChannelPublishConfig from './ChannelPublishConfig.vue'
 // 复用术语表/模板编辑器(Phase 6 已迁移为 H* 实现)
 import GlossaryEditor from '@/components/channel/GlossaryEditor.vue'
 import RecapTemplateEditor from '@/components/channel/RecapTemplateEditor.vue'
@@ -31,7 +32,7 @@ const emit = defineEmits<{
   'qr-login': [cid: string]
   toggle: [field: AutoToggleField]
   'recap-override': [field: RecapOverrideField, value: string | number]
-  'save-cover': [value: string]
+  'save-publish': [changes: Partial<Record<PublishOverrideField, PublishOverrideValue>>]
   delete: []
   reload: []
 }>()
@@ -51,9 +52,8 @@ const cookieStatus = computed<CookieStatusValue>(() => {
 const glossaryOpen = ref<string[]>([])
 const recapTemplateOpen = ref<string[]>([])
 
-// 本地编辑草稿(封面 / 回顾模型 / 续写次数):避免 v-model 直接污染 props.channel,
-// 用户点"应用/保存"才 emit 给壳调 API。抽屉打开或切换主播时从 channel 同步。
-const coverDraft = ref('')
+// 回顾设置草稿(回顾模型 / 续写次数)。封面 + 文集 + 发布字段迁移到 ChannelPublishConfig 子组件,
+// 由该子组件自管 draft 并通过 save-publish emit 批量提交(2026-07-20)。
 const recapModelDraft = ref('')
 const maxContinuationsDraft = ref('')
 watch(
@@ -61,7 +61,6 @@ watch(
   ([vis]) => {
     if (vis && props.channel) {
       const c = props.channel
-      coverDraft.value = c.publish_cover_url ?? ''
       recapModelDraft.value = c.recap_model ?? ''
       maxContinuationsDraft.value = String(c.max_continuations < 0 ? -1 : c.max_continuations)
     }
@@ -93,10 +92,6 @@ function onOpenRecap(sid: string) {
 
 function onQrLogin() {
   if (props.channel) emit('qr-login', props.channel.id)
-}
-
-function onSaveCover() {
-  emit('save-cover', coverDraft.value)
 }
 
 // 应用回顾设置:仅当草稿与当前值不同时才 emit 对应字段(避免无变化的多余请求)
@@ -219,18 +214,11 @@ function applyRecapOverrides() {
 
         <section class="detail-section">
           <h4 class="detail-section-title">发布设置</h4>
-          <div class="form-stack">
-            <HInput
-              :model-value="coverDraft"
-              size="sm"
-              placeholder="自定义封面 URL(留空跟随全局)"
-              @update:model-value="coverDraft = $event"
-            >
-              <template #label>自定义封面</template>
-            </HInput>
-            <div class="hint">留空跟随全局;优先使用回顾目录封面,无回顾封面时才用此 URL 或本地路径(发布时自动上传)</div>
-            <HButton size="sm" variant="secondary" @click="onSaveCover">保存封面</HButton>
-          </div>
+          <ChannelPublishConfig
+            :channel="channel"
+            :updating="updating"
+            @save-publish="emit('save-publish', $event)"
+          />
         </section>
 
         <section class="detail-section">

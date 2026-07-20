@@ -1529,3 +1529,92 @@ func TestHandleTask_FailureDoesNotTriggerOnSuccess(t *testing.T) {
 		t.Error("失败路径不应触发 onSuccess 回调")
 	}
 }
+
+// TestHandleTask_PublishAccountIDWinsOverLegacy:
+// 验证 channel.PublishAccountID 生效后,ResolveCookie 优先用账号 cookie 而非 legacy cookie_file。
+// 主播级发布账号(本次新增字段)是 ResolveCookie 三级链 level 1,
+// 此前 publisher.go:382 永远传 sql.NullInt64{},level 1 永远跳过。
+//
+// codex r18 MEDIUM 修订:legacy 和 account cookie 的 SESSDATA/DedeUserID 必须不同,
+// 否则即使实现回退到 legacy 断言也会通过(原 writeTestCookieFileAt 对两者都写 DedeUserID=99999)。
+func TestHandleTask_PublishAccountIDWinsOverLegacy(t *testing.T) {
+	h := newTestHelper(t)
+	ctx := context.Background()
+
+	// legacy cookie_file(SESSDATA=legacy-sess, DedeUserID=legacy-uid)
+	legacyPath := filepath.Join(h.tmpDir, "legacy.txt")
+	writeTestCookieFileAt(t, legacyPath, "legacy-sess", "legacy-uid")
+
+	// 账号 cookie(SESSDATA=account-sess, DedeUserID=account-uid),非默认发布账号(is_default_publish=0)
+	cookieDir := filepath.Join(h.tmpDir, "cookies")
+	if err := os.MkdirAll(cookieDir, 0755); err != nil {
+		t.Fatalf("mkdir cookie dir: %v", err)
+	}
+	accountPath := filepath.Join(cookieDir, "account.txt")
+	writeTestCookieFileAt(t, accountPath, "account-sess", "account-uid")
+
+	// 裸 SQL 插入账号(绕过 ValidateCookiePath 限制)
+	var accountID int64
+	err := h.db.QueryRowContext(ctx, `
+		INSERT INTO bili_cookie_accounts (uid, nickname, cookie_file, is_default_download, is_default_publish, created_at, updated_at)
+		VALUES (?, ?, ?, 0, 0, ?, ?)
+		RETURNING id`,
+		99999, "test-account", accountPath, time.Now().Format(time.RFC3339), time.Now().Format(time.RFC3339),
+	).Scan(&accountID)
+	if err != nil {
+		t.Fatalf("insert account: %v", err)
+	}
+
+	// 设 channel:PublishAccountID 指向 account + CookieFile 指向 legacy(应被 account 覆盖)
+	publishAccountID := accountID
+	ch, sess := h.setupSessionAndChannel(ctx, legacyPath, func(input *channel.UpsertInput) {
+		input.PublishAccountID = &publishAccountID
+	})
+	h.createRecapMarkdown(ch, sess, "# 测试\n内容")
+
+	// 注入 cookieAccountStore
+	store := biliutil.NewCookieAccountStore(h.db, cookieDir)
+
+	// 用 saveDraftFn 闭包捕获收到的 cookie(同时记 SESSDATA + DedeUserID,
+	// 即使一个字段没区分另一个也能抓到回归)
+	var gotSESSDATA, gotDedeUserID string
+	fake := &fakeOpusClient{
+		saveDraftFn: func(_ context.Context, cookie *BiliCookie, _ *DraftRequest) (string, error) {
+			gotSESSDATA = cookie.SESSDATA
+			gotDedeUserID = cookie.DedeUserID
+			return "12345", nil
+		},
+	}
+	handler := NewHandler(h.cfg, h.sessions, h.states, h.channels, fake)
+	handler.SetCookieAccountStore(store)
+	handler.Register(h.workerPool)
+
+	task := h.enqueueTask(ctx, sess)
+	if err := handler.HandleTask(ctx, task, &noopReporter{}); err != nil {
+		t.Fatalf("HandleTask: %v", err)
+	}
+
+	// 断言:用的是 account cookie(SESSDATA=account-sess, DedeUserID=account-uid)
+	if gotSESSDATA != "account-sess" {
+		t.Errorf("cookie.SESSDATA = %q, want %q (账号 cookie 应优先于 legacy cookie_file)", gotSESSDATA, "account-sess")
+	}
+	if gotDedeUserID != "account-uid" {
+		t.Errorf("cookie.DedeUserID = %q, want %q (账号 cookie 应优先于 legacy cookie_file)", gotDedeUserID, "account-uid")
+	}
+}
+
+// writeTestCookieFileAt 在指定路径写明文 Netscape cookie 文件(测试 helper)。
+// codex r18 MEDIUM:SESSDATA + DedeUserID 都按传入参数写入,便于断言区分两个 cookie。
+func writeTestCookieFileAt(t *testing.T, path, sessdata, dedeUserID string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	content := "# Netscape HTTP Cookie File\n" +
+		".bilibili.com\tTRUE\t/\tTRUE\t9999999999\tSESSDATA\t" + sessdata + "\n" +
+		".bilibili.com\tTRUE\t/\tTRUE\t9999999999\tbili_jct\tcsrf-" + sessdata + "\n" +
+		".bilibili.com\tTRUE\t/\tTRUE\t9999999999\tDedeUserID\t" + dedeUserID + "\n"
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatalf("write cookie: %v", err)
+	}
+}

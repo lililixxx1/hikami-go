@@ -54,6 +54,7 @@ type Channel struct {
 	PublishTimerPubTime int64  `json:"publish_timer_pub_time"`
 	PublishCoverURL     string `json:"publish_cover_url"`
 	PublishTopics       string `json:"publish_topics"`
+	PublishAccountID    *int64 `json:"publish_account_id,omitempty"`
 	RecapModel          string `json:"recap_model"`
 	MaxContinuations    int    `json:"max_continuations"`
 	CreatedAt           string `json:"created_at"`
@@ -89,6 +90,7 @@ type UpsertInput struct {
 	PublishTimerPubTime int64  `json:"publish_timer_pub_time"`
 	PublishCoverURL     string `json:"publish_cover_url"`
 	PublishTopics       string `json:"publish_topics"`
+	PublishAccountID    *int64 `json:"publish_account_id"`
 	RecapModel          string `json:"recap_model"`
 	MaxContinuations    int    `json:"max_continuations"`
 }
@@ -139,6 +141,7 @@ func (s *Store) EnsureUnassigned(ctx context.Context) error {
 			publish_enabled, publish_mode, publish_category_id, publish_list_id,
 			publish_private_pub, publish_original, auto_publish,
 			publish_aigc, publish_timer_pub_time, publish_cover_url, publish_topics,
+			publish_account_id,
 			recap_model, max_continuations, created_at, updated_at
 		) VALUES (
 			?, ?, 0, 0,
@@ -149,6 +152,7 @@ func (s *Store) EnsureUnassigned(ctx context.Context) error {
 			0, '', 0, -1,
 			0, -1, 0,
 			-1, 0, '', '',
+			NULL,
 			'', -1, ?, ?
 		)`,
 		UnassignedID, "未分类", now, now)
@@ -237,6 +241,7 @@ func (s *Store) Bootstrap(ctx context.Context, channels []config.BootstrapChanne
 			input.PublishTimerPubTime,
 			input.PublishCoverURL,
 			input.PublishTopics,
+			nullInt64PtrValue(input.PublishAccountID),
 			input.RecapModel,
 			input.MaxContinuations,
 		); err != nil {
@@ -347,6 +352,7 @@ func (s *Store) Create(ctx context.Context, input UpsertInput) (Channel, error) 
 		input.PublishTimerPubTime,
 		input.PublishCoverURL,
 		input.PublishTopics,
+		nullInt64PtrValue(input.PublishAccountID),
 		input.RecapModel,
 		input.MaxContinuations,
 	)
@@ -431,6 +437,7 @@ func (s *Store) Update(ctx context.Context, id string, input UpsertInput) (Chann
 		input.PublishTimerPubTime,
 		input.PublishCoverURL,
 		input.PublishTopics,
+		nullInt64PtrValue(input.PublishAccountID),
 		input.RecapModel,
 		input.MaxContinuations,
 		nowRFC3339(),
@@ -504,6 +511,9 @@ func mergeIdentified(existing Channel, identified UpsertInput) UpsertInput {
 	if identified.DownloadAccountID == nil {
 		identified.DownloadAccountID = existing.DownloadAccountID
 	}
+	if identified.PublishAccountID == nil {
+		identified.PublishAccountID = existing.PublishAccountID
+	}
 	identified.RecapModel = existing.RecapModel
 	identified.MaxContinuations = existing.MaxContinuations
 	identified.Enabled = existing.Enabled
@@ -542,6 +552,7 @@ func scanChannel(row scanner) (Channel, error) {
 	var publishEnabled int
 	var autoPublish int
 	var downloadAccountID sql.NullInt64
+	var publishAccountID sql.NullInt64
 	err := row.Scan(
 		&channel.ID,
 		&channel.Name,
@@ -571,6 +582,7 @@ func scanChannel(row scanner) (Channel, error) {
 		&channel.PublishTimerPubTime,
 		&channel.PublishCoverURL,
 		&channel.PublishTopics,
+		&publishAccountID,
 		&channel.RecapModel,
 		&channel.MaxContinuations,
 		&channel.CreatedAt,
@@ -585,6 +597,9 @@ func scanChannel(row scanner) (Channel, error) {
 	channel.AutoPublish = autoPublish != 0
 	if downloadAccountID.Valid {
 		channel.DownloadAccountID = &downloadAccountID.Int64
+	}
+	if publishAccountID.Valid {
+		channel.PublishAccountID = &publishAccountID.Int64
 	}
 	return channel, err
 }
@@ -660,14 +675,15 @@ const selectColumns = `
 	publish_private_pub,
 	publish_original,
 	auto_publish,
-	publish_aigc,
-		publish_timer_pub_time,
-		publish_cover_url,
-		publish_topics,
-		recap_model,
-		max_continuations,
-		created_at,
-		updated_at
+		publish_aigc,
+			publish_timer_pub_time,
+			publish_cover_url,
+			publish_topics,
+			publish_account_id,
+			recap_model,
+			max_continuations,
+			created_at,
+			updated_at
 `
 
 const listSQL = `SELECT ` + selectColumns + ` FROM channels ORDER BY id`
@@ -704,9 +720,10 @@ INSERT INTO channels (
 			publish_timer_pub_time,
 			publish_cover_url,
 			publish_topics,
+			publish_account_id,
 			recap_model,
 			max_continuations
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 const updateSQL = `
@@ -739,6 +756,7 @@ SET
 		publish_timer_pub_time = ?,
 		publish_cover_url = ?,
 		publish_topics = ?,
+		publish_account_id = ?,
 		recap_model = ?,
 		max_continuations = ?,
 		updated_at = ?

@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1232,6 +1233,14 @@ func TestTaskRoutes(t *testing.T) {
 
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
+	server, _ := newTestServerWithDB(t)
+	return server
+}
+
+// newTestServerWithDB 返回 Server 与其底层 *sql.DB(供需要直接操作 DB 的测试用,
+// 如 cookie account 插入)。2026-07-20 新增,供 listBiliSeries 测试注入 cookieAccounts。
+func newTestServerWithDB(t *testing.T) (*Server, *sql.DB) {
+	t.Helper()
 
 	database, err := db.Open(filepath.Join(t.TempDir(), "hikami.db"))
 	if err != nil {
@@ -1288,7 +1297,7 @@ func newTestServer(t *testing.T) *Server {
 		t.Fatalf("start worker pool: %v", err)
 	}
 	t.Cleanup(pool.Stop)
-	return NewServer(
+	server := NewServer(
 		cfg,
 		status,
 		channel.NewStore(database),
@@ -1312,6 +1321,7 @@ func newTestServer(t *testing.T) *Server {
 		nil,
 		nil,
 	)
+	return server, database
 }
 
 type fakeLiveClient struct{}
@@ -2417,5 +2427,189 @@ func TestListChannelsExcludesUnassigned(t *testing.T) {
 		if c.ID == channel.UnassignedID {
 			t.Errorf("GET /api/channels 返回了占位 channel _unassigned: %+v", c)
 		}
+	}
+}
+
+// ==================== listBiliSeries:per-channel publish account 选择(2026-07-20) ====================
+
+// cookieCapturingRT 是测试用的 http.RoundTripper,截获请求并返回预设响应。
+// server.go:listBiliSeries 的目标 URL 硬编码为 B 站 API,
+// httptest.Server.Client() 不会自动接管,必须用 RoundTripper 直接注入 server.biliCreativeClient。
+type cookieCapturingRT struct {
+	gotCookieHeader string
+	respBody        []byte
+	respStatus      int
+}
+
+func (rt *cookieCapturingRT) RoundTrip(req *http.Request) (*http.Response, error) {
+	rt.gotCookieHeader = req.Header.Get("Cookie")
+	return &http.Response{
+		StatusCode: rt.respStatus,
+		Body:       io.NopCloser(bytes.NewReader(rt.respBody)),
+		Header:     make(http.Header),
+	}, nil
+}
+
+// newTestServerWithCookieAccounts 在 newTestServer 基础上注入 cookieAccounts store。
+// 用于测试 listBiliSeries 等 cookie 账号依赖端点(codex r17c MEDIUM #5:
+// newTestServer 第 22 参传 nil,本 helper 显式覆盖)。
+// 返回 Server 与底层 DB(供测试直接插入 bili_cookie_accounts / channels 数据)。
+func newTestServerWithCookieAccounts(t *testing.T, cookieDir string) (*Server, *sql.DB) {
+	t.Helper()
+	server, database := newTestServerWithDB(t)
+	server.cookieAccounts = biliutil.NewCookieAccountStore(database, cookieDir)
+	return server, database
+}
+
+// TestListBiliSeries_WithChannelID_UsesChannelPublishAccount:
+// channel 有 publish_account_id → 请求 B 站时 Cookie 含该账号的 SESSDATA。
+func TestListBiliSeries_WithChannelID_UsesChannelPublishAccount(t *testing.T) {
+	ctx := context.Background()
+	cookieDir := t.TempDir()
+	server, database := newTestServerWithCookieAccounts(t, cookieDir)
+
+	// 插入一个账号(非默认 is_default_publish=0),cookie 含全部 3 个必填字段
+	accountPath := filepath.Join(cookieDir, "acct.txt")
+	if err := os.WriteFile(accountPath, []byte("# Netscape\n"+
+		".bilibili.com\tTRUE\t/\tTRUE\t9999999999\tSESSDATA\taccount-sess\n"+
+		".bilibili.com\tTRUE\t/\tTRUE\t9999999999\tbili_jct\tcsrf-acct\n"+
+		".bilibili.com\tTRUE\t/\tTRUE\t9999999999\tDedeUserID\t777\n"), 0600); err != nil {
+		t.Fatalf("write account cookie: %v", err)
+	}
+	var accountID int64
+	if err := database.QueryRowContext(ctx, `
+		INSERT INTO bili_cookie_accounts (uid, nickname, cookie_file, is_default_download, is_default_publish, created_at, updated_at)
+		VALUES (?, ?, ?, 0, 0, ?, ?)
+		RETURNING id`,
+		777, "acct", accountPath, time.Now().Format(time.RFC3339), time.Now().Format(time.RFC3339),
+	).Scan(&accountID); err != nil {
+		t.Fatalf("insert account: %v", err)
+	}
+
+	// 创建 channel 绑定该 publish_account_id
+	if _, err := database.ExecContext(ctx, `
+		INSERT INTO channels (id, name, uid, live_room_id, enabled, auto_record, auto_asr, auto_recap, record_danmaku,
+			source_mode, discover_limit, publish_enabled, publish_mode, publish_category_id, publish_list_id,
+			publish_private_pub, publish_original, auto_publish, publish_aigc, publish_timer_pub_time,
+			publish_cover_url, publish_topics, publish_account_id, recap_model, max_continuations, created_at, updated_at)
+		VALUES ('ch1','test',1,0,1,0,0,0,0,'both',0,0,'',0,-1,0,-1,0,-1,0,'','',NULL,'',-1,?,?)`,
+		time.Now().Format(time.RFC3339), time.Now().Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert channel: %v", err)
+	}
+	if _, err := database.ExecContext(ctx, `UPDATE channels SET publish_account_id = ? WHERE id = 'ch1'`, accountID); err != nil {
+		t.Fatalf("update channel: %v", err)
+	}
+
+	// 注入 RoundTripper 截获 Cookie(codex r17d:必须覆盖 biliCreativeClient)
+	rt := &cookieCapturingRT{
+		respBody:   []byte(`{"code":0,"message":"","data":{"lists":[]}}`),
+		respStatus: 200,
+	}
+	server.biliCreativeClient = &http.Client{Transport: rt}
+
+	// 调用端点
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/bili/series/list?channel_id=ch1", nil)
+	server.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(rt.gotCookieHeader, "account-sess") {
+		t.Errorf("Cookie header = %q, want contains %q (channel publish_account_id 应优先)", rt.gotCookieHeader, "account-sess")
+	}
+}
+
+// TestListBiliSeries_WithChannelID_NoAccount_FallsBackToDefault:
+// channel 无 publish_account_id → Cookie 含全局默认账号的 SESSDATA。
+func TestListBiliSeries_WithChannelID_NoAccount_FallsBackToDefault(t *testing.T) {
+	ctx := context.Background()
+	cookieDir := t.TempDir()
+	server, database := newTestServerWithCookieAccounts(t, cookieDir)
+
+	// 插入默认发布账号(cookie 含全部 3 个必填字段)
+	defaultPath := filepath.Join(cookieDir, "default.txt")
+	if err := os.WriteFile(defaultPath, []byte("# Netscape\n"+
+		".bilibili.com\tTRUE\t/\tTRUE\t9999999999\tSESSDATA\tdefault-sess\n"+
+		".bilibili.com\tTRUE\t/\tTRUE\t9999999999\tbili_jct\tcsrf-default\n"+
+		".bilibili.com\tTRUE\t/\tTRUE\t9999999999\tDedeUserID\t888\n"), 0600); err != nil {
+		t.Fatalf("write default cookie: %v", err)
+	}
+	if _, err := database.ExecContext(ctx, `
+		INSERT INTO bili_cookie_accounts (uid, nickname, cookie_file, is_default_download, is_default_publish, created_at, updated_at)
+		VALUES (?, ?, ?, 0, 1, ?, ?)`,
+		888, "default", defaultPath, time.Now().Format(time.RFC3339), time.Now().Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert default: %v", err)
+	}
+
+	// 创建 channel 无 publish_account_id(回退全局默认)
+	if _, err := database.ExecContext(ctx, `
+		INSERT INTO channels (id, name, uid, live_room_id, enabled, auto_record, auto_asr, auto_recap, record_danmaku,
+			source_mode, discover_limit, publish_enabled, publish_mode, publish_category_id, publish_list_id,
+			publish_private_pub, publish_original, auto_publish, publish_aigc, publish_timer_pub_time,
+			publish_cover_url, publish_topics, publish_account_id, recap_model, max_continuations, created_at, updated_at)
+		VALUES ('ch1','test',1,0,1,0,0,0,0,'both',0,0,'',0,-1,0,-1,0,-1,0,'','',NULL,'',-1,?,?)`,
+		time.Now().Format(time.RFC3339), time.Now().Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert channel: %v", err)
+	}
+
+	rt := &cookieCapturingRT{
+		respBody:   []byte(`{"code":0,"message":"","data":{"lists":[]}}`),
+		respStatus: 200,
+	}
+	server.biliCreativeClient = &http.Client{Transport: rt}
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/bili/series/list?channel_id=ch1", nil)
+	server.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(rt.gotCookieHeader, "default-sess") {
+		t.Errorf("Cookie header = %q, want contains %q (无 channel account 应回退默认账号)", rt.gotCookieHeader, "default-sess")
+	}
+}
+
+// TestListBiliSeries_WithoutChannelID_UnchangedBehavior:
+// 不传 channel_id → 完全等价旧行为(用全局默认账号),回归保护。
+func TestListBiliSeries_WithoutChannelID_UnchangedBehavior(t *testing.T) {
+	ctx := context.Background()
+	cookieDir := t.TempDir()
+	server, database := newTestServerWithCookieAccounts(t, cookieDir)
+
+	// 仅插入默认账号,不插任何 channel(也不传 channel_id query)
+	defaultPath := filepath.Join(cookieDir, "default.txt")
+	if err := os.WriteFile(defaultPath, []byte("# Netscape\n"+
+		".bilibili.com\tTRUE\t/\tTRUE\t9999999999\tSESSDATA\tdefault-sess\n"+
+		".bilibili.com\tTRUE\t/\tTRUE\t9999999999\tbili_jct\tcsrf-default\n"+
+		".bilibili.com\tTRUE\t/\tTRUE\t9999999999\tDedeUserID\t999\n"), 0600); err != nil {
+		t.Fatalf("write default cookie: %v", err)
+	}
+	if _, err := database.ExecContext(ctx, `
+		INSERT INTO bili_cookie_accounts (uid, nickname, cookie_file, is_default_download, is_default_publish, created_at, updated_at)
+		VALUES (?, ?, ?, 0, 1, ?, ?)`,
+		999, "default", defaultPath, time.Now().Format(time.RFC3339), time.Now().Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert default: %v", err)
+	}
+
+	rt := &cookieCapturingRT{
+		respBody:   []byte(`{"code":0,"message":"","data":{"lists":[{"id":42,"name":"test","articles_count":3}]}}`),
+		respStatus: 200,
+	}
+	server.biliCreativeClient = &http.Client{Transport: rt}
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/bili/series/list", nil)
+	server.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(rt.gotCookieHeader, "default-sess") {
+		t.Errorf("Cookie header = %q, want contains %q (无 channel_id 应走默认账号)", rt.gotCookieHeader, "default-sess")
+	}
+	if !strings.Contains(w.Body.String(), `"id":42`) {
+		t.Errorf("response body = %s, want contains 文集 ID 42", w.Body.String())
 	}
 }

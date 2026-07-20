@@ -6,7 +6,7 @@ Channel:
   type: object
   description: |
     频道(主播)实体。所有字段为值类型(string/bool/int),无 omitempty
-    (除 download_account_id 为 `*int64` + omitempty)。
+    (除 download_account_id 和 publish_account_id 为 `*int64` + omitempty)。
   required:
     - id
     - name
@@ -72,6 +72,10 @@ Channel:
       type: integer
       format: int64
       description: 关联的下载账号 ID(omitempty,nil=未绑定)
+    publish_account_id:
+      type: integer
+      format: int64
+      description: 关联的发布账号 ID(omitempty,nil=未绑定;2026-07-20 新增)
     enabled:
       type: boolean
       description: 频道是否启用
@@ -140,7 +144,11 @@ UpsertChannelInput:
     唯一特殊字段:
     - `auto_recap`:`*bool` 三态。字段**可缺席**(nil=默认 false,见 channel.go resolveAutoRecap);
       传 true/false 显式设置。**不写 nullable**(后端是字段缺席语义)。
-    - `download_account_id`:`*int64`,字段可缺席(nil=不绑定下载账号)。**无 omitempty**(传 null 显式清空绑定)。
+    - `download_account_id` / `publish_account_id`:`*int64`,`nullable: true`。
+      ⚠️ updateChannel 是**全量 PUT**(非 PATCH),后端用 ShouldBindJSON 绑定整个 UpsertInput
+      后写回所有字段。`*int64` 字段在 JSON 缺席与 null 绑定后都是 nil,后端无法区分。
+      **前端必须提交完整对象**(`{ ...toInput(channel), ...changes }` 作为基底),
+      仅在需要清空时显式传 null。null = 未绑定账号。
   properties:
     id:
       type: string
@@ -168,9 +176,19 @@ UpsertChannelInput:
       format: int64
       nullable: true
       description: |
-        绑定的下载账号 ID。无 json omitempty:
-        - 字段缺席(请求体不含此 key)= 不修改
-        - 字段值 null = 显式清空绑定
+        绑定的下载账号 ID。
+        ⚠️ updateChannel 全量 PUT:前端必须提交完整 UpsertChannelInput
+        (用 `{ ...toInput(channel), ...changes }` 作为基底)。
+        null = 未绑定下载账号。
+    publish_account_id:
+      type: integer
+      format: int64
+      nullable: true
+      description: |
+        绑定的发布账号 ID(2026-07-20 新增,支持 per-channel 发布账号)。
+        ⚠️ updateChannel 全量 PUT:前端必须提交完整 UpsertChannelInput
+        (用 `{ ...toInput(channel), ...changes }` 作为基底)。
+        null = 未绑定发布账号。
     enabled:
       type: boolean
     auto_record:

@@ -655,6 +655,7 @@ func channelToUpsertInput(ch channel.Channel) channel.UpsertInput {
 		PublishTimerPubTime: ch.PublishTimerPubTime,
 		PublishCoverURL:     ch.PublishCoverURL,
 		PublishTopics:       ch.PublishTopics,
+		PublishAccountID:    ch.PublishAccountID,
 		RecapModel:          ch.RecapModel,
 		MaxContinuations:    ch.MaxContinuations,
 	}

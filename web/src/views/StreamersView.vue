@@ -62,7 +62,7 @@ const selectedChannel = computed<Channel | null>(() => {
 // cookieStatus 由抽屉自行从 channel+runtime 现场计算(展示侧),composable 的 cookieStatus 此处不消费;
 // 仅取写操作 + updating(透传给抽屉的 AutoSwitches 禁用态)。
 // selectedChannel / runtime 为派生类型,composable 形参为结构兼容的手写类型,经 unknown 桥接(运行时同一对象)。
-const { updating, handleToggle, handleRecapOverride, saveCover, handleDelete } = useStreamerDetail(
+const { updating, handleToggle, handleRecapOverride, handlePublishOverrides, handleDelete } = useStreamerDetail(
   selectedChannel as unknown as Parameters<typeof useStreamerDetail>[0],
   runtime as unknown as Parameters<typeof useStreamerDetail>[1],
 )
@@ -145,9 +145,9 @@ async function onRecapOverride(field: Parameters<typeof handleRecapOverride>[0],
   } catch { /* handled */ }
 }
 
-async function onSaveCover(value: string) {
+async function onSavePublish(changes: Parameters<typeof handlePublishOverrides>[0]) {
   try {
-    await saveCover(value)
+    await handlePublishOverrides(changes)
     await channelsStore.fetchChannels()
   } catch { /* handled */ }
 }
@@ -234,7 +234,7 @@ onMounted(async () => {
       @qr-login="openQrLogin"
       @toggle="onToggle"
       @recap-override="onRecapOverride"
-      @save-cover="onSaveCover"
+      @save-publish="onSavePublish"
       @delete="onDelete"
     />
 

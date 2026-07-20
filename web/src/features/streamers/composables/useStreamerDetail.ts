@@ -43,6 +43,7 @@ export interface StreamerDetailChannel {
   publish_timer_pub_time?: number
   publish_cover_url?: string
   publish_topics?: string
+  publish_account_id?: number | null
   recap_model?: string
   max_continuations?: number
   download_account_id?: number | null
@@ -51,14 +52,32 @@ export interface StreamerDetailChannel {
 export type CookieStatus = 'ok' | 'missing' | 'unknown'
 
 export type AutoToggleField = 'auto_record' | 'auto_asr' | 'auto_recap' | 'auto_publish'
-export type RecapOverrideField = 'recap_model' | 'max_continuations' | 'publish_cover_url'
+export type RecapOverrideField = 'recap_model' | 'max_continuations'
+
+// PublishOverrideField:per-channel 发布字段(2026-07-20 新增)。
+// - publish_account_id 哨兵值:null = 跟随全局(未绑定),正数 = 账号 ID
+// - publish_mode 哨兵值:'' = 跟随全局,'draft' / 'publish' = 显式
+// - publish_private_pub 哨兵值:0 = 跟随全局,1 = 仅自己,2 = 公开
+// - publish_list_id 哨兵值:-1 = 跟随全局,0 = 不加入文集,正数 = 文集 ID
+// - publish_original / publish_aigc 哨兵值:-1 = 跟随全局,0/1 = 显式
+// - publish_cover_url 哨兵值:'' = 跟随全局
+export type PublishOverrideField =
+  | 'publish_list_id'
+  | 'publish_mode'
+  | 'publish_private_pub'
+  | 'publish_original'
+  | 'publish_aigc'
+  | 'publish_cover_url'
+  | 'publish_account_id'
+
+export type PublishOverrideValue = string | number | null
 
 export interface UseStreamerDetailReturn {
   updating: Ref<boolean>
   cookieStatus: ComputedRef<CookieStatus>
   handleToggle: (field: AutoToggleField) => Promise<void>
   handleRecapOverride: (field: RecapOverrideField, value: string | number) => Promise<void>
-  saveCover: (value: string) => Promise<void>
+  handlePublishOverrides: (changes: Partial<Record<PublishOverrideField, PublishOverrideValue>>) => Promise<void>
   handleDelete: () => Promise<void>
 }
 
@@ -104,6 +123,7 @@ export function useStreamerDetail(
       publish_original: c.publish_original ?? 0, auto_publish: c.auto_publish ?? false,
       publish_aigc: c.publish_aigc ?? 0, publish_timer_pub_time: c.publish_timer_pub_time ?? 0,
       publish_cover_url: c.publish_cover_url ?? '', publish_topics: c.publish_topics ?? '',
+      publish_account_id: c.publish_account_id ?? null,
       recap_model: c.recap_model ?? '', max_continuations: c.max_continuations ?? 0,
       download_account_id: c.download_account_id ?? null,
     }
@@ -133,16 +153,23 @@ export function useStreamerDetail(
     }
   }
 
-  // 封面保存:仅当值变化时提交。由壳传入当前草稿值,composable 不持有 UI 草稿状态。
-  async function saveCover(value: string): Promise<void> {
+  // 发布字段批量保存:封面 + 文集 + 模式 + 可见范围 + 声明 + 账号(2026-07-20)。
+  // codex r17b BLOCKING:updateChannel 是全量 PUT,必须提交 { ...toInput(c), ...changes }
+  // 作为完整基底,否则未列出的字段会被零值覆盖(nil 字段会写 NULL)。
+  // 壳(StreamersView)负责 store 刷新,刷新后 channel 派生自动回填最新值。
+  async function handlePublishOverrides(changes: Partial<Record<PublishOverrideField, PublishOverrideValue>>): Promise<void> {
     const c = channel.value
     const id = c?.id
     if (!c || !id) return
-    const next = value.trim()
-    if (next === (c.publish_cover_url ?? '')) return
+    if (Object.keys(changes).length === 0) return
     updating.value = true
     try {
-      await updateChannel(id, { ...toInput(c), publish_cover_url: next })
+      // 🔴 codex r17b BLOCKING:必须提交 { ...toInput(c), ...changes },不能只提交 changes。
+      // updateChannel 是全量 PUT,nil 字段会写成 NULL;toInput(c) 提供所有未变化字段的当前值作为基底。
+      // changes 的 PublishOverrideValue 是 string|number|null 联合,与 UpsertChannelInput 各字段
+      // 的具体类型不严格匹配(例如 publish_account_id 期望 number|null),但运行时形态一致。
+      // 用 cast 绕过 TS 的对象展开检查(每字段语义已在 PublishOverrideField 注释里文档化)。
+      await updateChannel(id, { ...toInput(c), ...(changes as Partial<UpsertChannelInput>) })
     } finally {
       updating.value = false
     }
@@ -155,5 +182,5 @@ export function useStreamerDetail(
     await deleteChannel(id)
   }
 
-  return { updating, cookieStatus, handleToggle, handleRecapOverride, saveCover, handleDelete }
+  return { updating, cookieStatus, handleToggle, handleRecapOverride, handlePublishOverrides, handleDelete }
 }

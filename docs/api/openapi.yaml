@@ -3505,6 +3505,62 @@ paths:
         '401':
           $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
 
+  /api/bili/series/list:
+    get:
+      tags: [B站账号]
+      operationId: listBiliSeries
+      summary: 列出当前发布账号下的 B站专栏文集
+      description: |
+        返回当前生效发布账号下的文集列表(`{items: [{id, name, articles_count}], error?: string}`)。
+        账号选择三级链(与 publisher.go resolvePublishCookie 一致):
+          1. `?channel_id=<id>` 非空时,该主播的 `publish_account_id`(per-channel 发布账号)
+          2. 全局默认发布账号(`bili_cookie_accounts.is_default_publish=1`)
+          3. (channel_id 非空时)legacy `channel.cookie_file`
+        channel_id 缺席/空串 → 等价旧行为(仅走 level 2 全局默认),供全局发布卡 PublishCardV10 使用。
+        2026-07-20 新增 `channel_id` 参数,用于主播抽屉 per-channel 文集下拉。
+      parameters:
+        - name: channel_id
+          in: query
+          required: false
+          schema:
+            type: string
+          description: |
+            可选。指定频道 ID 时,用该主播的 publish_account_id 拉取对应账号下的文集列表
+            (per-channel 发布账号);不传时用全局默认发布账号(全局发布卡场景)。
+      responses:
+        '200':
+          description: 文集列表(可能含 error 字段表示账号未配置等降级情况)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, name, articles_count]
+                      properties:
+                        id:
+                          type: integer
+                          description: 文集 ID(对应 channel.publish_list_id)
+                        name:
+                          type: string
+                          description: 文集名
+                        articles_count:
+                          type: integer
+                          description: 文集中的文章数
+                  error:
+                    type: string
+                    description: |
+                      可选。账号未配置/未默认/Cookie 加载失败等降级情况下的友好提示,
+                      前端应展示给用户(同时 items 为空数组)。
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '502':
+          description: B站 API 请求失败
+
   /api/bili/accounts/{id}:
     parameters:
       - $ref: '#/components/parameters/AccountID'

@@ -379,7 +379,13 @@ func canHandlePublish(status string) bool {
 
 func (h *Handler) resolvePublishCookie(ctx context.Context, ch channel.Channel) (*BiliCookie, error) {
 	if h.cookieAccountStore != nil {
-		cookie, err := h.cookieAccountStore.ResolveCookie(ctx, sql.NullInt64{}, sql.NullInt64{}, "publish", ch.CookieFile)
+		// 2026-07-20 修订:传入 channel.PublishAccountID 让 ResolveCookie 三级链生效
+		//   level 1: channel.publish_account_id(本次改动新增的字段)
+		//   level 2: 全局默认发布账号
+		//   level 3: legacy channel.cookie_file(fallback)
+		// 此前 publishAccountID 永远传 sql.NullInt64{},level 1 永远跳过,
+		// 导致主播级发布账号字段无法生效。
+		cookie, err := h.cookieAccountStore.ResolveCookie(ctx, sql.NullInt64{}, nullInt64FromPtr(ch.PublishAccountID), "publish", ch.CookieFile)
 		if err == nil {
 			return cookie, nil
 		}
@@ -392,6 +398,16 @@ func (h *Handler) resolvePublishCookie(ctx context.Context, ch channel.Channel) 
 		return nil, fmt.Errorf("%w: channel %s has no cookie_file configured", ErrChannelNoCookieFile, ch.ID)
 	}
 	return LoadCookie(ch.CookieFile)
+}
+
+// nullInt64FromPtr 把 *int64 转为 sql.NullInt64(nil → invalid,非 nil → valid)。
+// publisher 包本地 helper(参照 live_record/manager.go:182 同名实现)。
+// 用于把 channel.PublishAccountID 传入 ResolveCookie 的 publishAccountID 参数。
+func nullInt64FromPtr(value *int64) sql.NullInt64 {
+	if value == nil {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: *value, Valid: true}
 }
 
 func (h *Handler) recapDir(sessionInfo session.Session) string {

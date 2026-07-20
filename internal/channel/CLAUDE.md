@@ -79,6 +79,7 @@
 | `publish_timer_pub_time` | int64 | 定时发布 Unix 时间戳（0=不定时） |
 | `publish_cover_url` | string | 自定义封面图片路径或 URL |
 | `publish_topics` | string | 话题标签（逗号分隔） |
+| `publish_account_id` | `*int64` | 关联的发布账号 ID（2026-07-20 新增,`omitempty` nil=未绑定;让 `ResolveCookie` 三级链 level 1 channel override 真正生效,此前永远传空 `sql.NullInt64{}` 导致主播级发布账号无效果） |
 | `recap_model` | string | Per-channel 回顾模型覆盖（空=跟随全局） |
 | `max_continuations` | int | Per-channel 回顾续写次数覆盖（-1=跟随全局） |
 
@@ -148,6 +149,7 @@ A: `recap_model` 非空时覆盖全局 `recap_ai.model` 配置。`max_continuati
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-07-20 | 功能 | **补 publish_account_id 字段全链路**(branch `fix/streamer-publish-fields-2026-07-19`,codex 4 轮计划审核 r17/r17b/r17c/r17d 收敛)。**背景**:DB v25 已加 `publish_account_id` 列(`migrate.go:144`),但 `channel.Channel` struct 无对应字段,scan 出不来,`publisher.go:382` 调 `ResolveCookie` 永远传 `sql.NullInt64{}` 导致 level 1 channel override 永远跳过,主播级发布账号无法生效。**改动**:参照 `download_account_id` 模板补全 —— Channel struct + UpsertInput struct + EnsureUnassigned SQL(NULL 占位)+ Bootstrap/Create/Update 三处 ExecContext + `mergeIdentified`(识别保存时保留 existing)+ `scanChannel`(sql.NullInt64)+ `selectColumns`/`createSQL`/`updateSQL` 三处 SQL 模板;`Channel.PublishAccountID` 用 `omitempty`(响应可选)。**测试**:channel 66→69(+3:`TestPublishAccountIDRoundTrip`/`TestUpdateClearsPublishAccountID`/`TestEnsureUnassigned_HasNullPublishAccountID` 回归占位 channel 不绑账号)。**关联改动**:publisher.go 用本地 `nullInt64FromPtr` 传入、handler.listBiliSeries 加 `?channel_id=`、handler.config_export 的 `channelToUpsertInput` 补字段。 |
 | 2026-07-19 | 功能 | **主播管理 ↔ 回顾管理·回放 解耦**(branch `fix/decouple-recap-replay-2026-07-18`,codex 计划 v1/v2 审核 + 代码审核)。**新增**:`const UnassignedID = "_unassigned"` 占位 channel(回放页下载/导入不选主播时的兜底)+ `EnsureUnassigned(ctx)` 启动幂等插入(裸 SQL + INSERT OR IGNORE,补全所有 NOT NULL 列;不走 Create 因 validate 要求 UID>0)+ `ListVisible(ctx)` 方法(handler/scheduler/onboarding/export 等用户可见场景用,过滤占位;原 List 保留返回全部给 identify/runtime.CheckCookieExpiry)。占位 channel 三重保险:`enabled=false` + `source_mode='live_only'` + ListVisible SQL 过滤,确保不被 scheduler discover 遍历、不出现在主播管理页。`max_continuations=-1` 哨兵值(0 会覆盖全局禁用续写,codex r13b MEDIUM #1)。**测试**:channel 62→66(+4:EnsureUnassignedInsert 字段齐全/幂等 + ListVisibleExcludesUnassigned/EmptyAfterEnsure)。 |
 | 2026-07-05 | 修复 | **identify -352 风控修复**：`Identify` 注入 buvid（共享 `biliutil.BuvidStore` + `InjectBuvids` replace 语义，空值时不改 cookie）；`identifyByRoom`/`liveRoomIDByUID` 用按 cookie 缓存的 `biliutil.WBISigner` 对 URL 做 WBI 签名（**关键**：探针实测 buvid only 仍 -352，buvid + WBI → 200 code=0）；`getJSON` 改用 `biliutil.BiliUserAgent` + `Referer`/`Origin: https://live.bilibili.com`。`Identifier` 加 `buvids`/`signers`/`newSigner` 字段 + 测试 setter。手动验证 924973 → 200 返回 UID 1401928（火西肆）。测试计数：channel 59→62（+1 容错、+1 WBI 签名断言、+口径修正）。前端"网络错误"提示实为后端 500 误导，根因后端已解 |
 | 2026-06-23 | 功能 | 自动触发链加固：Channel/UpssertInput 新增 `auto_recap` 字段（`Channel` 为 `bool` 默认 true，`UpsertInput` 为 `*bool` 三态）；新增 `resolveAutoRecap(*bool, fallback)` 助手（nil→fallback=true）；Create/Update/Bootstrap 持久化 `auto_recap`（`boolToInt`）。channel_test.go 49→54（+5 覆盖三态解析/持久化） |

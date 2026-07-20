@@ -4225,6 +4225,16 @@ func (s *Server) defaultPublishCookieHeader(ctx context.Context) (string, error)
 	return cookie.CookieHeader(), nil
 }
 
+// listBiliSeries 列出当前发布账号下的 B 站专栏文集。
+//
+// 2026-07-20 改动:支持可选 ?channel_id=<id> query,使用该主播绑定的 publish_account_id
+// 拉取对应账号下的文集(用于主播抽屉 per-channel 文集下拉,支持不同主播不同文集)。
+//
+// 账号选择链路(复用 biliutil.CookieAccountStore.ResolveCookie 三级链,与 publisher.go:382 一致):
+//   - channel_id 非空:level 1 channel.publish_account_id → level 2 全局默认 → level 3 channel.cookie_file
+//   - channel_id 空(原全局发布卡路径):level 2 全局默认发布账号 → level 3 空 fallback(等价旧行为)
+//
+// query 缺席/空串 = 完全等价旧行为,零回归(全局发布卡 PublishCardV10.vue 不传该 query)。
 func (s *Server) listBiliSeries(ctx *gin.Context) {
 	if s.cookieAccounts == nil {
 		ctx.JSON(http.StatusOK, gin.H{
@@ -4234,20 +4244,12 @@ func (s *Server) listBiliSeries(ctx *gin.Context) {
 		return
 	}
 
-	account, err := s.cookieAccounts.GetDefaultPublish(ctx.Request.Context())
-	if err != nil || account == nil {
+	channelID := strings.TrimSpace(ctx.Query("channel_id"))
+	cookie, err := s.resolvePublishCookieForChannel(ctx.Request.Context(), channelID)
+	if err != nil || cookie == nil {
 		ctx.JSON(http.StatusOK, gin.H{
 			"items": []any{},
 			"error": "未设置默认发布账号，请先设置默认发布账号",
-		})
-		return
-	}
-
-	cookie, err := biliutil.LoadCookie(account.CookieFile)
-	if err != nil {
-		ctx.JSON(http.StatusOK, gin.H{
-			"items": []any{},
-			"error": "Cookie 加载失败，请重新登录",
 		})
 		return
 	}
@@ -4267,7 +4269,7 @@ func (s *Server) listBiliSeries(ctx *gin.Context) {
 	// 2026-07-06 改用共享 biliCreativeGet（补 Referer/Origin 风控对抗头）；
 	// 业务码（-101 登录过期 / 非 0 错误）仍由本函数判断，helper 只管 HTTP + 解码。
 	if err := s.biliCreativeGet(ctx.Request.Context(), biliURL, cookie.CookieHeader(), &result); err != nil {
-		slog.Warn("list bili series failed", "error", err)
+		slog.Warn("list bili series failed", "error", err, "channel_id", channelID)
 		ctx.JSON(http.StatusBadGateway, gin.H{"error": "B站文集列表请求失败"})
 		return
 	}
@@ -4292,4 +4294,39 @@ func (s *Server) listBiliSeries(ctx *gin.Context) {
 		})
 	}
 	ctx.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+// resolvePublishCookieForChannel 解析指定频道的发布 cookie(供 listBiliSeries 用)。
+//
+// 2026-07-20 新增。统一走 CookieAccountStore.ResolveCookie 三级链,与真实发布路径
+// (publisher.go resolvePublishCookie)完全一致,保证「下拉看到的文集」=「发布时用的账号文集」。
+//
+// 三级链:
+//  1. channel.publish_account_id(channelID 非空时读出)
+//  2. 全局默认发布账号(GetDefaultPublish)
+//  3. legacy channel.cookie_file(channelID 非空时读出,作为 fallback)
+//
+// channelID="" 时,1/3 都跳过,等价原 GetDefaultPublish 行为(零回归)。
+func (s *Server) resolvePublishCookieForChannel(ctx context.Context, channelID string) (*biliutil.BiliCookie, error) {
+	var (
+		publishAccountID sql.NullInt64
+		fallbackPath     string
+	)
+	if channelID != "" {
+		// 取 channel:即使 ch 不存在也不阻断,让 ResolveCookie 走 level 2/3。
+		ch, err := s.channels.Get(ctx, channelID)
+		if err == nil {
+			if ch.PublishAccountID != nil {
+				publishAccountID = sql.NullInt64{Int64: *ch.PublishAccountID, Valid: true}
+			}
+			fallbackPath = ch.CookieFile
+		}
+	}
+	// ResolveCookie channel accountID + global default + legacy fallback。
+	// channelID="" 时 publishAccountID/fallbackPath 都是零值,完全等价旧行为。
+	cookie, err := s.cookieAccounts.ResolveCookie(ctx, sql.NullInt64{}, publishAccountID, "publish", fallbackPath)
+	if err != nil {
+		return nil, err
+	}
+	return cookie, nil
 }

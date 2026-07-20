@@ -423,6 +423,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/discover/preview-by-url": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 按 URL 预览回放(URL 驱动独立入口,2026-07-19 解耦新增)
+         * @description 不绑定主播表,用户直接粘贴 B 站收藏夹/合集/UP 主主页 URL,后端调 yt-dlp flat-playlist 列出回放。
+         *     所有结果归到系统占位频道 `_unassigned`(前端显示为「未分类」)。
+         *     每条 Result 带 `exists` 标记(是否已建过 download 场次)。
+         *     返回 200 + `{items: [DiscoverResult]}`。
+         *
+         *     **cookie 优先级**(2026-07-19 v3 重构):
+         *     1. 用户显式传 `cookie_file`(非空)→ 直接用该文件路径
+         *     2. 全局默认下载账号(`bili_cookie_accounts.is_default_download=1`)→
+         *        自动用该账号的 cookie(账号池落盘可能是加密的 HIKAMI_V1 格式,
+         *        后端会 LoadCookie 解密 + 写明文临时文件供 yt-dlp 使用)
+         *     3. 都没有 → 不带 cookie(公开回放仍能发现)
+         */
+        post: operations["discoverPreviewByURL"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/discover/execute": {
         parameters: {
             query?: never;
@@ -2269,6 +2299,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/bili/series/list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 列出当前发布账号下的 B站专栏文集
+         * @description 返回当前生效发布账号下的文集列表(`{items: [{id, name, articles_count}], error?: string}`)。
+         *     账号选择三级链(与 publisher.go resolvePublishCookie 一致):
+         *       1. `?channel_id=<id>` 非空时,该主播的 `publish_account_id`(per-channel 发布账号)
+         *       2. 全局默认发布账号(`bili_cookie_accounts.is_default_publish=1`)
+         *       3. (channel_id 非空时)legacy `channel.cookie_file`
+         *     channel_id 缺席/空串 → 等价旧行为(仅走 level 2 全局默认),供全局发布卡 PublishCardV10 使用。
+         *     2026-07-20 新增 `channel_id` 参数,用于主播抽屉 per-channel 文集下拉。
+         */
+        get: operations["listBiliSeries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/bili/accounts/{id}": {
         parameters: {
             query?: never;
@@ -2519,7 +2575,7 @@ export interface components {
         };
         /**
          * @description 频道(主播)实体。所有字段为值类型(string/bool/int),无 omitempty
-         *     (除 download_account_id 为 `*int64` + omitempty)。
+         *     (除 download_account_id 和 publish_account_id 为 `*int64` + omitempty)。
          */
         Channel: {
             /** @description 频道 ID(字符串形式的 slug) */
@@ -2548,6 +2604,11 @@ export interface components {
              * @description 关联的下载账号 ID(omitempty,nil=未绑定)
              */
             download_account_id?: number;
+            /**
+             * Format: int64
+             * @description 关联的发布账号 ID(omitempty,nil=未绑定;2026-07-20 新增)
+             */
+            publish_account_id?: number;
             /** @description 频道是否启用 */
             enabled: boolean;
             /** @description 自动录制 */
@@ -2597,7 +2658,11 @@ export interface components {
          *     唯一特殊字段:
          *     - `auto_recap`:`*bool` 三态。字段**可缺席**(nil=默认 false,见 channel.go resolveAutoRecap);
          *       传 true/false 显式设置。**不写 nullable**(后端是字段缺席语义)。
-         *     - `download_account_id`:`*int64`,字段可缺席(nil=不绑定下载账号)。**无 omitempty**(传 null 显式清空绑定)。
+         *     - `download_account_id` / `publish_account_id`:`*int64`,`nullable: true`。
+         *       ⚠️ updateChannel 是**全量 PUT**(非 PATCH),后端用 ShouldBindJSON 绑定整个 UpsertInput
+         *       后写回所有字段。`*int64` 字段在 JSON 缺席与 null 绑定后都是 nil,后端无法区分。
+         *       **前端必须提交完整对象**(`{ ...toInput(channel), ...changes }` 作为基底),
+         *       仅在需要清空时显式传 null。null = 未绑定账号。
          */
         UpsertChannelInput: {
             /** @description 创建时一般留空,更新时由 path 提供 */
@@ -2614,11 +2679,20 @@ export interface components {
             download_cookie_file?: string;
             /**
              * Format: int64
-             * @description 绑定的下载账号 ID。无 json omitempty:
-             *     - 字段缺席(请求体不含此 key)= 不修改
-             *     - 字段值 null = 显式清空绑定
+             * @description 绑定的下载账号 ID。
+             *     ⚠️ updateChannel 全量 PUT:前端必须提交完整 UpsertChannelInput
+             *     (用 `{ ...toInput(channel), ...changes }` 作为基底)。
+             *     null = 未绑定下载账号。
              */
             download_account_id?: number | null;
+            /**
+             * Format: int64
+             * @description 绑定的发布账号 ID(2026-07-20 新增,支持 per-channel 发布账号)。
+             *     ⚠️ updateChannel 全量 PUT:前端必须提交完整 UpsertChannelInput
+             *     (用 `{ ...toInput(channel), ...changes }` 作为基底)。
+             *     null = 未绑定发布账号。
+             */
+            publish_account_id?: number | null;
             enabled?: boolean;
             auto_record?: boolean;
             auto_asr?: boolean;
@@ -4638,6 +4712,54 @@ export interface operations {
                         items: components["schemas"]["DiscoverResult"][];
                     };
                 };
+            };
+            401: paths["/api/health/runtime"]["get"]["responses"]["401"];
+        };
+    };
+    discoverPreviewByURL: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description B 站链接(收藏夹/合集/UP 主主页 URL)
+                     * @example https://space.bilibili.com/123/lists/456
+                     */
+                    url: string;
+                    /**
+                     * @description 可选,显式覆盖 cookie 文件路径。
+                     *     **留空**(默认)时自动使用设置中的默认登录账号;
+                     *     填了则覆盖默认账号(适合多账号场景)。
+                     */
+                    cookie_file?: string;
+                    /** @description 可选,逗号分隔的标题前缀过滤(如 `【直播回放】`) */
+                    title_prefix?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description 预览结果(未建场次) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: components["schemas"]["DiscoverResult"][];
+                    };
+                };
+            };
+            /** @description 请求体非法或缺 url */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             401: paths["/api/health/runtime"]["get"]["responses"]["401"];
         };
@@ -7960,6 +8082,54 @@ export interface operations {
                 };
             };
             401: paths["/api/health/runtime"]["get"]["responses"]["401"];
+        };
+    };
+    listBiliSeries: {
+        parameters: {
+            query?: {
+                /**
+                 * @description 可选。指定频道 ID 时,用该主播的 publish_account_id 拉取对应账号下的文集列表
+                 *     (per-channel 发布账号);不传时用全局默认发布账号(全局发布卡场景)。
+                 */
+                channel_id?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 文集列表(可能含 error 字段表示账号未配置等降级情况) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: {
+                            /** @description 文集 ID(对应 channel.publish_list_id) */
+                            id: number;
+                            /** @description 文集名 */
+                            name: string;
+                            /** @description 文集中的文章数 */
+                            articles_count: number;
+                        }[];
+                        /**
+                         * @description 可选。账号未配置/未默认/Cookie 加载失败等降级情况下的友好提示,
+                         *     前端应展示给用户(同时 items 为空数组)。
+                         */
+                        error?: string;
+                    };
+                };
+            };
+            401: paths["/api/health/runtime"]["get"]["responses"]["401"];
+            /** @description B站 API 请求失败 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     updateBiliAccount: {

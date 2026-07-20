@@ -93,8 +93,10 @@ export function searchBiliTopics(keywords: string, pageSize = 20, pageNum = 1): 
   return get('/api/bili/topics/search', { keywords, page_size: pageSize, page_num: pageNum })
 }
 
-export function listBiliSeries(): Promise<{ items: BiliSeries[]; error?: string }> {
-  return get('/api/bili/series/list')
+export function listBiliSeries(channelId?: string): Promise<{ items: BiliSeries[]; error?: string }> {
+  // 2026-07-20:可选 channel_id 参数,用于主播抽屉 per-channel 文集下拉。
+  // 缺省(全局发布卡)不传 channel_id,等价旧行为(全局默认发布账号)。
+  return get('/api/bili/series/list', channelId ? { channel_id: channelId } : undefined)
 }
 
 export function exportConfig(): Promise<Blob> {

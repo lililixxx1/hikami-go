@@ -1423,3 +1423,128 @@ func TestListVisibleEmptyAfterEnsureUnassigned(t *testing.T) {
 		t.Fatalf("ListVisible len = %d, want 0(占位应被过滤,用户应看到空列表)", len(visible))
 	}
 }
+
+// TestPublishAccountIDRoundTrip:Create 时设、Get 读、Update 改、再 Get 读。
+// 验证 PublishAccountID 字段全链路(SQL/scan/struct)。
+func TestPublishAccountIDRoundTrip(t *testing.T) {
+	store := NewStore(setupDB(t))
+	ctx := context.Background()
+
+	accountID := int64(42)
+
+	// Create 时绑定
+	ch, err := store.Create(ctx, UpsertInput{
+		ID: "ch1", Name: "Test", UID: 1, Enabled: true,
+		PublishAccountID: &accountID,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if ch.PublishAccountID == nil || *ch.PublishAccountID != accountID {
+		t.Fatalf("after create: PublishAccountID = %v, want %d", ch.PublishAccountID, accountID)
+	}
+
+	// Get 读
+	got, err := store.Get(ctx, "ch1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.PublishAccountID == nil || *got.PublishAccountID != accountID {
+		t.Fatalf("after get: PublishAccountID = %v, want %d", got.PublishAccountID, accountID)
+	}
+
+	// Update 改成另一个 ID
+	newAccountID := int64(99)
+	updated, err := store.Update(ctx, "ch1", UpsertInput{
+		ID: "ch1", Name: "Test", UID: 1, Enabled: true,
+		PublishAccountID: &newAccountID,
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.PublishAccountID == nil || *updated.PublishAccountID != newAccountID {
+		t.Fatalf("after update: PublishAccountID = %v, want %d", updated.PublishAccountID, newAccountID)
+	}
+
+	// 再 Get 读
+	got2, err := store.Get(ctx, "ch1")
+	if err != nil {
+		t.Fatalf("get after update: %v", err)
+	}
+	if got2.PublishAccountID == nil || *got2.PublishAccountID != newAccountID {
+		t.Fatalf("after get post-update: PublishAccountID = %v, want %d", got2.PublishAccountID, newAccountID)
+	}
+}
+
+// TestUpdateClearsPublishAccountID:Update 时传 nil 清空绑定。
+// updateChannel 是全量 PUT,前端必须显式传 nil 才能清空(空字段也会被视作 nil)。
+func TestUpdateClearsPublishAccountID(t *testing.T) {
+	store := NewStore(setupDB(t))
+	ctx := context.Background()
+
+	accountID := int64(42)
+	ch, err := store.Create(ctx, UpsertInput{
+		ID: "ch1", Name: "Test", UID: 1, Enabled: true,
+		PublishAccountID: &accountID,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if ch.PublishAccountID == nil {
+		t.Fatal("setup: PublishAccountID should be set")
+	}
+
+	// Update 时 PublishAccountID = nil(显式清空)
+	updated, err := store.Update(ctx, "ch1", UpsertInput{
+		ID: "ch1", Name: "Test", UID: 1, Enabled: true,
+		PublishAccountID: nil,
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.PublishAccountID != nil {
+		t.Fatalf("after update with nil: PublishAccountID = %v, want nil", updated.PublishAccountID)
+	}
+
+	// 再 Get 读
+	got, err := store.Get(ctx, "ch1")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.PublishAccountID != nil {
+		t.Fatalf("after get: PublishAccountID = %v, want nil", got.PublishAccountID)
+	}
+}
+
+// TestEnsureUnassigned_HasNullPublishAccountID:占位 channel 的 PublishAccountID 应为 nil。
+// 防止占位 channel 误绑定发布账号,污染发布链路。
+func TestEnsureUnassigned_HasNullPublishAccountID(t *testing.T) {
+	store := NewStore(setupDB(t))
+	ctx := context.Background()
+
+	if err := store.EnsureUnassigned(ctx); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+
+	// List(不过滤占位)读出占位 channel
+	all, err := store.List(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var found *Channel
+	for i := range all {
+		if all[i].ID == UnassignedID {
+			found = &all[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("占位 channel 未找到")
+	}
+	if found.PublishAccountID != nil {
+		t.Fatalf("占位 channel PublishAccountID = %v, want nil", found.PublishAccountID)
+	}
+	if found.DownloadAccountID != nil {
+		t.Fatalf("占位 channel DownloadAccountID = %v, want nil(参照对照组)", found.DownloadAccountID)
+	}
+}
