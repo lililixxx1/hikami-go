@@ -40,6 +40,7 @@ const emit = defineEmits<{
   'run-action': [session: Session, action: PrimaryAction]
   fetch: [session: Session]
   retry: [session: Session]
+  reset: [session: Session] // 修复 2026-07-20 BUG #2:重置失败场次到 media_ready
   'update:currentPage': [value: number]
   'update:pageSize': [value: number]
 }>()
@@ -159,6 +160,17 @@ function onNext() {
             <span v-else-if="s.status === 'failed' && retryHintText(s)" class="no-retry-hint">
               {{ retryHintText(s) }}
             </span>
+            <!-- failed → 重置到 media_ready(仅 ASR 失败 + local_available,与 retry 并存)
+                 修复 2026-07-20 BUG #2:reset 允许用户从 media_ready 重新提交 ASR -->
+            <HButton
+              v-if="rowActions(s).reset"
+              variant="secondary"
+              size="xs"
+              :loading="actionLoadingId === `${s.id}:reset`"
+              @click="emit('reset', s)"
+            >
+              重置
+            </HButton>
             <!-- 主动作(media_ready→submit_asr / asr_done→generate_recap / uploaded→publish) -->
             <HButton
               v-if="rowActions(s).primary"

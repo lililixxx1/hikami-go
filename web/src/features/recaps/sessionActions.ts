@@ -32,6 +32,7 @@ export type UIActionName =
   | 'publish' // 主动作(经 lifecycle)
   | 'fetch' // 取回(local_available)
   | 'retry' // 重试(failed,基于 current_task_id)
+  | 'reset' // 重置到 media_ready(仅 ASR 失败场次,修复 2026-07-20 BUG #2)
 
 /** UI 动作禁用文案(独立于 lifecycle.ACTION_DISABLED_REASON,后者只覆盖 6 个 lifecycle 动作) */
 export const UI_ACTION_REASON: Record<UIActionName, string> = {
@@ -41,6 +42,7 @@ export const UI_ACTION_REASON: Record<UIActionName, string> = {
   publish: '发布能力不可用，请检查发布配置与 Cookie',
   fetch: '', // 取回无能力门槛
   retry: '无可重试任务',
+  reset: '', // reset 无能力门槛,由 isASRFailure + local_available 控制
 }
 
 export interface SessionAction {
@@ -68,6 +70,8 @@ export interface RowActions {
   primary?: PrimaryAction
   /** failed 且有可重试任务时,重试 */
   retry?: SessionAction
+  /** failed 且为 ASR 失败 + local_available=true 时,重置到 media_ready(修复 2026-07-20 BUG #2) */
+  reset?: SessionAction
   /** local_available=false 时,独立取回(与其它动作并存,非互斥) */
   fetch?: SessionAction
 }
@@ -132,6 +136,27 @@ export function decideRetry(session: Session, currentTask: Task | null | undefin
 /** retry 可重试判断(列表行模板 v-if 用) */
 export function isRetryable(session: Session, currentTask: Task | null | undefined): boolean {
   return decideRetry(session, currentTask) === 'retryable'
+}
+
+/**
+ * 判断 failed session 是否由 ASR 任务失败引起(用于决定是否显示 reset 按钮)。
+ * 修复 2026-07-20 BUG #2:状态机约束 media_ready 后只有 ASR 能跑,其他任务类型 reset 后无法走通。
+ * 复用 currentTask(已由调用方从 tasksStore 查得);若 task 不在 store,保守返回 false。
+ */
+export function isASRFailure(session: Session, currentTask: Task | null | undefined): boolean {
+  if (!session.current_task_id || !currentTask) return false
+  return currentTask.type === 'asr' && currentTask.status === 'failed'
+}
+
+/** 构造 reset 动作(列表行 failed 分支使用) */
+function buildResetAction(): SessionAction {
+  return {
+    name: 'reset',
+    label: '重置',
+    disabled: false,
+    disabledReason: '',
+    confirmText: '', // 确认文案统一在 RecapsView.handleReset 用 HConfirm
+  }
 }
 
 /** failed 不可重试时的占位文案(列表行模板用,细化自 codex 建议) */
@@ -200,10 +225,17 @@ export function getRowActions(
     return withFetch(actions, session)
   }
 
-  // failed:仅当有可重试任务才显示重试(§7.1)
+  // failed:retry(可重试时)+ reset(仅 ASR 失败 + local_available=true)
+  // 修复 2026-07-20 BUG #2:reset 允许用户从 media_ready 重新提交 ASR
   if (session.status === 'failed') {
     if (isRetryable(session, currentTask)) {
       actions.retry = buildRetryAction()
+    }
+    // reset 仅在 ASR 失败 + 本地产物可用时显示:
+    //  - ASR 失败:状态机 media_ready 后只有 ASR 能跑,其他任务 reset 后无法走通
+    //  - local_available:本地产物已清理时 reset 无意义(用 fetch 取回)
+    if (session.local_available && isASRFailure(session, currentTask)) {
+      actions.reset = buildResetAction()
     }
     return withFetch(actions, session)
   }

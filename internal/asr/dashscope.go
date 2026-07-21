@@ -224,7 +224,7 @@ func (t *DashScopeTranscriber) cleanupRemote(ctx context.Context, remotePath str
 
 func (t *DashScopeTranscriber) submit(ctx context.Context, publicURL string, vocabulary map[string]int) (string, map[string]any, error) {
 	body := buildDashScopeSubmitBody(&t.cfg.DashScope, publicURL, vocabulary)
-	raw, err := t.doJSONWithRetry(ctx, http.MethodPost, t.cfg.DashScope.ASRURL, body)
+		raw, err := t.doJSONWithRetry(ctx, http.MethodPost, t.cfg.DashScope.EffectiveASRURL(), body)
 	if err != nil {
 		return "", nil, err
 	}
@@ -308,7 +308,7 @@ func DashScopeRequestMode(model string) string {
 }
 
 func (t *DashScopeTranscriber) poll(ctx context.Context, taskID string) (map[string]any, string, error) {
-	endpoint := strings.TrimRight(t.cfg.DashScope.TasksURL, "/") + "/" + taskID
+	endpoint := strings.TrimRight(t.cfg.DashScope.EffectiveTasksURL(), "/") + "/" + taskID
 	var last map[string]any
 	lastStatus := ""
 	consecutiveFailures := 0
@@ -353,7 +353,7 @@ func (t *DashScopeTranscriber) poll(ctx context.Context, taskID string) (map[str
 }
 
 func (t *DashScopeTranscriber) checkTask(ctx context.Context, taskID string) (map[string]any, string, error) {
-	endpoint := strings.TrimRight(t.cfg.DashScope.TasksURL, "/") + "/" + taskID
+	endpoint := strings.TrimRight(t.cfg.DashScope.EffectiveTasksURL(), "/") + "/" + taskID
 	raw, err := t.doJSONWithRetry(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, "", err

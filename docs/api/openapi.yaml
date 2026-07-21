@@ -1254,6 +1254,51 @@ paths:
               schema:
                 $ref: 'components/schemas/common.yaml#/Error'
 
+  /api/sessions/{sid}/reset:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    post:
+      tags: [场次]
+      operationId: resetSession
+      summary: 重置失败场次到媒体就绪(仅 ASR 任务失败)
+      description: |
+        修复 2026-07-20 BUG #2:ASR 任务失败后 session 卡在 failed 状态,
+        无 UI/API 恢复入口。此端点把 failed session 重置回 media_ready,
+        允许用户重新提交 ASR。
+
+        **守卫**(任一不满足返回 409):
+          - status 必须为 'failed'(ErrSessionNotFailed)
+          - local_available=1(ErrLocalFilesRemoved,产物已清理走 fetch/delete)
+          - current_task_id 对应 task 类型必须为 'asr'(ErrResetOnlyForASRFailure,
+            状态机约束 media_ready 后只有 ASR 能跑)
+          - 无 pending/running task(ErrActiveTaskExists,防延迟 callback 覆盖)
+
+        **不删任何 task**(保留 failed task 历史供审计);
+        **保留 publish_target/published_at**(让用户知道专栏状态)。
+
+        返回 200 + SessionDetail(与 GET /api/sessions/{sid} 同结构)。
+      responses:
+        '200':
+          description: 重置成功,返回最新 session 详情
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/session.yaml#/SessionDetailResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '404':
+          description: 场次不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '409':
+          description: 状态/产物/任务类型/active task 守卫失败
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
   /api/sessions/{sid}/glossary/discover:
     parameters:
       - $ref: '#/components/parameters/SessionID'

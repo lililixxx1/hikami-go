@@ -15,6 +15,13 @@ var (
 	ErrNotFound    = errors.New("session not found")
 	ErrInvalid     = errors.New("invalid session")
 	ErrAlreadyLive = errors.New("live session already exists for this slot")
+
+	// ResetFailedSession 错误哨兵(修复 2026-07-20 BUG #2)。
+	// reset 仅对 ASR 任务失败的 session 开放,且要求本地产物存在、无 active task。
+	ErrSessionNotFailed       = errors.New("session is not in failed state")
+	ErrLocalFilesRemoved      = errors.New("session local files have been removed; use fetch or delete instead")
+	ErrResetOnlyForASRFailure = errors.New("reset is only supported for ASR task failures; for other failure types use retry or recreate the session")
+	ErrActiveTaskExists       = errors.New("session has active tasks; wait for them to complete or cancel before reset")
 )
 
 // isConstraintViolation 判断 SQLite 是否抛出约束冲突（UNIQUE / PRIMARY KEY / FOREIGN KEY 等）。
@@ -377,6 +384,99 @@ func (s *Store) SetArchivedAt(ctx context.Context, sessionID string, archivedAt 
 	}
 	if affected == 0 {
 		return ErrNotFound
+	}
+	return nil
+}
+
+// ResetFailedSession 把失败场次重置回 media_ready 状态,允许用户重新提交 ASR。
+//
+// 修复 2026-07-20 BUG #2:此前 ASR 任务失败后 session 进入 failed 状态,
+// 重提 ASR 返回 409(status must be media_ready),用户无任何 UI/API 恢复入口。
+//
+// 设计(v6,经 codex r19-r19e 五轮审核收敛):
+//   - **仅 ASR 任务失败的 session 可 reset**:状态机 media_ready 后只能跑 ASR
+//     (transitions[StatusMediaReady] 只含 EventASRSubmitted),其他任务类型 reset 后无法走通。
+//   - **reset 前检查无 active task**:防止延迟 callback 通过 EventTaskFailed
+//     把 session 又写回 failed(配合 state.applyInTx 的 CAS 双重防御)。
+//   - **reset 不删任何 task**:保留 task 历史供审计,避免销毁恢复路径。
+//   - **保留 publish_target / published_at**:让用户知道专栏是否已发布过。
+//
+// 守卫(任一不满足直接返回错误,不动数据):
+//  1. session 必须存在(返回 ErrNotFound)
+//  2. status 必须为 'failed'(返回 ErrSessionNotFailed)
+//  3. local_available 必须为 1(返回 ErrLocalFilesRemoved)
+//  4. current_task_id 对应的 task 类型必须为 'asr'(返回 ErrResetOnlyForASRFailure)
+//  5. 该 session 不能有 pending/running task(返回 ErrActiveTaskExists)
+//
+// 注:task type 字面量 "asr" 与 asr.TaskType 常量一致,这里用字面量避免 session→asr import cycle。
+func (s *Store) ResetFailedSession(ctx context.Context, sessionID string) error {
+	if strings.TrimSpace(sessionID) == "" {
+		return fmt.Errorf("%w: session_id is required", ErrInvalid)
+	}
+
+	// ① 查 session 当前状态 + current_task_id + local_available
+	sess, err := s.Get(ctx, sessionID)
+	if err != nil {
+		return err // 自动返回 ErrNotFound
+	}
+	if sess.Status != string(state.StatusFailed) {
+		return ErrSessionNotFailed
+	}
+	if !sess.LocalAvailable {
+		return ErrLocalFilesRemoved
+	}
+
+	// ② current_task_id 对应的 task 类型必须为 'asr'(状态机约束)
+	if sess.CurrentTaskID == "" {
+		return ErrResetOnlyForASRFailure
+	}
+	var taskType string
+	err = s.db.QueryRowContext(ctx,
+		`SELECT type FROM tasks WHERE id = ?`, sess.CurrentTaskID,
+	).Scan(&taskType)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// task 已被清理,current_task_id 悬空 → 无法判断失败类型,保守拒绝
+			return ErrResetOnlyForASRFailure
+		}
+		return err
+	}
+	// task type 字面量 "asr" 对应 asr.TaskType 常量,避免 import cycle
+	if taskType != "asr" {
+		return ErrResetOnlyForASRFailure
+	}
+
+	// ③ 检查无 active task(pending/running),防止延迟 callback 覆盖 reset 结果
+	var activeCount int
+	err = s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM tasks WHERE session_id = ? AND status IN ('pending', 'running')`,
+		sessionID,
+	).Scan(&activeCount)
+	if err != nil {
+		return err
+	}
+	if activeCount > 0 {
+		return ErrActiveTaskExists
+	}
+
+	// ④ UPDATE session 到 media_ready(WHERE status='failed' 二次校验防止 check-then-act 竞态)
+	// v6 r19d 新增:检查 RowsAffected,double reset 时第二个返回 ErrSessionNotFailed
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET status = ?, current_task_id = NULL, last_error = NULL, updated_at = ?
+		 WHERE id = ? AND status = ?`,
+		string(state.StatusMediaReady), time.Now().Format(time.RFC3339),
+		sessionID, string(state.StatusFailed),
+	)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		// 并发情况下:另一个 reset 已经把 status 改为 media_ready
+		return ErrSessionNotFailed
 	}
 	return nil
 }

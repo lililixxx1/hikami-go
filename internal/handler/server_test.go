@@ -2613,3 +2613,120 @@ func TestListBiliSeries_WithoutChannelID_UnchangedBehavior(t *testing.T) {
 		t.Errorf("response body = %s, want contains 文集 ID 42", w.Body.String())
 	}
 }
+
+// ---------------------------------------------------------------------------
+// v6 新增:resetSession 端点测试(修复 2026-07-20 BUG #2)
+// ---------------------------------------------------------------------------
+
+// TestResetSession_Success 验证 ASR 失败场次 reset 成功,返回 SessionDetail。
+func TestResetSession_Success(t *testing.T) {
+	server, database := newTestServerWithDB(t)
+	ctx := context.Background()
+
+	// 插入测试数据
+	_, err := database.Exec(`INSERT INTO channels (id, name, uid, enabled) VALUES ('test_ch', 'Test', 1, 1)`)
+	if err != nil { t.Fatalf("insert channel: %v", err) }
+	_, err = database.Exec(`
+		INSERT INTO sessions (id, slug, channel_id, source_type, source_id, title, source_url, status, current_task_id, local_available)
+		VALUES ('sess_reset', 'reset_slug', 'test_ch', 'live_record', 'src_1', 'Reset Test', '', 'failed', 'task_asr_1', 1)
+	`)
+	if err != nil { t.Fatalf("insert session: %v", err) }
+	_, err = database.Exec(`
+		INSERT INTO tasks (id, channel_id, session_id, type, status, attempt, payload, progress, message, created_at, updated_at)
+		VALUES ('task_asr_1', 'test_ch', 'sess_reset', 'asr', 'failed', 1, '{}', 0, '', '2026-07-20T00:00:00+08:00', '2026-07-20T00:00:00+08:00')
+	`)
+	if err != nil { t.Fatalf("insert task: %v", err) }
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/sessions/sess_reset/reset", nil)
+	server.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", w.Code, w.Body.String())
+	}
+
+	// 验证返回 SessionDetail 结构
+	var resp struct {
+		Session map[string]any `json:"session"`
+		Files   []any          `json:"files"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Session == nil {
+		t.Fatal("session field is nil, want non-nil")
+	}
+	if resp.Session["status"] != "media_ready" {
+		t.Errorf("session.status = %v, want media_ready", resp.Session["status"])
+	}
+
+	// 验证 DB session 状态已更新
+	var status string
+	err = database.QueryRowContext(ctx, `SELECT status FROM sessions WHERE id = 'sess_reset'`).Scan(&status)
+	if err != nil { t.Fatalf("query: %v", err) }
+	if status != "media_ready" {
+		t.Errorf("DB status = %q, want media_ready", status)
+	}
+}
+
+// TestResetSession_NotFound 验证 404。
+func TestResetSession_NotFound(t *testing.T) {
+	server, _ := newTestServerWithDB(t)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/sessions/nonexistent/reset", nil)
+	server.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body = %s", w.Code, w.Body.String())
+	}
+}
+
+// TestResetSession_StatusNotFailed 验证非 failed 状态 → 409。
+func TestResetSession_StatusNotFailed(t *testing.T) {
+	server, database := newTestServerWithDB(t)
+
+	_, err := database.Exec(`INSERT INTO channels (id, name, uid, enabled) VALUES ('test_ch', 'Test', 1, 1)`)
+	if err != nil { t.Fatalf("insert channel: %v", err) }
+	// status = media_ready(不是 failed)
+	_, err = database.Exec(`
+		INSERT INTO sessions (id, slug, channel_id, source_type, source_id, title, status, local_available)
+		VALUES ('sess_media', 'slug', 'test_ch', 'live_record', 'src', 'Test', 'media_ready', 1)
+	`)
+	if err != nil { t.Fatalf("insert session: %v", err) }
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/sessions/sess_media/reset", nil)
+	server.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body = %s", w.Code, w.Body.String())
+	}
+}
+
+// TestResetSession_NonASRFailure 验证非 ASR 任务失败 → 409。
+func TestResetSession_NonASRFailure(t *testing.T) {
+	server, database := newTestServerWithDB(t)
+
+	_, err := database.Exec(`INSERT INTO channels (id, name, uid, enabled) VALUES ('test_ch', 'Test', 1, 1)`)
+	if err != nil { t.Fatalf("insert channel: %v", err) }
+	_, err = database.Exec(`
+		INSERT INTO sessions (id, slug, channel_id, source_type, source_id, title, status, current_task_id, local_available)
+		VALUES ('sess_recap', 'slug', 'test_ch', 'live_record', 'src', 'Test', 'failed', 'task_recap_1', 1)
+	`)
+	if err != nil { t.Fatalf("insert session: %v", err) }
+	// task 类型 recap(非 asr)
+	_, err = database.Exec(`
+		INSERT INTO tasks (id, channel_id, session_id, type, status, attempt, payload, progress, message, created_at, updated_at)
+		VALUES ('task_recap_1', 'test_ch', 'sess_recap', 'recap', 'failed', 1, '{}', 0, '', '2026-07-20T00:00:00+08:00', '2026-07-20T00:00:00+08:00')
+	`)
+	if err != nil { t.Fatalf("insert task: %v", err) }
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/sessions/sess_recap/reset", nil)
+	server.router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body = %s", w.Code, w.Body.String())
+	}
+}

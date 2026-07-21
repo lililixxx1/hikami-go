@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -117,11 +118,45 @@ func applyInTx(ctx context.Context, tx *sql.Tx, sessionID string, event Event, t
 	nowStr := nowRFC3339()
 
 	if event == EventTaskFailed {
-		_, err = tx.ExecContext(ctx, `
-			UPDATE sessions
-			SET status = ?, current_task_id = ?, last_error = ?, updated_at = ?
-			WHERE id = ?
-		`, next, nullable(taskID), nullable(errorMessage), nowStr, sessionID)
+		// v6 r19e HIGH #1 + #2: CAS 防止过期 callback 覆盖 reset 后的 session 状态。
+		//
+		// 场景:task X 失败 → worker MarkFailed(改 task.status=failed) → syncSessionState 调 Apply。
+		// 这两步之间用户点了 reset(session.status=failed→media_ready, current_task_id=NULL),
+		// 延迟的 callback 到达时 current_task_id 已经被清空,CAS 不匹配 → 丢弃 callback。
+		//
+		// 边界(v6 r19e HIGH #1):空 taskID 表示"自动任务创建失败"(main.go:236/279/322
+		// 在 task 入队前就失败,没有 task.id)。此时没有 current_task_id 可比较,走原 UPDATE
+		// 逻辑(不加 CAS),向后兼容老 callback 语义。
+		if taskID == "" {
+			_, err = tx.ExecContext(ctx, `
+				UPDATE sessions
+				SET status = ?, current_task_id = ?, last_error = ?, updated_at = ?
+				WHERE id = ?
+			`, next, nullable(taskID), nullable(errorMessage), nowStr, sessionID)
+		} else {
+			// CAS:只有 session.current_task_id 仍等于 callback 的 taskID 才允许写回 failed。
+			// reset 清空 current_task_id=NULL 后,旧 callback 的 taskID 不匹配,CAS 失败 → 丢弃。
+			result, casErr := tx.ExecContext(ctx, `
+				UPDATE sessions
+				SET status = ?, current_task_id = ?, last_error = ?, updated_at = ?
+				WHERE id = ? AND current_task_id = ?
+			`, next, nullable(taskID), nullable(errorMessage), nowStr, sessionID, taskID)
+			if casErr != nil {
+				return "", casErr
+			}
+			rowsAffected, rowsErr := result.RowsAffected()
+			if rowsErr != nil {
+				return "", rowsErr
+			}
+			if rowsAffected == 0 {
+				// CAS 失败:session.current_task_id 已不再是 callback 的 taskID
+				// 可能原因:① 用户 reset 清空了 current_task_id;② retry/其他 task 已接管
+				// 丢弃这个过期 callback,不改变 session 状态(返回当前状态,不报错)
+				slog.Info("stale task failure callback discarded (CAS mismatch)",
+					"session_id", sessionID, "task_id", taskID)
+				return current, nil
+			}
+		}
 	} else if event == EventUploadSucceeded {
 		_, err = tx.ExecContext(ctx, `
 			UPDATE sessions

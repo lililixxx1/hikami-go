@@ -45,6 +45,12 @@ export function getSessionDetail(sid: string): Promise<SessionDetail> {
   return get(`/api/sessions/${encodeURIComponent(sid)}`)
 }
 
+// resetSession 把失败场次重置到 media_ready 状态(修复 2026-07-20 BUG #2)。
+// 仅对 ASR 任务失败的 session 开放,返回最新 session 详情(与 getSessionDetail 同结构)。
+export function resetSession(sid: string): Promise<SessionDetail> {
+  return post(`/api/sessions/${encodeURIComponent(sid)}/reset`)
+}
+
 export function deleteSession(sid: string): Promise<void> {
   return del(`/api/sessions/${encodeURIComponent(sid)}`)
 }

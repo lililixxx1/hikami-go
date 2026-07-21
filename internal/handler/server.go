@@ -323,6 +323,7 @@ func (s *Server) routes() {
 	p.POST("/api/sessions/:sid/fetch", s.fetchSession)
 	p.POST("/api/sessions/:sid/publish", s.publishSession)
 	p.POST("/api/sessions/:sid/archive", s.archiveSession)
+	p.POST("/api/sessions/:sid/reset", s.resetSession)
 	p.POST("/api/sessions/:sid/glossary/discover", s.discoverSessionGlossary)
 
 	p.GET("/api/tasks", s.listTasks)
@@ -1162,10 +1163,33 @@ func (s *Server) getSession(ctx *gin.Context) {
 		writeError(ctx, err)
 		return
 	}
+	s.writeSessionDetail(ctx, sessionInfo)
+}
+
+// writeSessionDetail 把 session + files 列表打包成统一的 {session, files} 响应。
+// getSession 和 resetSession 都用此 helper,保证返回格式一致(r19 MEDIUM #5:避免复制 listSessionFiles 逻辑)。
+func (s *Server) writeSessionDetail(ctx *gin.Context, sessionInfo session.Session) {
 	ctx.JSON(http.StatusOK, gin.H{
 		"session": sessionInfo,
 		"files":   listSessionFiles(s.cfg.OutputRoot, sessionInfo),
 	})
+}
+
+// resetSession 把失败场次重置到 media_ready 状态(修复 2026-07-20 BUG #2)。
+// 详见 session.Store.ResetFailedSession 的守卫与设计说明。
+// 仅对 ASR 任务失败的 session 开放;reset 后用户可重新提交 ASR。
+func (s *Server) resetSession(ctx *gin.Context) {
+	if err := s.sessions.ResetFailedSession(ctx.Request.Context(), ctx.Param("sid")); err != nil {
+		writeError(ctx, err)
+		return
+	}
+	// 返回最新 session 详情(与 getSession 同结构,复用 writeSessionDetail)
+	sessionInfo, err := s.sessions.Get(ctx.Request.Context(), ctx.Param("sid"))
+	if err != nil {
+		writeError(ctx, err)
+		return
+	}
+	s.writeSessionDetail(ctx, sessionInfo)
 }
 
 func (s *Server) importSession(ctx *gin.Context) {
@@ -1605,6 +1629,15 @@ func writeError(ctx *gin.Context, err error) {
 		ctx.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 	case errors.Is(err, session.ErrInvalid):
 		writeBadRequest(ctx, err.Error())
+	// reset 端点错误哨兵(修复 2026-07-20 BUG #2):全部映射 409 Conflict
+	case errors.Is(err, session.ErrSessionNotFailed):
+		ctx.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+	case errors.Is(err, session.ErrLocalFilesRemoved):
+		ctx.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+	case errors.Is(err, session.ErrResetOnlyForASRFailure):
+		ctx.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+	case errors.Is(err, session.ErrActiveTaskExists):
+		ctx.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 	case errors.Is(err, glossary.ErrInvalidJSON):
 		writeBadRequest(ctx, err.Error())
 	case errors.Is(err, asr.ErrSessionNotReady):

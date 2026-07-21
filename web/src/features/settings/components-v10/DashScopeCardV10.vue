@@ -156,15 +156,15 @@ defineExpose({ reload: fetchConfig })
       <div class="form-row-inline">
         <label class="form-label">ASR URL</label>
         <div class="form-field">
-          <HInput v-model="config.asr_url" placeholder="留空走 DashScope 官方默认" />
-          <div class="form-hint">提交转写任务的接口地址,留空使用官方默认。</div>
+          <HInput v-model="config.asr_url" placeholder="留空时使用 https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription" />
+          <div class="form-hint">提交转写任务的接口地址,留空使用官方默认(见 placeholder)。</div>
         </div>
       </div>
       <div class="form-row-inline">
         <label class="form-label">Tasks URL</label>
         <div class="form-field">
-          <HInput v-model="config.tasks_url" placeholder="留空走 DashScope 官方默认" />
-          <div class="form-hint">查询转写任务结果的接口地址,留空使用官方默认。</div>
+          <HInput v-model="config.tasks_url" placeholder="留空时使用 https://dashscope.aliyuncs.com/api/v1/tasks" />
+          <div class="form-hint">查询转写任务结果的接口地址,留空使用官方默认(见 placeholder)。</div>
         </div>
       </div>
       <div class="form-row-inline">

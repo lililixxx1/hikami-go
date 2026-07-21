@@ -353,6 +353,42 @@ func TestDashScopeEffectiveAPIKeyEnv(t *testing.T) {
 	}
 }
 
+// TestDashScopeEffectiveURLs 验证 DashScopeConfig 的 EffectiveASRURL/EffectiveTasksURL 留空兜底。
+// 修复 2026-07-20 BUG #1:配置备份导入会把空串持久化到 runtime_settings,覆盖 viper SetDefault 默认值,
+// 导致 ASR POST 到空 URL。Effective 方法在调用点兜底,无论数据来自 config.yaml/runtime_settings/import
+// 都不会失败。
+func TestDashScopeEffectiveURLs(t *testing.T) {
+	// 全空 → 回落 DashScope 官方默认
+	empty := DashScopeConfig{}
+	if got := empty.EffectiveASRURL(); got != DefaultDashScopeASRURL {
+		t.Fatalf("EffectiveASRURL() empty = %q, want %q", got, DefaultDashScopeASRURL)
+	}
+	if got := empty.EffectiveTasksURL(); got != DefaultDashScopeTasksURL {
+		t.Fatalf("EffectiveTasksURL() empty = %q, want %q", got, DefaultDashScopeTasksURL)
+	}
+
+	// 纯空白 → 回落默认(防止用户误填空格)
+	whitespace := DashScopeConfig{ASRURL: "   ", TasksURL: "\t\n"}
+	if got := whitespace.EffectiveASRURL(); got != DefaultDashScopeASRURL {
+		t.Fatalf("EffectiveASRURL() whitespace = %q, want default (trimmed to empty)", got)
+	}
+	if got := whitespace.EffectiveTasksURL(); got != DefaultDashScopeTasksURL {
+		t.Fatalf("EffectiveTasksURL() whitespace = %q, want default (trimmed to empty)", got)
+	}
+
+	// 非空自定义值原样返回(含 trim)
+	filled := DashScopeConfig{
+		ASRURL:   "  https://custom.example.com/asr  ",
+		TasksURL: "https://custom.example.com/tasks/",
+	}
+	if got := filled.EffectiveASRURL(); got != "https://custom.example.com/asr" {
+		t.Fatalf("EffectiveASRURL() filled = %q (should trim), want https://custom.example.com/asr", got)
+	}
+	if got := filled.EffectiveTasksURL(); got != "https://custom.example.com/tasks/" {
+		t.Fatalf("EffectiveTasksURL() filled = %q, want https://custom.example.com/tasks/", got)
+	}
+}
+
 // TestASRS3EffectiveAccessKeyEnv 验证 ASRS3Config 留空兜底到 ASR_S3_ACCESS_KEY_SECRET。
 func TestASRS3EffectiveAccessKeyEnv(t *testing.T) {
 	if got := (ASRS3Config{}).EffectiveAccessKeyEnv(); got != "ASR_S3_ACCESS_KEY_SECRET" {

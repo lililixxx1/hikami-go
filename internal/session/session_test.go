@@ -1064,3 +1064,176 @@ func TestSetArchivedAt_EmptyID(t *testing.T) {
 		t.Fatalf("expected ErrInvalid, got %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// v6 新增:ResetFailedSession 测试(修复 2026-07-20 BUG #2)
+// ---------------------------------------------------------------------------
+
+// resetTestSession 插入一个 failed session,current_task_id 指向指定 task。
+func resetTestSession(t *testing.T, database *sql.DB, sessionID, taskID string, localAvailable int) {
+	t.Helper()
+	_, err := database.Exec(`
+		INSERT INTO sessions (id, slug, channel_id, source_type, source_id, title, source_url, status, current_task_id, local_available)
+		VALUES (?, 'reset_test', 'test_ch', 'live_record', 'src_1', 'Reset Test', '', 'failed', ?, ?)
+	`, sessionID, taskID, localAvailable)
+	if err != nil {
+		t.Fatalf("insert reset test session: %v", err)
+	}
+}
+
+// resetTestTask 插入一个 task 记录(模拟 session.current_task_id 指向的 task)。
+func resetTestTask(t *testing.T, database *sql.DB, taskID, sessionID, taskType, status string) {
+	t.Helper()
+	_, err := database.Exec(`
+		INSERT INTO tasks (id, channel_id, session_id, type, status, attempt, payload, progress, message, created_at, updated_at)
+		VALUES (?, 'test_ch', ?, ?, ?, 1, '{}', 0, '', '2026-07-20T00:00:00+08:00', '2026-07-20T00:00:00+08:00')
+	`, taskID, sessionID, taskType, status)
+	if err != nil {
+		t.Fatalf("insert reset test task: %v", err)
+	}
+}
+
+// TestResetFailedSession_Success 验证 ASR 失败 + local_available=1 + 无 active task 时 reset 成功。
+func TestResetFailedSession_Success(t *testing.T) {
+	database := setupDB(t)
+	insertChannel(t, database)
+	resetTestSession(t, database, "sess_reset_ok", "task_asr_1", 1)
+	resetTestTask(t, database, "task_asr_1", "sess_reset_ok", "asr", "failed")
+
+	store := NewStore(database)
+	err := store.ResetFailedSession(context.Background(), "sess_reset_ok")
+	if err != nil {
+		t.Fatalf("ResetFailedSession: %v", err)
+	}
+
+	// 验证 session 状态变为 media_ready,current_task_id 和 last_error 清空
+	var status string
+	var currentTaskID sql.NullString
+	var lastError sql.NullString
+	err = database.QueryRow(
+		`SELECT status, current_task_id, last_error FROM sessions WHERE id = ?`, "sess_reset_ok",
+	).Scan(&status, &currentTaskID, &lastError)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if status != "media_ready" {
+		t.Fatalf("status = %q, want media_ready", status)
+	}
+	if currentTaskID.Valid {
+		t.Fatalf("current_task_id = %q, want NULL", currentTaskID.String)
+	}
+	if lastError.Valid {
+		t.Fatalf("last_error = %q, want NULL", lastError.String)
+	}
+
+	// 验证 task 历史保留(不删任何 task)
+	var taskCount int
+	err = database.QueryRow(`SELECT COUNT(*) FROM tasks WHERE session_id = ?`, "sess_reset_ok").Scan(&taskCount)
+	if err != nil {
+		t.Fatalf("count tasks: %v", err)
+	}
+	if taskCount != 1 {
+		t.Fatalf("task count = %d, want 1 (task history should be preserved)", taskCount)
+	}
+}
+
+// TestResetFailedSession_StatusNotFailed 验证非 failed 状态拒绝 reset。
+func TestResetFailedSession_StatusNotFailed(t *testing.T) {
+	database := setupDB(t)
+	insertChannel(t, database)
+	resetTestSession(t, database, "sess_not_failed", "task_asr_2", 1)
+	resetTestTask(t, database, "task_asr_2", "sess_not_failed", "asr", "failed")
+	// 改 status 为 media_ready
+	_, _ = database.Exec(`UPDATE sessions SET status = 'media_ready' WHERE id = 'sess_not_failed'`)
+
+	store := NewStore(database)
+	err := store.ResetFailedSession(context.Background(), "sess_not_failed")
+	if !errors.Is(err, ErrSessionNotFailed) {
+		t.Fatalf("error = %v, want ErrSessionNotFailed", err)
+	}
+}
+
+// TestResetFailedSession_LocalUnavailable 验证 local_available=0 拒绝 reset。
+func TestResetFailedSession_LocalUnavailable(t *testing.T) {
+	database := setupDB(t)
+	insertChannel(t, database)
+	resetTestSession(t, database, "sess_no_local", "task_asr_3", 0)
+	resetTestTask(t, database, "task_asr_3", "sess_no_local", "asr", "failed")
+
+	store := NewStore(database)
+	err := store.ResetFailedSession(context.Background(), "sess_no_local")
+	if !errors.Is(err, ErrLocalFilesRemoved) {
+		t.Fatalf("error = %v, want ErrLocalFilesRemoved", err)
+	}
+}
+
+// TestResetFailedSession_NonASRFailure 验证非 ASR 任务失败拒绝 reset。
+func TestResetFailedSession_NonASRFailure(t *testing.T) {
+	database := setupDB(t)
+	insertChannel(t, database)
+	resetTestSession(t, database, "sess_recap_fail", "task_recap_1", 1)
+	// task 类型是 recap(不是 asr)
+	resetTestTask(t, database, "task_recap_1", "sess_recap_fail", "recap", "failed")
+
+	store := NewStore(database)
+	err := store.ResetFailedSession(context.Background(), "sess_recap_fail")
+	if !errors.Is(err, ErrResetOnlyForASRFailure) {
+		t.Fatalf("error = %v, want ErrResetOnlyForASRFailure", err)
+	}
+}
+
+// TestResetFailedSession_ActiveTaskExists 验证有 pending/running task 时拒绝 reset。
+func TestResetFailedSession_ActiveTaskExists(t *testing.T) {
+	database := setupDB(t)
+	insertChannel(t, database)
+	resetTestSession(t, database, "sess_active", "task_asr_active", 1)
+	resetTestTask(t, database, "task_asr_active", "sess_active", "asr", "failed")
+	// 插入一个 pending task(另一个任务在排队)
+	resetTestTask(t, database, "task_pending_1", "sess_active", "recap", "pending")
+
+	store := NewStore(database)
+	err := store.ResetFailedSession(context.Background(), "sess_active")
+	if !errors.Is(err, ErrActiveTaskExists) {
+		t.Fatalf("error = %v, want ErrActiveTaskExists", err)
+	}
+}
+
+// TestResetFailedSession_NotFound 验证不存在的 session 返回 ErrNotFound。
+func TestResetFailedSession_NotFound(t *testing.T) {
+	database := setupDB(t)
+	insertChannel(t, database)
+
+	store := NewStore(database)
+	err := store.ResetFailedSession(context.Background(), "nonexistent")
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("error = %v, want ErrNotFound", err)
+	}
+}
+
+// TestResetFailedSession_EmptyTaskID 验证 current_task_id 为空时拒绝 reset
+// (这种情况发生在 task 已被清理 / 自动任务创建失败等场景)。
+func TestResetFailedSession_EmptyTaskID(t *testing.T) {
+	database := setupDB(t)
+	insertChannel(t, database)
+	resetTestSession(t, database, "sess_empty_taskid", "", 1)
+
+	store := NewStore(database)
+	err := store.ResetFailedSession(context.Background(), "sess_empty_taskid")
+	if !errors.Is(err, ErrResetOnlyForASRFailure) {
+		t.Fatalf("error = %v, want ErrResetOnlyForASRFailure", err)
+	}
+}
+
+// TestResetFailedSession_TaskDeleted 验证 current_task_id 指向的 task 已被清理时拒绝 reset。
+func TestResetFailedSession_TaskDeleted(t *testing.T) {
+	database := setupDB(t)
+	insertChannel(t, database)
+	// session.current_task_id 指向 task_ghost,但不插入该 task(模拟已被清理)
+	resetTestSession(t, database, "sess_ghost", "task_ghost", 1)
+
+	store := NewStore(database)
+	err := store.ResetFailedSession(context.Background(), "sess_ghost")
+	if !errors.Is(err, ErrResetOnlyForASRFailure) {
+		t.Fatalf("error = %v, want ErrResetOnlyForASRFailure", err)
+	}
+}

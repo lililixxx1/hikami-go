@@ -5,6 +5,7 @@ import {
   canFetchLocal,
   decideRetry,
   isRetryable,
+  isASRFailure, // v6 新增(修复 2026-07-20 BUG #2)
   retryHint,
   primaryActionType,
   UI_ACTION_REASON,
@@ -133,6 +134,84 @@ describe('getRowActions 表A — failed retry 边界', () => {
   it('failed + currentTask 未传(undefined) → 无 retry', () => {
     const a = getRowActions(makeSession({ status: 'failed', current_task_id: 't1' }), allCaps)
     expect(a.retry).toBeUndefined()
+  })
+})
+
+// v6 新增(修复 2026-07-20 BUG #2):reset 动作边界测试
+describe('getRowActions 表A — failed reset 边界', () => {
+  it('failed + ASR 失败 + local_available=true → 显示 reset(与 retry 并存)', () => {
+    const task = makeFailedTask() // type='asr', status='failed'
+    const a = getRowActions(
+      makeSession({ status: 'failed', current_task_id: 't1', local_available: true }),
+      allCaps,
+      task,
+    )
+    expect(a.reset).toBeDefined()
+    expect(a.reset?.name).toBe('reset')
+    expect(a.reset?.label).toBe('重置')
+    // retry 也应该存在(可重试)
+    expect(a.retry).toBeDefined()
+  })
+
+  it('failed + 非 ASR 任务失败(recap) → 无 reset', () => {
+    const task = { ...makeFailedTask(), type: 'recap' as const }
+    const a = getRowActions(
+      makeSession({ status: 'failed', current_task_id: 't1', local_available: true }),
+      allCaps,
+      task,
+    )
+    expect(a.reset).toBeUndefined()
+  })
+
+  it('failed + local_available=false → 无 reset(产物已清理,用 fetch)', () => {
+    const task = makeFailedTask()
+    const a = getRowActions(
+      makeSession({ status: 'failed', current_task_id: 't1', local_available: false }),
+      allCaps,
+      task,
+    )
+    expect(a.reset).toBeUndefined()
+    // fetch 应该存在(引导用户取回)
+    expect(a.fetch).toBeDefined()
+  })
+
+  it('failed + currentTask 不在 store → 无 reset(保守隐藏)', () => {
+    const a = getRowActions(
+      makeSession({ status: 'failed', current_task_id: 't1', local_available: true }),
+      allCaps,
+      null,
+    )
+    expect(a.reset).toBeUndefined()
+  })
+
+  it('failed + 无 current_task_id → 无 reset', () => {
+    const a = getRowActions(
+      makeSession({ status: 'failed', current_task_id: '', local_available: true }),
+      allCaps,
+      null,
+    )
+    expect(a.reset).toBeUndefined()
+  })
+
+  it('isASRFailure 判断:type=asr + status=failed → true', () => {
+    expect(isASRFailure(
+      makeSession({ current_task_id: 't1' }),
+      makeFailedTask(),
+    )).toBe(true)
+  })
+
+  it('isASRFailure 判断:type=recap → false', () => {
+    expect(isASRFailure(
+      makeSession({ current_task_id: 't1' }),
+      { ...makeFailedTask(), type: 'recap' as const },
+    )).toBe(false)
+  })
+
+  it('isASRFailure 判断:task 状态非 failed → false', () => {
+    expect(isASRFailure(
+      makeSession({ current_task_id: 't1' }),
+      { ...makeFailedTask(), status: 'succeeded' as const },
+    )).toBe(false)
   })
 })
 

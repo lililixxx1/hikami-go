@@ -165,6 +165,16 @@ const (
 	DefaultRecapModel    = "deepseek-v4-pro"
 )
 
+// DashScope 默认值(留空兜底用,单一来源)。
+// viper SetDefault、Effective 方法、调用方全部引用此处,避免多处字面量不一致。
+// 修复 2026-07-20 BUG #1:配置备份导入会把空串持久化到 runtime_settings,
+// 覆盖 viper SetDefault 默认值,导致 ASR POST 到空 URL。
+// Effective 方法在调用点兜底,无论数据来自 config.yaml/runtime_settings/import 都不会失败。
+const (
+	DefaultDashScopeASRURL   = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription"
+	DefaultDashScopeTasksURL = "https://dashscope.aliyuncs.com/api/v1/tasks"
+)
+
 // EffectiveProvider 返回留空兜底后的有效 provider,空值回落到 DeepSeek 默认。
 // newRecapConfigResponse、recap.NewConfiguredProvider、runtime.probeRecapProvider 必须使用。
 func (r RecapAIConfig) EffectiveProvider() string {
@@ -205,6 +215,26 @@ func (d DashScopeConfig) EffectiveAPIKeyEnv() string {
 		return e
 	}
 	return "DASHSCOPE_API_KEY"
+}
+
+// EffectiveASRURL 返回留空兜底后的有效 asr_url,空值回落到 DashScope 官方默认。
+// internal/asr/dashscope.go 提交转写任务必须使用,避免 POST 到空 URL
+// (修复 2026-07-20 BUG #1:配置备份导入会把空串持久化到 runtime_settings,
+// 覆盖 viper SetDefault 默认值)。
+func (d DashScopeConfig) EffectiveASRURL() string {
+	if u := strings.TrimSpace(d.ASRURL); u != "" {
+		return u
+	}
+	return DefaultDashScopeASRURL
+}
+
+// EffectiveTasksURL 返回留空兜底后的有效 tasks_url,空值回落到 DashScope 官方默认。
+// internal/asr/dashscope.go 查询任务状态必须使用。
+func (d DashScopeConfig) EffectiveTasksURL() string {
+	if u := strings.TrimSpace(d.TasksURL); u != "" {
+		return u
+	}
+	return DefaultDashScopeTasksURL
 }
 
 // EffectiveAccessKeyEnv 返回留空兜底后的有效密钥环境变量名,空值回落到 ASR_S3_ACCESS_KEY_SECRET。
@@ -778,8 +808,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("logs.level", "info")
 	v.SetDefault("logs.format", "json")
 	v.SetDefault("dashscope.api_key_env", "DASHSCOPE_API_KEY")
-	v.SetDefault("dashscope.asr_url", "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription")
-	v.SetDefault("dashscope.tasks_url", "https://dashscope.aliyuncs.com/api/v1/tasks")
+	v.SetDefault("dashscope.asr_url", DefaultDashScopeASRURL)
+	v.SetDefault("dashscope.tasks_url", DefaultDashScopeTasksURL)
 	v.SetDefault("dashscope.model", "fun-asr")
 	v.SetDefault("dashscope.language", "zh")
 	v.SetDefault("dashscope.diarization_enabled", true)

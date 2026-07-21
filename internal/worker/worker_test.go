@@ -1115,3 +1115,96 @@ func TestSyncSessionStateBypassFlag(t *testing.T) {
 		t.Fatalf("instance-level bypass (normal type + BypassFailState=true) = %v, want true (OR logic)", gotBypass)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// v6 新增:TestSyncSessionState_StaleAttempt_Discarded 验证 attempt 校验
+// ---------------------------------------------------------------------------
+
+// TestSyncSessionState_StaleAttempt_Discarded 验证 retry 后旧 attempt 的 callback 被丢弃。
+// v6 r19e HIGH #2:Retry 复用同一 task ID 只递增 attempt,如果旧 attempt 的失败 callback
+// 延迟到新 attempt 已启动后才到达,taskID 相同但 attempt 不同。
+// worker 层在 syncSessionState 开头重查 task 当前 attempt,不匹配则丢弃。
+func TestSyncSessionState_StaleAttempt_Discarded(t *testing.T) {
+	database := setupDB(t)
+	insertChannel(t, database)
+	store := NewStore(database)
+	// 插入 session + task(attempt=2,模拟已被 retry 过)
+	_, err := database.Exec(`
+		INSERT INTO sessions (id, slug, channel_id, source_type, source_id, title, status, current_task_id, local_available)
+		VALUES ('sess_retry', 'slug', 'test_ch', 'live_record', 'src', 'Test', 'asr_submitted', 'task_retry_1', 1)
+	`)
+	if err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+	_, err = database.Exec(`
+		INSERT INTO tasks (id, channel_id, session_id, type, status, attempt, payload, progress, message, created_at, updated_at)
+		VALUES ('task_retry_1', 'test_ch', 'sess_retry', 'asr', 'running', 2, '{}', 0, '', '2026-07-20T00:00:00+08:00', '2026-07-20T00:00:00+08:00')
+	`)
+	if err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+
+	pool := NewPool(store, NewHub(), 1, nil)
+	pool.Register("asr", func(ctx context.Context, task Task, reporter Reporter) error { return nil })
+
+	failSessionCalled := false
+	pool.SetFailSessionStateFn(func(ctx context.Context, task Task, event, taskID, msg string, bypass bool) error {
+		failSessionCalled = true
+		return nil
+	})
+
+	// 模拟旧 attempt=1 的 callback(taskID 相同但 attempt 不同)
+	pool.syncSessionState(context.Background(), Task{
+		ID:        "task_retry_1",
+		Type:      "asr",
+		SessionID: "sess_retry",
+		Attempt:   1, // 旧 attempt(DB 里已是 2)
+	}, "old failure")
+
+	// 关键断言:failSessionState 不应该被调用(callback 被丢弃)
+	if failSessionCalled {
+		t.Fatal("failSessionState should NOT be called for stale attempt callback (attempt mismatch)")
+	}
+}
+
+// TestSyncSessionState_FreshAttempt_Proceeds 验证 attempt 匹配时正常调用 failSessionState。
+func TestSyncSessionState_FreshAttempt_Proceeds(t *testing.T) {
+	database := setupDB(t)
+	insertChannel(t, database)
+	store := NewStore(database)
+	_, err := database.Exec(`
+		INSERT INTO sessions (id, slug, channel_id, source_type, source_id, title, status, current_task_id, local_available)
+		VALUES ('sess_fresh', 'slug', 'test_ch', 'live_record', 'src', 'Test', 'asr_submitted', 'task_fresh_1', 1)
+	`)
+	if err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+	_, err = database.Exec(`
+		INSERT INTO tasks (id, channel_id, session_id, type, status, attempt, payload, progress, message, created_at, updated_at)
+		VALUES ('task_fresh_1', 'test_ch', 'sess_fresh', 'asr', 'failed', 1, '{}', 0, '', '2026-07-20T00:00:00+08:00', '2026-07-20T00:00:00+08:00')
+	`)
+	if err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+
+	pool := NewPool(store, NewHub(), 1, nil)
+	pool.Register("asr", func(ctx context.Context, task Task, reporter Reporter) error { return nil })
+
+	failSessionCalled := false
+	pool.SetFailSessionStateFn(func(ctx context.Context, task Task, event, taskID, msg string, bypass bool) error {
+		failSessionCalled = true
+		return nil
+	})
+
+	// attempt=1 匹配 DB,应该正常调用 failSessionState
+	pool.syncSessionState(context.Background(), Task{
+		ID:        "task_fresh_1",
+		Type:      "asr",
+		SessionID: "sess_fresh",
+		Attempt:   1, // 匹配 DB
+	}, "fresh failure")
+
+	if !failSessionCalled {
+		t.Fatal("failSessionState should be called for fresh attempt callback (attempt matches)")
+	}
+}

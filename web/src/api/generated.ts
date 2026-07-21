@@ -754,6 +754,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{sid}/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 场次 ID */
+                sid: components["parameters"]["SessionID"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 重置失败场次到媒体就绪(仅 ASR 任务失败)
+         * @description 修复 2026-07-20 BUG #2:ASR 任务失败后 session 卡在 failed 状态,
+         *     无 UI/API 恢复入口。此端点把 failed session 重置回 media_ready,
+         *     允许用户重新提交 ASR。
+         *
+         *     **守卫**(任一不满足返回 409):
+         *       - status 必须为 'failed'(ErrSessionNotFailed)
+         *       - local_available=1(ErrLocalFilesRemoved,产物已清理走 fetch/delete)
+         *       - current_task_id 对应 task 类型必须为 'asr'(ErrResetOnlyForASRFailure,
+         *         状态机约束 media_ready 后只有 ASR 能跑)
+         *       - 无 pending/running task(ErrActiveTaskExists,防延迟 callback 覆盖)
+         *
+         *     **不删任何 task**(保留 failed task 历史供审计);
+         *     **保留 publish_target/published_at**(让用户知道专栏状态)。
+         *
+         *     返回 200 + SessionDetail(与 GET /api/sessions/{sid} 同结构)。
+         */
+        post: operations["resetSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{sid}/glossary/discover": {
         parameters: {
             query?: never;
@@ -5287,6 +5324,48 @@ export interface operations {
                 };
             };
             /** @description 能力不可用或场次状态不允许归档 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    resetSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 场次 ID */
+                sid: components["parameters"]["SessionID"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 重置成功,返回最新 session 详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionDetailResponse"];
+                };
+            };
+            401: paths["/api/health/runtime"]["get"]["responses"]["401"];
+            /** @description 场次不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 状态/产物/任务类型/active task 守卫失败 */
             409: {
                 headers: {
                     [name: string]: unknown;

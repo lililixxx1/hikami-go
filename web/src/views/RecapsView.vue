@@ -36,6 +36,7 @@ import {
   previewDiscoverSessionsByURL,
   executeDiscoverSessions,
   deleteFailedSessions,
+  resetSession, // 修复 2026-07-20 BUG #2:重置失败场次到 media_ready
 } from '@/api/sessions'
 import { retryTask } from '@/api/tasks'
 import { upsertChannelEntry } from '@/api/glossary'
@@ -399,6 +400,30 @@ async function handleRetry(session: DerivedSession) {
   }
 }
 
+// 重置失败场次到 media_ready(修复 2026-07-20 BUG #2):
+//  - 仅 ASR 任务失败的 session 可 reset(由 getRowActions + isASRFailure 守卫)
+//  - reset 不创建新 task,显式刷新 sessions store
+async function handleReset(session: DerivedSession) {
+  if (actionLoadingId.value) return
+  // HConfirm 文案统一在此处(单一来源,不在 SessionAction.confirmText 重复)
+  const ok = await HConfirm(
+    '该场次的 ASR 任务曾失败。重置后会清理 session 的 failed 状态,允许重新提交 ASR。task 历史保留供审计。',
+    { title: '重置场次到媒体就绪', confirmText: '重置', cancelText: '取消', type: 'warning' },
+  )
+  if (!ok) return
+
+  actionLoadingId.value = `${session.id}:reset`
+  try {
+    await resetSession(session.id)
+    HMessage.success('已重置到媒体就绪')
+    await sessionsStore.fetchSessions()
+  } catch {
+    // 失败已由 client 拦截器 toast(409 等)
+  } finally {
+    actionLoadingId.value = ''
+  }
+}
+
 // ---------- 发现回放(壳编排:openDiscover 打开抽屉;preview-submit 按 URL 发现;execute 提交) ----------
 // DiscoverPreviewDrawer 是纯展示组件,preview-by-url/execute 的 API 调用搬到这里。
 // 2026-07-19 解耦重写:不再「打开即自动遍历主播表」,改为用户在抽屉里输入 URL 后才调 preview-by-url。
@@ -530,6 +555,7 @@ onMounted(async () => {
       @run-action="handleRowAction"
       @fetch="handleFetch"
       @retry="handleRetry"
+      @reset="handleReset"
     />
 
     <RecapDrawerV10

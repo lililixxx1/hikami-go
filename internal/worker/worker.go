@@ -393,6 +393,24 @@ func (p *Pool) syncSessionState(ctx context.Context, task Task, message string) 
 	if p.failSessionState == nil || task.SessionID == "" {
 		return
 	}
+
+	// v6 r19e HIGH #2: retry 后旧 attempt 的 callback 不应覆盖 session 状态。
+	// Retry 复用同一 task ID 只递增 attempt(task.go:285),如果旧 attempt 的失败 callback
+	// 延迟到新 attempt 已启动后才到达,taskID 相同但 attempt 不同。
+	// 此处重查 task 当前 attempt,如果比 callback 携带的 task.Attempt 大,说明已被 retry,丢弃。
+	if p.store != nil {
+		currentTask, err := p.store.Get(ctx, task.ID)
+		if err == nil && currentTask.Attempt > task.Attempt {
+			slog.Info("stale task failure callback discarded (attempt mismatch)",
+				"task_id", task.ID,
+				"callback_attempt", task.Attempt,
+				"current_attempt", currentTask.Attempt)
+			return
+		}
+		// err != nil 的情况(ErrTaskNotFound 等)继续走原逻辑,
+		// 因为 task 已被清理时仍需写 session failed(清理场景)。
+	}
+
 	// 设计 4.3：旁路任务（upload/archive）失败不降级主状态——由注册时的 WithBypassFailState
 	// 声明，替代原先 cmd/hikami 对 task.Type 的硬编码特判。
 	// 任务实例级 bypass（task.BypassFailState）与类型级（WithBypassFailState）取 OR：
