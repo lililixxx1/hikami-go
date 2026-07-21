@@ -264,8 +264,7 @@ func TestApplyInvalidTransition(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Test 8: TestApplyTaskFailedSetsError — task_failed sets last_error
-// v6 修订:测试场景模拟真实流程(task 进入时 Apply 已写 current_task_id),
-// 这样 CAS 检查 current_task_id=task_1 才会匹配。
+// v7 修订:回退 v6 的 CAS 测试 setup(不再需要预设 current_task_id 匹配)。
 // ---------------------------------------------------------------------------
 
 func TestApplyTaskFailedSetsError(t *testing.T) {
@@ -276,13 +275,6 @@ func TestApplyTaskFailedSetsError(t *testing.T) {
 	store := NewStore(database)
 	ctx := context.Background()
 
-	// v6: 模拟 task_1 进入流程(写 current_task_id=task_1)
-	// downloading + EventDownloadSucceeded → downloading(状态不变,但 current_task_id 写入)
-	if _, err := store.Apply(ctx, "sess_fail", EventDownloadSucceeded, "task_1", ""); err != nil {
-		t.Fatalf("setup Apply EventDownloadSucceeded: %v", err)
-	}
-
-	// task_1 失败:CAS 检查 current_task_id=task_1 匹配 → 写 failed
 	next, err := store.Apply(ctx, "sess_fail", EventTaskFailed, "task_1", "network timeout")
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
@@ -409,130 +401,3 @@ func TestApplyWithPublishTarget_WritesTargetInTx(t *testing.T) {
 }
 
 
-// ---------------------------------------------------------------------------
-// v6 新增测试:TestApplyTaskFailed_EmptyTaskID_NoCAS — 空 taskID 走原逻辑(不加 CAS)
-// ---------------------------------------------------------------------------
-
-// TestApplyTaskFailed_EmptyTaskID_NoCAS 验证空 taskID 时 EventTaskFailed 走原 UPDATE 逻辑
-// (不加 CAS),向后兼容 main.go:236/279/322 的"自动任务创建失败"场景。
-// 这些场景在 task 入队前就失败,没有 task.id,session.current_task_id 可能是任意值。
-// v6 r19e HIGH #1:如果加 CAS 会让这些正常失败 callback 被静默丢弃。
-func TestApplyTaskFailed_EmptyTaskID_NoCAS(t *testing.T) {
-	database := setupDB(t)
-	insertChannel(t, database)
-	// session.current_task_id 不预设(NULL),模拟"自动任务创建失败"场景
-	insertSession(t, database, "sess_empty_taskid", "media_ready")
-
-	store := NewStore(database)
-	ctx := context.Background()
-
-	// 空 taskID 调用 EventTaskFailed,应该走原逻辑写入 failed(不被 CAS 拦截)
-	next, err := store.Apply(ctx, "sess_empty_taskid", EventTaskFailed, "", "auto asr task creation failed: network error")
-	if err != nil {
-		t.Fatalf("Apply EventTaskFailed with empty taskID: %v", err)
-	}
-	if next != StatusFailed {
-		t.Fatalf("Apply result = %s, want failed (empty taskID should bypass CAS)", next)
-	}
-
-	var status, lastError string
-	err = database.QueryRowContext(ctx,
-		"SELECT status, last_error FROM sessions WHERE id = 'sess_empty_taskid'",
-	).Scan(&status, &lastError)
-	if err != nil {
-		t.Fatalf("query: %v", err)
-	}
-	if status != "failed" {
-		t.Fatalf("status = %s, want failed", status)
-	}
-	if lastError != "auto asr task creation failed: network error" {
-		t.Fatalf("last_error = %q, want auto asr task creation failed: network error", lastError)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// v6 新增测试:TestApplyTaskFailed_CASMismatch_Discarded — CAS 不匹配时丢弃 callback
-// ---------------------------------------------------------------------------
-
-// TestApplyTaskFailed_CASMismatch_Discarded 验证非空 taskID 的 EventTaskFailed 在
-// session.current_task_id 不匹配时被丢弃(模拟 reset 清空 current_task_id 后旧 callback 到达)。
-// v6 r19d HIGH #1 + r19e HIGH #2:防止 reset 后延迟 callback 把 session 又写回 failed。
-func TestApplyTaskFailed_CASMismatch_Discarded(t *testing.T) {
-	database := setupDB(t)
-	insertChannel(t, database)
-	// session.current_task_id="task_A"(模拟 task_A 进入流程时的状态)
-	insertSession(t, database, "sess_cas", "media_ready")
-	_, err := database.Exec(`UPDATE sessions SET current_task_id = 'task_A' WHERE id = 'sess_cas'`)
-	if err != nil {
-		t.Fatalf("set current_task_id: %v", err)
-	}
-
-	store := NewStore(database)
-	ctx := context.Background()
-
-	// 模拟 reset 清空 current_task_id(NULL)
-	_, err = database.Exec(`UPDATE sessions SET current_task_id = NULL, status = 'media_ready' WHERE id = 'sess_cas'`)
-	if err != nil {
-		t.Fatalf("simulate reset: %v", err)
-	}
-
-	// 延迟的 task_A callback 到达:session.current_task_id=NULL ≠ taskID=task_A → CAS 失败 → 丢弃
-	next, err := store.Apply(ctx, "sess_cas", EventTaskFailed, "task_A", "old failure")
-	if err != nil {
-		t.Fatalf("Apply EventTaskFailed CAS mismatch: %v (should not error)", err)
-	}
-	// 关键断言:返回当前状态(media_ready),不是 failed
-	if next != StatusMediaReady {
-		t.Fatalf("Apply result = %s, want media_ready (CAS mismatch should discard callback)", next)
-	}
-
-	// session 状态应该保持 media_ready(未被覆盖)
-	var status string
-	err = database.QueryRowContext(ctx,
-		"SELECT status FROM sessions WHERE id = 'sess_cas'",
-	).Scan(&status)
-	if err != nil {
-		t.Fatalf("query: %v", err)
-	}
-	if status != "media_ready" {
-		t.Fatalf("status = %s, want media_ready (callback should be discarded)", status)
-	}
-}
-
-// TestApplyTaskFailed_CASMatch_WritesFailed 验证正常流程 CAS 匹配时写 failed。
-// task 进入流程时 Apply 写 current_task_id=task_X,task 失败时 callback taskID=task_X 匹配。
-func TestApplyTaskFailed_CASMatch_WritesFailed(t *testing.T) {
-	database := setupDB(t)
-	insertChannel(t, database)
-	insertSession(t, database, "sess_match", "media_ready")
-
-	store := NewStore(database)
-	ctx := context.Background()
-
-	// task_X 进入流程(media_ready → asr_submitted,写 current_task_id=task_X)
-	next, err := store.Apply(ctx, "sess_match", EventASRSubmitted, "task_X", "")
-	if err != nil {
-		t.Fatalf("Apply EventASRSubmitted: %v", err)
-	}
-	if next != StatusASRSubmitted {
-		t.Fatalf("after EventASRSubmitted: status = %s, want asr_submitted", next)
-	}
-
-	// task_X 失败:CAS 检查 current_task_id=task_X 匹配 → 写 failed
-	next, err = store.Apply(ctx, "sess_match", EventTaskFailed, "task_X", "asr failed")
-	if err != nil {
-		t.Fatalf("Apply EventTaskFailed: %v", err)
-	}
-	if next != StatusFailed {
-		t.Fatalf("Apply result = %s, want failed (CAS should match)", next)
-	}
-
-	var status string
-	err = database.QueryRowContext(ctx, "SELECT status FROM sessions WHERE id = 'sess_match'").Scan(&status)
-	if err != nil {
-		t.Fatalf("query: %v", err)
-	}
-	if status != "failed" {
-		t.Fatalf("status = %s, want failed", status)
-	}
-}

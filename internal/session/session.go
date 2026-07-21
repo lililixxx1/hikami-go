@@ -446,26 +446,19 @@ func (s *Store) ResetFailedSession(ctx context.Context, sessionID string) error 
 		return ErrResetOnlyForASRFailure
 	}
 
-	// ③ 检查无 active task(pending/running),防止延迟 callback 覆盖 reset 结果
-	var activeCount int
-	err = s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM tasks WHERE session_id = ? AND status IN ('pending', 'running')`,
-		sessionID,
-	).Scan(&activeCount)
-	if err != nil {
-		return err
-	}
-	if activeCount > 0 {
-		return ErrActiveTaskExists
-	}
-
-	// ④ UPDATE session 到 media_ready(WHERE status='failed' 二次校验防止 check-then-act 竞态)
-	// v6 r19d 新增:检查 RowsAffected,double reset 时第二个返回 ErrSessionNotFailed
+	// ③ UPDATE session 到 media_ready,WHERE 子句同时检查无 active task(r20 HIGH #1:原子化)
+	// v7 修订:把 active task 检查从独立 SELECT 合并到 UPDATE 的 WHERE 子句,
+	// 避免 check-then-act 竞态(retry 可在 SELECT 与 UPDATE 之间把 failed task 改成 pending)。
+	// 单条 UPDATE 在 SQLite 单连接下原子执行,retry 无法插入。
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE sessions SET status = ?, current_task_id = NULL, last_error = NULL, updated_at = ?
-		 WHERE id = ? AND status = ?`,
+		 WHERE id = ? AND status = ?
+		   AND NOT EXISTS (
+		     SELECT 1 FROM tasks WHERE session_id = ? AND status IN ('pending', 'running')
+		   )`,
 		string(state.StatusMediaReady), time.Now().Format(time.RFC3339),
 		sessionID, string(state.StatusFailed),
+		sessionID,
 	)
 	if err != nil {
 		return err
@@ -475,8 +468,23 @@ func (s *Store) ResetFailedSession(ctx context.Context, sessionID string) error 
 		return err
 	}
 	if rows == 0 {
-		// 并发情况下:另一个 reset 已经把 status 改为 media_ready
-		return ErrSessionNotFailed
+		// UPDATE 未命中。二次查询区分原因(status 不是 failed / 有 active task / session 不存在)。
+		// 这个二次查询是为了给前端精确的错误信息,不影响原子性(UPDATE 已经原子地拒绝了)。
+		var currentStatus string
+		err = s.db.QueryRowContext(ctx,
+			`SELECT status FROM sessions WHERE id = ?`, sessionID,
+		).Scan(&currentStatus)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if currentStatus != string(state.StatusFailed) {
+			return ErrSessionNotFailed
+		}
+		// status 仍是 failed 但 UPDATE 未命中,说明 NOT EXISTS active task 子查询失败
+		return ErrActiveTaskExists
 	}
 	return nil
 }

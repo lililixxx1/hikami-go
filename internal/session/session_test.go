@@ -1237,3 +1237,46 @@ func TestResetFailedSession_TaskDeleted(t *testing.T) {
 		t.Fatalf("error = %v, want ErrResetOnlyForASRFailure", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// v7 新增:TestResetFailedSession_ActiveTaskAfterFailedCheck 验证原子守卫
+// ---------------------------------------------------------------------------
+
+// TestResetFailedSession_ActiveTaskAtomicGuard 验证 v7 原子守卫:
+// UPDATE 的 WHERE 子句包含 NOT EXISTS active task 子查询,
+// 即使在 Get(读 status=failed)与 UPDATE 之间插入了 pending task,UPDATE 也会被拒绝。
+// r20 HIGH #1:修复 v6 的 check-then-act 竞态。
+func TestResetFailedSession_ActiveTaskAtomicGuard(t *testing.T) {
+	database := setupDB(t)
+	insertChannel(t, database)
+	resetTestSession(t, database, "sess_atomic", "task_asr_a", 1)
+	resetTestTask(t, database, "task_asr_a", "sess_atomic", "asr", "failed")
+
+	store := NewStore(database)
+
+	// 模拟竞态:在 store.Get 之后、UPDATE 之前,另一个 task 变成 pending
+	// 这里直接在调用 ResetFailedSession 前插入 pending task
+	_, err := database.Exec(`
+		INSERT INTO tasks (id, channel_id, session_id, type, status, attempt, payload, progress, message, created_at, updated_at)
+		VALUES ('task_pending_race', 'test_ch', 'sess_atomic', 'asr', 'pending', 1, '{}', 0, '', '2026-07-21T00:00:00+08:00', '2026-07-21T00:00:00+08:00')
+	`)
+	if err != nil {
+		t.Fatalf("insert pending task: %v", err)
+	}
+
+	// ResetFailedSession 应该被 NOT EXISTS active task 子查询拒绝
+	err = store.ResetFailedSession(context.Background(), "sess_atomic")
+	if !errors.Is(err, ErrActiveTaskExists) {
+		t.Fatalf("error = %v, want ErrActiveTaskExists (atomic guard should reject)", err)
+	}
+
+	// 验证 session 状态未变(仍是 failed)
+	var status string
+	err = database.QueryRow(`SELECT status FROM sessions WHERE id = 'sess_atomic'`).Scan(&status)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if status != "failed" {
+		t.Errorf("status = %q, want failed (reset should be rejected)", status)
+	}
+}

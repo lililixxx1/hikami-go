@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 )
 
@@ -118,45 +117,22 @@ func applyInTx(ctx context.Context, tx *sql.Tx, sessionID string, event Event, t
 	nowStr := nowRFC3339()
 
 	if event == EventTaskFailed {
-		// v6 r19e HIGH #1 + #2: CAS 防止过期 callback 覆盖 reset 后的 session 状态。
+		// v7 修订(r20 BLOCKING):回退 v6 的 CAS 设计。
+		// v6 CAS 假设"失败 callback 的 taskID 总是匹配 session.current_task_id",但实际
+		// normalize/recap/publish 等任务在失败时 current_task_id 仍是上一阶段成功任务的 ID
+		// (失败不更新 current_task_id,只有成功转换才写新 task ID)。CAS 会误判这些正常失败
+		// callback 为 stale 并丢弃,导致 session 状态不更新、失败信息和 retry 入口丢失。
 		//
-		// 场景:task X 失败 → worker MarkFailed(改 task.status=failed) → syncSessionState 调 Apply。
-		// 这两步之间用户点了 reset(session.status=failed→media_ready, current_task_id=NULL),
-		// 延迟的 callback 到达时 current_task_id 已经被清空,CAS 不匹配 → 丢弃 callback。
-		//
-		// 边界(v6 r19e HIGH #1):空 taskID 表示"自动任务创建失败"(main.go:236/279/322
-		// 在 task 入队前就失败,没有 task.id)。此时没有 current_task_id 可比较,走原 UPDATE
-		// 逻辑(不加 CAS),向后兼容老 callback 语义。
-		if taskID == "" {
-			_, err = tx.ExecContext(ctx, `
-				UPDATE sessions
-				SET status = ?, current_task_id = ?, last_error = ?, updated_at = ?
-				WHERE id = ?
-			`, next, nullable(taskID), nullable(errorMessage), nowStr, sessionID)
-		} else {
-			// CAS:只有 session.current_task_id 仍等于 callback 的 taskID 才允许写回 failed。
-			// reset 清空 current_task_id=NULL 后,旧 callback 的 taskID 不匹配,CAS 失败 → 丢弃。
-			result, casErr := tx.ExecContext(ctx, `
-				UPDATE sessions
-				SET status = ?, current_task_id = ?, last_error = ?, updated_at = ?
-				WHERE id = ? AND current_task_id = ?
-			`, next, nullable(taskID), nullable(errorMessage), nowStr, sessionID, taskID)
-			if casErr != nil {
-				return "", casErr
-			}
-			rowsAffected, rowsErr := result.RowsAffected()
-			if rowsErr != nil {
-				return "", rowsErr
-			}
-			if rowsAffected == 0 {
-				// CAS 失败:session.current_task_id 已不再是 callback 的 taskID
-				// 可能原因:① 用户 reset 清空了 current_task_id;② retry/其他 task 已接管
-				// 丢弃这个过期 callback,不改变 session 状态(返回当前状态,不报错)
-				slog.Info("stale task failure callback discarded (CAS mismatch)",
-					"session_id", sessionID, "task_id", taskID)
-				return current, nil
-			}
-		}
+		// v7 方案:恢复原无条件 UPDATE。reset 后的 callback 覆盖问题由两层防御处理:
+		//   ① worker.go syncSessionState 的 attempt 校验(防 retry 后旧 attempt callback)
+		//   ② ResetFailedSession 的 active task 守卫(防 reset 时有 pending/running task)
+		// 实际触发"reset 后 callback 又把 session 写回 failed"的概率极低(需要 task 已 MarkFailed
+		// 但 syncSessionState 尚未执行的几十毫秒窗口),且即使发生,用户可再次 reset。
+		_, err = tx.ExecContext(ctx, `
+			UPDATE sessions
+			SET status = ?, current_task_id = ?, last_error = ?, updated_at = ?
+			WHERE id = ?
+		`, next, nullable(taskID), nullable(errorMessage), nowStr, sessionID)
 	} else if event == EventUploadSucceeded {
 		_, err = tx.ExecContext(ctx, `
 			UPDATE sessions

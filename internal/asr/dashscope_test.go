@@ -2,7 +2,6 @@ package asr
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -161,8 +160,3 @@ func TestCheckTaskUsesCustomTasksURL(t *testing.T) {
 		t.Fatalf("captured URL = %q, want suffix /tasks/task-1 (trailing / trimmed)", transport.capturedURL)
 	}
 }
-
-// 兜底编译期检查:确保 dashscope.go 用的字段都是 Effective(防止回归直接读 cfg.DashScope.ASRURL)。
-// 这是一个静态保护:如果有人改回直接读 ASRURL,这里的测试仍会通过(因为 Effective 是非破坏性的),
-// 但 TestSubmitUsesEffectiveASRURL 已经覆盖了运行时行为。
-var _ = json.Marshaler(nil) // 确保 encoding/json import 被使用(可能在未来扩展里用到)
