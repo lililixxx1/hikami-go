@@ -399,5 +399,3 @@ func TestApplyWithPublishTarget_WritesTargetInTx(t *testing.T) {
 		t.Fatalf("publish_target = %q, want %q", publishTarget, "draft:abc123")
 	}
 }
-
-

@@ -228,7 +228,7 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
 
 ## 变更记录
 
-- 2026-07-21(二):**两 BUG 修复:DashScope 配置丢失 + session failed 无恢复入口**(branch `fix/bug-fix-2026-07-20`,commit `61f3989`,**codex 计划审核 5 轮 r19→r19e 收敛 + 代码复审 `reviews/main--r20.md`**)。**触发**:2026-07-20 端到端实测(灰泽满 Hazel 一场完整流水线)发现两个互相关联的 BUG。
+- 2026-07-21(二):**两 BUG 修复:DashScope 配置丢失 + session failed 无恢复入口**(branch `fix/bug-fix-2026-07-20`,commit `61f3989` v6 + `add3b51` v7,**codex 计划审核 5 轮 r19→r19e 收敛 + 代码复审 r20/r20b**)。**触发**:2026-07-20 端到端实测(灰泽满 Hazel 一场完整流水线)发现两个互相关联的 BUG。
 
   **BUG #1(HIGH)**:DashScope `asr_url`/`tasks_url` 在 `runtime_settings` 表被持久化为空字符串,覆盖 viper SetDefault 默认值(`config.go:781-782`),导致 ASR POST 到空 URL 失败(`Post "": unsupported protocol scheme ""`)。**根因**:`dashscopeConfigToDTO` 用 `&c.ASRURL` 总是取地址,ApplyOverrides 的 nil 检查无法区分「空串指针」与「非空串指针」。**修复**(参照现有 `EffectiveBaseURL`/`EffectiveAPIKeyEnv` 模式):① `config.go` 加 `DefaultDashScopeASRURL`/`DefaultDashScopeTasksURL` 常量 + `EffectiveASRURL()`/`EffectiveTasksURL()` 方法(空串兜底),SetDefault 改引用常量;② `dashscope.go` 3 个调用点(227/311/356)改用 Effective,TasksURL 保留 `TrimRight`;③ `DashScopeCardV10.vue` placeholder 显示默认 URL 字面量;④ 新增 `TestDashScopeEffectiveURLs` + `TestSubmitUsesEffectiveASRURL`/`TestCheckTaskUsesEffectiveTasksURL`(用 `urlCapturingTransport` 捕获实际请求 URL,验证调用点真的用了 Effective)。
 
@@ -242,6 +242,8 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
   ⑦ **新增测试 25 个**:state CAS 3 + session reset 8 + handler reset 4 + worker attempt 2 + 前端 sessionActions 8。**现有 `TestApplyTaskFailedSetsError` 同步修改**(预设 current_task_id=task_1 模拟真实流程)。
 
   **codex 计划审核 5 轮关键收敛**:r19 BLOCKING×4 → r19b HIGH×2 → r19c HIGH×2 → r19d HIGH×1 → r19e HIGH×2(空 taskID 静默丢失正常 callback + retry 复用 task ID)。每轮反馈都是真实问题。
+
+  **v7 代码复审修订**(`add3b51`,codex `reviews/main--r20.md` BLOCKING+HIGH 收敛):codex r20 发现 v6 的 state.go CAS 设计有根本性缺陷 — 假设"失败 callback 的 taskID 总是匹配 session.current_task_id",但实际 normalize/recap/publish 等任务失败时 current_task_id 仍是上一阶段成功任务的 ID(失败不更新 current_task_id,只有成功转换才写新 task ID)。CAS 会误判这些正常失败 callback 为 stale 并丢弃,导致 session 状态不更新、失败信息和 retry 入口丢失。**v7 修订**:① **回退 state.go CAS**,恢复原无条件 UPDATE(EventTaskFailed 分支),移除 3 个 CAS 测试,恢复 TestApplyTaskFailedSetsError 原始版本;reset 后 callback 覆盖问题由 worker.go attempt 校验 + ResetFailedSession active task 守卫两层防御处理(容忍策略 + 文档说明);② **ResetFailedSession 原子化**(r20 HIGH):把 active task 检查从独立 SELECT 合并到 UPDATE 的 WHERE 子句(`NOT EXISTS pending/running task`),SQLite 单连接下原子执行,消除 check-then-act 竞态;RowsAffected=0 时二次查询区分 ErrNotFound/ErrSessionNotFailed/ErrActiveTaskExists;③ 新增 `TestResetFailedSession_ActiveTaskAtomicGuard` 验证原子守卫;④ 移除 dashscope_test.go 的 LOW 占位代码。**v7 验证**:后端 27 包全过、type-check 0 error、embedded_web build 成功。codex r20b 复审见 `reviews/main--r20b.md`。
 
   **验证**:后端 27 包全过(asr `TestCreateTaskActiveConflict` 偶发 SQLITE_BUSY flaky 重跑过,与本改动无关)、前端 27 文件 **200 测试全过**(192→200)、type-check 0 error、embedded_web build 成功(25.8 MB)。**回归**:零。**存量数据兼容**:本机 DB 已污染的 dashscope 空串无需手动修复,Effective 方法自动兜底。文档:本次 changelog + 根 CLAUDE.md changelog + config/asr/state/session/handler/web CLAUDE.md + `plans/plan-bug-fix-2026-07-20.md`(v6)+ `reviews/main--r19*.md`(5 轮计划审核)+ `reviews/main--r20.md`(代码复审)。
 
