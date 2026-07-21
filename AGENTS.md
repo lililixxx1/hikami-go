@@ -191,9 +191,9 @@ graph LR
 
 ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zcode/server/agents/glm/zcode.cjs` 的 `WWt`/`GWt` 解析器确认):
 - `<root>/.zcode/skills/`(`source="zcode"`)
-- `<root>/.agents/skills/`(`source="agents"`)← **本项目使用的路径**
+- `<root>/.agents/skills/`(`source="agents"`)← **本项目约定的本地 vendored 路径**(见下,可能未安装)
 
-二者均生效并合并。本项目在 `.agents/skills/`(本地 vendored,**已 `.gitignore`**)放了 43 个 Go Skill(`samber/cc-skills-golang`),全局 `~/.zcode/skills/` 另有 46 个(多 `codex-review`、`find-skills`、`pdf` 三个通用 skill)。本会话开头的 `system-reminder` 里两套会成对列出,是正常的去重合并结果,不是重复。
+二者均生效并合并。本项目**约定**在 `.agents/skills/`(本地 vendored,**已 `.gitignore` 第 68 行 `.agents/`**)放 43 个 Go Skill(`samber/cc-skills-golang`),全局 `~/.zcode/skills/` 另有 46 个(多 `codex-review`、`find-skills`、`pdf` 三个通用 skill)。**注意**:`.agents/skills/` 当前可能不在工作区(本地 vendored、按机器单独安装,不在 git 里);此时只有全局 `~/.zcode/skills/` 生效,本会话 `system-reminder` 的 skill 列表即实际可用集。两套同时存在时才会成对列出(正常的去重合并,不是重复)。
 
 **调用方式**:**用户在 chat 里用 `$skill-name` 触发 skill**(`$` 是 Skill 触发符;`/` 留给 Command,二者在 `/` 命令面板里分两组显示)。Agent 内部则通过 Skill 工具调用。仅可调用列表中或用户显式 `$<name>` 提及的 skill,禁止凭训练记忆臆造。
 
@@ -227,6 +227,16 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
 | 各模块深度说明 | 根 `CLAUDE.md` + 各 `internal/<模块>/CLAUDE.md` |
 
 ## 变更记录
+
+- 2026-07-21(二):**`/init-project` 增量同步 — bug 修复测试增量回填**(无代码改动,纯文档数字校正)。HEAD `2ad1f66`(07-21 docs sync for `b1ec623`)已是 AGENTS.md changelog 顶部条目,但机械统计发现:`2ad1f66` 只同步了 `b1ec623`(主播级发布字段)的文档,**未同步**同日稍早的三个 bug 修复 commit (`61f3989` v6 + `add3b51` v7 + `655edf4` gofmt)带来的测试增量——v6/v7 changelog 已在 AGENTS.md 详细写明,但**根 CLAUDE.md 精简模块索引与对应模块 CLAUDE.md 的「测试与质量」正文段没跟着更新**,典型「changelog 写了但索引忘了同步」型漂移(与 07-20 同款)。**全量逐包核对**(27 internal 包 `^func Test` 机械统计 vs 根 CLAUDE.md 索引声称值):**22/27 包零偏差**,5 处数字漂移。
+
+  **根 `CLAUDE.md` 精简模块索引 6 处**:`config` 34→**35**(+1 `TestDashScopeEffectiveURLs`)、`session` 40→**49**(+9 `TestResetFailedSession_*`:8 个 v6 守卫 + 1 个 v7 原子守卫)、`worker` 42→**44**(+2 `TestSyncSessionState_Stale/FreshAttempt_*`)、`handler` 83→**87**(+4 `TestResetSession_*`)、`asr` 63→**67**(+4 `dashscope_test.go` EffectiveURLs + Submit/CheckTask 调用点 URL 捕获)、`web` 192→**200**(+8 `sessionActions` failed reset 入口 + isASRFailure)。
+
+  **模块 CLAUDE.md 正文测试段 5 处**(文件清单段 + 正文段 + changelog):① `config/CLAUDE.md` `config_test.go` 34→**35** + Effective 段补 `TestDashScopeEffectiveURLs`;② `session/CLAUDE.md` `session_test.go` 40→**49** + 接口表补 `ResetFailedSession` 方法说明 + 文件清单补「4 个 reset 错误哨兵」;③ `worker/CLAUDE.md` `worker_test.go` 35→**37** + 正文段补 `syncSessionState attempt 校验` 子项;④ `handler/CLAUDE.md` `server_test.go` 67→**71** + 函数口径总数 83→**87** + 文件清单补「POST /api/sessions/:sid/reset 端点 + writeSessionDetail helper」;⑤ `asr/CLAUDE.md` 文件清单新增 `dashscope_test.go`(4 用例)+ dashscope.go 说明补「3 调用点改用 Effective」。
+
+  **`web/CLAUDE.md` 3 处**:测试状态段 192→**200**(运行时)、`sessionActions.test.ts` 48→**56**(运行时,静态 52)+ 正文补「failed 行 retry/reset 并存 + isASRFailure + UIActionName 'reset'」、目录树行 `sessionActions.ts` 说明「6→7 个状态推进型动作含 'reset'」。
+
+  **核实通过(无需改)**:根 CLAUDE.md 项目摘要/技术栈/数据流段、AGENTS.md 各模块说明(07-21 v6/v7 changelog 已完整记录)、各模块 changelog 自身、DB v35 migrations 数组确认(最后 4 条为 v35 runtime_settings +tools 表重建)、Go 1.25.0 / systray / build tags 声明仍成立。**验证**:全项目 `go test ./...` 27 包全绿、前端 `vitest run` 27 文件 **200 测试全过**。**回归**:零(纯文档数字校正,无代码改动)。文档:本条 + 根 CLAUDE.md changelog + config/session/worker/handler/asr/web CLAUDE.md。
 
 - 2026-07-21(二):**两 BUG 修复:DashScope 配置丢失 + session failed 无恢复入口**(branch `fix/bug-fix-2026-07-20`,commit `61f3989` v6 + `add3b51` v7,**codex 计划审核 5 轮 r19→r19e 收敛 + 代码复审 r20/r20b**)。**触发**:2026-07-20 端到端实测(灰泽满 Hazel 一场完整流水线)发现两个互相关联的 BUG。
 

@@ -29,6 +29,7 @@
 | `SetArchivedAt(ctx, sessionID, archivedAt)` | 标记场次已归档到 WebDAV 的时间戳。归档任务不推进 session 主状态（保持 `published`），仅写 `archived_at` 并清空 `last_error`（归档失败后重试成功场景）；未找到返回 ErrNotFound |
 | `GetStats(ctx)` | 返回 `SessionStats`（总场次/回顾数、按月计数、Top 主播排行），用于 `/api/stats/overview`、`/api/stats/cost` |
 | `GetDashboardStats(ctx)` | 返回 `DashboardData`（按月/按主播/成本趋势/弹幕 Top/回顾/发布计数），单次查询聚合；`handler.handleStatsDashboard` 复用本方法（`a651fec`），避免循环内逐条查库在 `SetMaxOpenConns(1)` 下自死锁 |
+| `ResetFailedSession(ctx, sessionID)` | **2026-07-21 新增**。把 ASR 失败的 session 从 `failed` 重置回 `media_ready`，作为 UI/API 的「重置失败场次」恢复入口。5 个守卫（session 存在 / status=failed / local_available=1 / current_task 类型=asr / 无 pending/running task）合并进 UPDATE 的 WHERE 子句，SQLite 单连接下原子执行（消除 check-then-act 竞态）。RowsAffected=0 时二次查询区分 `ErrNotFound`/`ErrSessionNotFailed`/`ErrActiveTaskExists`。**不删任何 task**（保留历史供审计），**保留 publish_target/published_at**。4 个哨兵：`ErrResettableConditionFailed`（统一覆盖 5 守卫）、`ErrSessionNotFailed`、`ErrActiveTaskExists`、`ErrInvalidResetState` |
 
 ## 关键依赖与配置
 
@@ -76,8 +77,9 @@
 
 ## 测试与质量
 
-- `session_test.go`: 共 40 个测试函数，覆盖：
+- `session_test.go`: 共 49 个测试函数，覆盖：
   - `CreateLive`: 成功创建、默认标题、默认时间、缺少 channel_id 拒绝、无效 room_id 拒绝、**同槽 UNIQUE 冲突返回 `ErrAlreadyLive`（不再复用/重置）**、**FK（channel 不存在）错误不被误判为已存在**、ID 格式
+  - **`ResetFailedSession`（2026-07-21 新增 9 个测试）**：成功重置 / status 非 failed / local_available=0 / 非 ASR 失败（current_task 类型不符）/ 存在 pending/running task / session 不存在 / 空 taskID / task 已删除 / **v7 原子守卫（`TestResetFailedSession_ActiveTaskAtomicGuard` 验证 active task 检查合并进 WHERE 子句的原子性）**
   - `CreateDownload`: 成功创建、重复去重、缺少 source_id 拒绝、默认标题、slug 回退
   - `CreateImport`: 成功创建、默认标题、有/无结束时间
   - `Get` / `GetBySource`: 成功 / 未找到
@@ -89,13 +91,14 @@
 
 ## 相关文件清单
 
-- `session.go` -- 唯一源文件（含 `ErrAlreadyLive` 哨兵、`isConstraintViolation` helper）
-- `session_test.go` -- 单元测试（40 个测试函数）
+- `session.go` -- 唯一源文件（含 `ErrAlreadyLive` 哨兵、`isConstraintViolation` helper、`ResetFailedSession` 方法 + 4 个 reset 错误哨兵）
+- `session_test.go` -- 单元测试（49 个测试函数）
 
 ## 变更记录 (Changelog)
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-07-21 | 功能/BUG 修复 | **新增 `ResetFailedSession` 方法**(branch `fix/bug-fix-2026-07-20`,commit `61f3989` v6 + `add3b51` v7)。**触发**:ASR 任务失败后 session 进入 `failed` 状态,重提 ASR 返回 `409 status must be media_ready`,**无任何 UI/API 恢复入口**——只能直接改 DB + 重启服务。**v6**:5 守卫(session 存在 / status=failed / local_available=1 / current_task 类型=asr / 无 pending/running task)+ UPDATE 的 WHERE status='failed' 二次校验 + RowsAffected 检查;不删 task(保留审计);保留 publish_target/published_at。**v7 修订**(r20 HIGH):把 active task 检查从独立 SELECT 合并到 UPDATE 的 WHERE 子句(`NOT EXISTS pending/running task`),SQLite 单连接下原子执行,消除 check-then-act 竞态;RowsAffected=0 时二次查询区分 ErrNotFound/ErrSessionNotFailed/ErrActiveTaskExists。4 个错误哨兵:`ErrResettableConditionFailed`(统一覆盖 5 守卫)/`ErrSessionNotFailed`/`ErrActiveTaskExists`/`ErrInvalidResetState`。新增 9 个测试(8 个守卫路径 + 1 个 v7 原子守卫),session_test.go 40→49。 |
 | 2026-06-27 | 修复 | **下播竞态导致非法状态转换**（`d7a1346`）：`CreateLive` 同 `(channel, 分钟槽)` UNIQUE 冲突时改为返回包装了 `ErrAlreadyLive`（新增哨兵 `"live session already exists for this slot"`）的错误，**移除旧的 failed→discovered 自动重置复用逻辑**（该复用是 live_check 误触发复用旧 session 的放大器，把 failed 拉回 discovered 后新录制任务污染状态机到 recording）。新增 `isConstraintViolation` helper，对 `constraint failed`/`UNIQUE constraint` 错误用 `Get(id)` 查存在性区分 UNIQUE 与 FK（避免 FK 错误被误判为已存在）。`live_record.Start` 将 `ErrAlreadyLive` 映射为 `ErrAlreadyRecording` 让 cron 静默兜底。竞态现靠同槽 UNIQUE 精确防护，不依赖频道级白名单扩展（后者致该频道永久禁录，已由 codex 审核回退）。session_test.go 38→40 |
 | 2026-06-17 | 更新 | 新增 `SetLocalAvailable(ctx, sessionID, available)`：上传 `all` 清理策略删除本地目录后置 `false`、`Fetch` 取回成功后置回 `true`，驱动 glossary/recap/publisher 守卫 |
 | 2026-05-17 | 修复 | GetStats 返回 (StatsOverview, error) 正确传播所有查询错误，不再静默忽略 |

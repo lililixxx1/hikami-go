@@ -142,7 +142,7 @@
 
 ## 测试与质量
 
-- `worker_test.go`: 35 个测试用例，覆盖：
+- `worker_test.go`: 37 个测试用例，覆盖：
   - Store CRUD: Create（成功、缺 channel_id、缺 type、默认 payload）、Get（未找到）、List（空、排序）
   - Store 生命周期: pending->running->succeeded、pending->failed、running->failed、非 running 不能 MarkSucceeded
   - Store 高级: 非 failed 不能 Retry、UpdateProgress（成功、越界）、ActiveBySessionAndType（有/无）、ResetToPending
@@ -150,6 +150,7 @@
   - Pool: RegisterAndRun（任务执行到 succeeded）、Retry（失败后重试成功）、Cancel（pending 取消）、**Register + WithBypassFailState 旁路任务失败不降级**、**bypassFailState 查询**
   - Hub: SubscribeBroadcast（广播接收）、Unsubscribe（取消订阅）、StopClosesChannels
   - Helpers: parsePIDFromMessage、isProcessAlive
+  - **syncSessionState attempt 校验（2026-07-21 新增 2 个）**：`TestSyncSessionState_StaleAttempt_Discarded`（retry 复用同一 task ID 只递增 attempt，旧 attempt 的延迟 callback 重查 DB 当前 attempt 不匹配则丢弃）、`TestSyncSessionState_FreshAttempt_Proceeds`（当前 attempt 匹配则正常处理）
 
 - `task_test.go`: 7 个测试用例，覆盖：
   - Task Store 生命周期: pending->running->progress->succeeded
@@ -165,13 +166,14 @@
 - `task.go` -- Task 结构体、Store 实现、SQL 常量、PID 解析工具、RecentFailedTasks、TaskSummary、ListRunning/ListPending（共用 `listByStatus`）
 - `hub.go` -- Hub 广播实现
 - `errors.go` -- 友好错误映射（GetFriendlyError、FriendlyError、errorMapping、friendlyErrorMappings）
-- `worker_test.go` -- 单元+集成测试（35 个用例）
+- `worker_test.go` -- 单元+集成测试（37 个用例）
 - `task_test.go` -- 单元+集成测试（7 个用例）
 
 ## 变更记录 (Changelog)
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-07-21 | BUG 修复 | **`syncSessionState` 加 attempt 校验**(branch `fix/bug-fix-2026-07-20`,commit `61f3989` v6)。**触发**:配合 session `ResetFailedSession` 的「ASR 失败可 reset」恢复链——reset 后,旧的延迟 ASR callback 可能在 reset 后才到达,需要避免它用旧 task ID/旧 attempt 覆盖新的 session 状态。**修复**:retry 复用同一 task ID 只递增 attempt,旧 attempt 的延迟 callback 到达时重查 DB 当前 attempt,不匹配则丢弃(配合 state.go 的 CAS 防御 + ResetFailedSession active task 原子守卫两层防御;v7 回退了 state.go CAS,改为容忍策略 + worker.go attempt 校验 + active task 守卫)。worker_test.go 35→37（+`TestSyncSessionState_StaleAttempt_Discarded`/`TestSyncSessionState_FreshAttempt_Proceeds`），worker 总测试 42→44。 |
 | 2026-07-06 | 修复 | **异常 #1：重启后孤儿 pending 任务死锁**（`3ae2435`）。`recoverRunning` 新增阶段二：服务重启后内存队列清空，但 DB 里 pending 的 task 不会被 `loop()` 消费，导致 session 卡在 `discovered` → scheduler `ActiveLiveForChannel` 误判 active → 死锁跳过该主播。修复：`Store.ListPending`（与 `ListRunning` 共用 `listByStatus`）查出 pending 任务，未超 `maxAttempts` 的直接 `enqueueID` 重新入队（**不递增 attempt**、从未被消费），超限的 `MarkFailed` + `syncSessionState` 同步 session 状态。同时明确 live_record 的 running 恢复走 `Manager.Adopt` 接管在跑的 ffmpeg 进程。worker_test.go 33→35（+`TestRecoverRunningReEnqueuesOrphanPending`/`TestRecoverRunningOrphanPendingAttemptsExhausted`/`TestRecoverRunningLiveRecordAdopts`），task_test.go 5→6（`TestCreateBypassFailStateRoundTrip` 此前已加但文档漏登），worker 总测试 38→41 |
 | 2026-06-23 | 功能 | 自动触发链加固（设计 4.3）：`Register(taskType, handler, opts...)` 新增可变选项，`WithBypassFailState()` 标记状态旁路任务（`registeredHandler.bypassFailState`）；`bypassFailState(taskType)` 查询旁路属性，替代原先对 upload/archive 的硬编码 task.Type 特判；`FailSessionStateFunc` 签名新增 `bypassState bool` 参数，旁路任务仅写 `last_error` 不降级主状态。各业务 handler 内冗余的 `Apply(EventTaskFailed)` 移除，失败降级统一由 worker 处理。worker_test.go 30→33（新增 Register/WithBypassFailState/bypassFailState 用例），worker 总测试数 36→38 |
 | 2026-05-15 | 增量更新 | 发现并记录遗漏文件 errors.go（GetFriendlyError 友好错误映射、FriendlyError 类型、30+ 条正则错误模式映射）；Pool 新增 BatchRetry 批量重试、SetNotifyManager 通知注入；Store 新增 RecentFailedTasks/TaskSummary 统计方法；handler 层任务详情 API 返回 friendly_error 和 auto_retry |
