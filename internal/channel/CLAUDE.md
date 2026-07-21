@@ -110,11 +110,11 @@
 
 ## 测试与质量
 
-- `channel_test.go`: 54 个测试用例，覆盖：
+- `channel_test.go`: 62 个测试用例，覆盖：
   - Store CRUD: Create（成功、重复、校验-无 ID/无 Name/无效 UID/路径分隔符/负 RoomID）、Get（成功/未找到）、List（空/排序）、Update（成功/未找到/校验）、Delete（成功/未找到/关联场次）、SaveIdentified（新建/已存在/保留 TitlePrefix/CookieFile/Enabled/PublishFields）、**auto_recap 三态解析（resolveAutoRecap：nil→false 默认(2026-07-06 反转)、显式值、UpsertInput 持久化）**
   - Bootstrap: 空表导入、非空表跳过、空列表、校验
   - identify.go: normalizeIdentifyInput（10 种输入格式）、parseLiveURL、parseSpaceURL、Identify（直播间/UID/缺失）、mergeIdentified（合并策略）、boolToInt
-- `identify_test.go`: 5 个测试用例，覆盖：
+- `identify_test.go`: 7 个测试用例，覆盖：
   - `normalizeIdentifyInput`: 直播间 URL、空间 URL、UID 数字解析
   - `IdentifyByLiveRoom`: 通过直播间 ID 识别
   - `IdentifyByUIDLooksUpLiveRoom`: UID 反查直播间
@@ -142,7 +142,7 @@ A: `recap_model` 非空时覆盖全局 `recap_ai.model` 配置。`max_continuati
 
 - `channel.go` -- Store 实现、SQL 常量（含 28 列 selectColumns/createSQL/updateSQL）、校验、UpdateCookieFile、`resolveAutoRecap(*bool, fallback)` 三态解析
 - `identify.go` -- Identifier 实现、B 站 API 交互、URL 解析、Cookie 查找、-352 风控对抗（buvid 注入 + WBI 签名 + 浏览器 UA/Referer/Origin）
-- `channel_test.go` -- Store 单元测试（55 个用例）
+- `channel_test.go` -- Store 单元测试（62 个用例）
 - `identify_test.go` -- 识别单元测试（7 个用例）
 
 ## 变更记录 (Changelog)
