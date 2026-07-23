@@ -2,17 +2,52 @@
 
 > 本文件收集已发现但尚未修复的问题。每条记录发现日期、严重程度、根因、影响、建议修复方案。
 > 修复完成后将对应条目移至「已修复」小节并标注修复日期。
-> 最后更新：2026-07-17
+> 最后更新：2026-07-23
 
 ---
 
 ## 待修复
 
-> （暂无）
+（暂无活跃待修复问题。）
 
 ---
 
 ## 已修复
+
+### ISSUE-005：MCP 配置不参与导入导出
+
+- **发现日期**：2026-07-23
+- **修复日期**：2026-07-23
+- **严重程度**：中（功能遗漏，数据无损坏）
+- **报告人**：用户（实测配置备份功能时发现）
+- **修复方案**：投影 DTO + 密钥走 Secrets（仿 WebDAV/ASRS3 范式）
+- **详细分析**：见 [`docs/MCP配置导入导出缺失问题分析.md`](./MCP配置导入导出缺失问题分析.md) 第六节「修复实施」
+- **修复计划**：[`plans/plan-mcp-config-export-import-2026-07-23.md`](../plans/plan-mcp-config-export-import-2026-07-23.md)
+
+#### 问题描述（修复前）
+
+Web 设置页的「配置备份」（导出/导入）不包含 MCP 配置段。导出的 JSON bundle 顶层字段只有 6 个全局段 + secrets/channels/glossary/templates/bili_accounts，**没有 `mcp` 字段**。换机器后 MCP 配置（Servers 列表、Brave/Tavily key、enabled、max_tool_rounds）需全部手动重建。
+
+#### 根因
+
+`internal/handler/config_export.go` 的 `ConfigExportBundle` 结构没有 MCP 字段；导出填充逻辑（`handleExportConfig`）也未读取 `s.cfg.MCP`。深层原因：导入导出功能完成于 2026-07-05（6 段），MCP 段是 2026-07-22 新增（commit `5b84b63`），引入时漏更新 `config_export.go`。导入侧有保护性副作用——只处理 bundle 携带的段，所以 merge/overwrite 都不碰 MCP，现有 MCP 配置不会损坏，但也恢复不了。
+
+#### 修复实施（2026-07-23）
+
+仅改 `internal/handler/config_export.go` 单文件（后端，前端/OpenAPI 无需动 —— config-export bundle 不在 OpenAPI spec 范围）：
+
+1. 新增 `MCPExportSection`/`mcpServerExport`/`mcpBuiltinExport` 投影 DTO，剔明明文密钥（`Builtin.BraveAPIKey`/`TavilyAPIKey`、`Servers[].Headers["Authorization"]`）。
+2. 3 helper：`mcpToExport`（密钥写 secrets map）、`mcpServerSecretKey`（「下标+名」双键 `MCP_SERVER_{idx}_{NAME}_AUTHORIZATION` 防归一化碰撞）、`mcpFromExport`（密钥回填）。
+3. `ConfigExportBundle` 加 `MCP *MCPExportSection`（指针+omitempty，旧备份缺段为 nil）。
+4. 导出填充 + 导入恢复（走 `MCPSectionDTO` 与 PUT handler 同构）+ `mcpManager.Reload` 热重载。
+5. 密钥约定：Brave/Tavily → `MCP_BRAVE_API_KEY`/`MCP_TAVILY_API_KEY`（固定键名）。
+
+#### 验证
+
+- `config_export_test.go` +6 测试（密钥不泄漏、omitempty、round-trip 完全可逆、同名碰撞双键、merge 持久化+密钥回填、旧 bundle 零回归），共 17 用例。
+- handler/config/mcp 包测试全过、`go vet`/`gofmt` 通过。
+- 零回归：旧 bundle 无 mcp 段 → MCP 配置不被破坏（`TestImportConfigOldBundleLeavesMCPUntouched` 钉死）。
+- 经 qoder 计划审核（Qwen3.8-Max-Preview，Ready with fixes，3 Important + 3 Minor 全采纳）+ 执行后复审。
 
 ### ISSUE-001：ASR 成本估算单价严重偏高（约 40 倍）
 

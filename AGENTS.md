@@ -228,6 +228,24 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
 
 ## 变更记录
 
+- 2026-07-23(三):**MCP 配置纳入配置备份导入导出**(bug fix,qoderclicn 计划审核 Ready with fixes + 执行后复审)。**触发**:用户实测「配置备份」(导出/导入)发现导出 JSON 不含 `mcp` 字段,换机器后 MCP 配置(servers/Brave/Tavily key/enabled/max_tool_rounds)需全部手动重建(详见 `docs/MCP配置导入导出缺失问题分析.md`、`docs/KNOWN_ISSUES.md` ISSUE-005)。**根因**:`ConfigExportBundle`(`internal/handler/config_export.go`)只有 6 个全局段,MCP 段是 2026-07-22 新增(6 phase 集成,commit `5b84b63`),引入时漏更新 `config_export.go`——典型「新功能上线、周边设施未同步」型遗漏。导入侧有保护性副作用(只处理 bundle 携带的段),所以 merge/overwrite 都不碰 MCP,现有配置不损坏但也恢复不了。**方案决策**:用户在 plan 阶段选定**投影 DTO + 密钥走 Secrets**(仿 WebDAV/ASRS3 范式 `config_export.go:50-91`),非直接嵌 `config.MCPConfig`——明文密钥(Servers 鉴权头、Brave/Tavily key)进 `bundle.Secrets`,配置段只投影非密钥字段。
+
+  **改动**(`internal/handler/config_export.go` 单文件,前端/OpenAPI 无需动 —— config-export bundle 不在 OpenAPI spec 范围):
+  ① **新增投影 DTO**:`MCPExportSection`(enabled/servers/builtin/max_tool_rounds)+ `mcpServerExport`(headers 不含 Authorization)+ `mcpBuiltinExport`(只留 env 名字段),剔明明文密钥。
+  ② **3 helper**:`mcpToExport`(cfg→投影 DTO + 密钥写 secrets map;headers 仅按需分配保持 nil 语义;Authorization 大小写无关匹配)+ `mcpServerSecretKey(index, name)`(「下标+名」双键 `MCP_SERVER_{idx}_{NAME}_AUTHORIZATION` 防归一化碰撞)+ `mcpFromExport`(投影→cfg + 密钥回填到明文字段)。
+  ③ **`ConfigExportBundle` 加 `MCP *MCPExportSection json:"mcp,omitempty"`**(指针+omitempty,旧备份缺段为 nil)。
+  ④ **导出填充**:`handleExportConfig` RLock 内取 `s.cfg.MCP` 拷贝,RLock 后在 Secrets 收集段之前调 `mcpToExport`(因它写 `bundle.Secrets`)。
+  ⑤ **导入恢复**:`handleImportConfig` 段收集加 mcp case(`mcpFromExport` → `MCPSectionDTO`,与 `updateMCPConfig` 同构,走同一 `ApplyOverrides` mcp case 落盘);内存提交 `s.cfg.MCP = nextMCP`(基线拷贝保证旧 bundle 零回归);锁外 `mcpManager.Reload`(bundle.MCP 非 nil 时,与 PUT handler 一致)。
+  ⑥ **`validateImportedSections` 不扩展**:`Config.Validate()` 不校验 MCP,MCP 无格式约束(server name/url 自由文本、max_tool_rounds 由 `EffectiveMaxToolRounds` 兜底)。
+  **密钥约定**:Brave/Tavily → `MCP_BRAVE_API_KEY`/`MCP_TAVILY_API_KEY`(固定键名,因 MCP key 既能存明文又能存 env 名);server 鉴权头 → `MCP_SERVER_{idx}_{NAME}_AUTHORIZATION`(双键防碰撞)。
+
+  **qoderclicn 计划审核**(Qwen3.8-Max-Preview,Ready with fixes):**Critical 0**,3 Important + 3 Minor 全部采纳:
+  - Important#1(server name 归一化碰撞范围比文档所述广):qoder 建议 `_2`/`_3` 后缀但不可逆,改用**更稳健的「下标+名」双键**(export/import 同序遍历可逆,即使 `my-server`/`my_server` 归一化后相同,index 区分各自 token)。
+  - Important#2(缺 export→import round-trip 测试):新增 `TestMCPExportImportRoundTrip`(`reflect.DeepEqual` 完全可逆)+ `TestMCPExportImportRoundTrip_NameCollision`(碰撞场景)。
+  - Important#3(Headers 序列化为 `{}` 而非 `null`):仅按需分配 headers map。
+  - Minor#5(计划 §3.2 行引用 typo)+ Minor#4/6(文档说明)采纳。
+  **测试**:`config_export_test.go` 11→**17**(+6:`TestExportBundleOmitsMCPPlaintextSecrets` 密钥不泄漏 / `TestExportBundleMCPIsOmittable` omitempty / `TestMCPExportImportRoundTrip` 完全可逆 / `TestMCPExportImportRoundTrip_NameCollision` 双键防碰撞 / `TestImportConfigPersistsMCPSection` merge 持久化+密钥回填 / `TestImportConfigOldBundleLeavesMCPUntouched` 旧 bundle 零回归)。handler 包函数口径 87→**94**。**零回归**:旧 bundle 无 mcp 段 → `nextMCP = s.cfg.MCP` 基线 + `bundle.MCP==nil` 跳过 section 收集,有测试钉死。**验证**:handler/config/mcp 包测试全过、`go vet`/`gofmt` 通过(worker/live_record 包的失败是 Windows 进程检测预存 flake,与本改动无关)。文档:`docs/MCP配置导入导出缺失问题分析.md`(状态→已修复 + 第六节修复实施)+ `docs/KNOWN_ISSUES.md`(ISSUE-005→已修复)+ 根 `CLAUDE.md`(模块索引 handler 87→94 + 数据流段 6→7 段 + changelog)+ `internal/handler/CLAUDE.md`(测试段 + 文件清单 + changelog)+ 本条 + `plans/plan-mcp-config-export-import-2026-07-23.md`。
+
 - 2026-07-22(二):**MCP 搜索工具集成 — 增强 AI 回顾与术语校正**(feat,6 phase 完整实施,qoderclicn 计划审核 v1/v2 两轮收敛)。**触发**:用户反馈"AI 搜索和自动校正术语表功能比较鸡肋",要求接入 MCP(mark3labs/mcp-go)搜索工具,让 AI 主动联网查证增强术语校正。**调研结论**:现有 AI 层是纯文本单次调用(`Provider.Generate(system,prompt)`),**零 tool calling 基础设施**(6 个 provider 请求体无 tools 字段);"AI 搜索"不存在(knowledge_lookup 是硬编码正则抓 HTML,只认 4 个游戏);"自动校正术语表"是纯字符串替换,AI 只参与术语发现。**qoderclicn 审核**(Qwen3.8-Max v1 → 11 问题 → r2 → DeepSeek-V4-Pro v2 → **Critical 清零**,采纳全部反馈)。**6 层架构 + 6 phase 实施**:
   ① **Phase 1 aiprovider 类型扩展 + tool-calling 接口**:`aiprovider/result.go` 加 Role/Message/Tool/ToolCall/GenerateRequest + GenerateResult.ToolCalls;新文件 `aiprovider/provider.go` 定义 `ToolCapableProvider` 接口(**qoder v1 Critical#1 修订**:放 aiprovider 包而非 recap,消除 mcp→recap→glossary 循环依赖);OpenAI/Anthropic provider 实现 GenerateWithTools(请求体加 tools/tool_choice,parse 读 tool_calls)+ 4+4 测试(含**空 tools 等价于 Generate 零回归契约测试**)。
   ② **Phase 2 MCP 配置层**:`config.go` 加 MCPConfig/MCPServerConfig/MCPBuiltinConfig + MCPSectionDTO(presence-aware);DB **v36** 迁移(runtime_settings 白名单加 'mcp',表重建范式);handler GET/PUT /api/config/mcp(密钥只写 `*_set` bool,PUT 后 mcpManager.Reload 热重载);+5 测试。
