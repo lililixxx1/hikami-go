@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -1053,6 +1054,45 @@ func TestExportForASRVocabularyChannelBlock(t *testing.T) {
 	}
 	if len(vocab) != 0 {
 		t.Fatalf("expected 0 hotwords (global blocked, channel disabled), got %d (%v)", len(vocab), vocab)
+	}
+}
+
+// ExportForASRVocabulary 对 DashScope 热词表上限（MaxASRHotwords=500）只告警不截断：
+// 超出阈值时打 warn 日志，但返回完整的 map，让云端决定拒收还是接收。
+func TestExportForASRVocabularyExceedsLimitWarnsNoTruncate(t *testing.T) {
+	if MaxASRHotwords != 500 {
+		t.Fatalf("MaxASRHotwords should match DashScope Paraformer-v1 limit (500), got %d", MaxASRHotwords)
+	}
+
+	database := openTestDB(t)
+	store := NewStore(database)
+	ctx := context.Background()
+
+	// 插入 MaxASRHotwords+50 条全局术语，全部启用、canonical 各不相同。
+	// 用 "词000" ~ "词549" 保证 canonical 互不冲突且可预测。
+	total := MaxASRHotwords + 50
+	for i := 0; i < total; i++ {
+		term := fmt.Sprintf("t%03d", i)
+		canonical := fmt.Sprintf("词%03d", i)
+		if err := store.Upsert(ctx, "", term, canonical, "test"); err != nil {
+			t.Fatalf("Upsert %d: %v", i, err)
+		}
+	}
+
+	vocab, err := store.ExportForASRVocabulary(ctx, "ch1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 不截断：返回的条目数必须等于插入总数，超过阈值的部分不丢弃。
+	if len(vocab) != total {
+		t.Fatalf("expected %d hotwords (no truncation), got %d", total, len(vocab))
+	}
+	// 抽查首尾条目都在，确认未发生前/后截断。
+	if _, ok := vocab["词000"]; !ok {
+		t.Error("first entry '词000' missing — possible truncation")
+	}
+	if _, ok := vocab[fmt.Sprintf("词%03d", total-1)]; !ok {
+		t.Error("last entry missing — possible truncation")
 	}
 }
 

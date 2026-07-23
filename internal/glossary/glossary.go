@@ -272,6 +272,12 @@ func (s *Store) ExportForPrompt(ctx context.Context, channelID string) (string, 
 	return strings.TrimSpace(sb.String()), nil
 }
 
+// MaxASRHotwords 是 DashScope Paraformer-v1 / Fun-ASR 热词表的官方数量上限。
+// ExportForASRVocabulary 超过此阈值时打 warn 日志提醒运维，但不截断——
+// DashScope 的真正硬上限存在弹性（社区文档提到 FunASR 理论可到 1k），硬截断
+// 反而可能误伤；让云端决定拒收或接收，并由日志暴露超限情况。
+const MaxASRHotwords = 500
+
 // ExportForASRVocabulary returns merged enabled glossary terms as Fun-ASR hotwords.
 func (s *Store) ExportForASRVocabulary(ctx context.Context, channelID string) (map[string]int, error) {
 	merged, err := s.ListByChannel(ctx, channelID)
@@ -295,6 +301,10 @@ func (s *Store) ExportForASRVocabulary(ctx context.Context, channelID string) (m
 	}
 	if len(vocabulary) == 0 {
 		return nil, nil
+	}
+	if len(vocabulary) > MaxASRHotwords {
+		slog.WarnContext(ctx, "glossary hotword count exceeds DashScope limit; cloud may reject or truncate",
+			"channel_id", channelID, "count", len(vocabulary), "limit", MaxASRHotwords)
 	}
 	return vocabulary, nil
 }
