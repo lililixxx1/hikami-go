@@ -1,15 +1,18 @@
 <!--
   MCPCardV10.vue。MCP 搜索工具配置卡(AI 联网搜索增强)。
   - 总开关 + max_tool_rounds(防死循环轮次)。
-  - 内置搜索 API key(Brave/Tavily,密钥只写,显示已设置/未设置)。
-  - 外部 MCP server 列表(http/sse/stdio,可增删改)。
+  - 「搜索工具」统一列表:Brave/Tavily 作为内置预设项常驻(只填 key 即启用),
+    自定义 MCP server 在下方增删改。后端 builtin 段(key+env)与 servers 段仍是
+    两个独立字段,前端负责统一渲染;API 契约零改动(方案 A,零回归)。
+  - 内置项「启用」= 按 key 有无(后端 registerBuiltins 只看 key 是否非空,无独立开关);
+    env 字段几乎不需改,折叠进「高级」。
   保存后后端热重载连接(无需重启)。未配置或失败时降级普通 AI 调用(零回归)。
   L3 视觉验证,无单测(参照 ToolsCardV10)。
 -->
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { HMessage } from '@/components/ui/message'
-import { HCard, HButton, HInput, HSelect, HSwitch, HTextarea } from '@/components/ui'
+import { HCard, HButton, HInput, HSelect, HSwitch, HTextarea, HPill, HCollapse, HCollapseItem } from '@/components/ui'
 import { getMCPConfig, updateMCPConfig } from '@/api/settings'
 import type { MCPConfig, MCPServerConfig, MCPConfigUpdate } from '@/api/settings'
 
@@ -26,6 +29,9 @@ const tavilyKey = ref('')
 const tavilyKeyEnv = ref('TAVILY_API_KEY')
 const tavilyKeySet = ref(false)
 const saving = ref(false)
+
+// 内置预设项的「高级」折叠区(env 字段几乎不需改,默认收起)。v-model 传已展开的 name 数组。
+const builtinAdvancedOpen = ref<string[]>([])
 
 const transportOptions = [
   { label: 'HTTP (Streamable)', value: 'http' },
@@ -141,43 +147,66 @@ defineExpose({ reload: fetchConfig })
       </div>
     </div>
 
-    <div class="section-divider">内置搜索工具</div>
+    <div class="section-divider">搜索工具</div>
     <div class="form-hint" style="margin-bottom: 10px;">
-      配置搜索 API 密钥后启用内置搜索工具。两者皆空则无内置工具(仅外部 MCP server 可用)。密钥不回显,保存后显示是否已设置。
+      为 AI 提供联网搜索能力。Brave / Tavily 为内置预设,填入 API Key 即启用;下方可添加自定义 MCP Server(如自建搜索服务)。密钥不回显,保存后显示是否已设置。
     </div>
 
-    <div class="form-row-inline">
-      <label class="form-label">Brave API Key</label>
-      <div class="form-field">
-        <HInput v-model="braveKey" :placeholder="braveKeySet ? '已设置(输入新值覆盖)' : '输入 Brave Search API Key'" type="password" />
+    <!-- 内置预设项:Brave / Tavily。统一 .tool-block 样式,只填 key 即启用(后端按 key 有无判定)。 -->
+    <div class="tool-block">
+      <div class="tool-header">
+        <span class="tool-title">Brave Search</span>
+        <HPill variant="info">内置</HPill>
+        <HPill :variant="braveKeySet ? 'success' : 'neutral'">{{ braveKeySet ? '已启用' : '未启用' }}</HPill>
       </div>
-    </div>
-    <div class="form-row-inline">
-      <label class="form-label">Brave Key 环境变量</label>
-      <div class="form-field">
-        <HInput v-model="braveKeyEnv" placeholder="BRAVE_API_KEY" />
+      <div class="form-row-inline">
+        <label class="form-label">API Key</label>
+        <div class="form-field">
+          <HInput v-model="braveKey" :placeholder="braveKeySet ? '已设置(输入新值覆盖)' : '输入 Brave Search API Key'" type="password" />
+        </div>
       </div>
+      <HCollapse v-model="builtinAdvancedOpen">
+        <HCollapseItem name="brave-advanced" title="高级">
+          <div class="form-row-inline">
+            <label class="form-label">环境变量名</label>
+            <div class="form-field">
+              <HInput v-model="braveKeyEnv" placeholder="BRAVE_API_KEY" />
+            </div>
+          </div>
+        </HCollapseItem>
+      </HCollapse>
     </div>
 
-    <div class="form-row-inline">
-      <label class="form-label">Tavily API Key</label>
-      <div class="form-field">
-        <HInput v-model="tavilyKey" :placeholder="tavilyKeySet ? '已设置(输入新值覆盖)' : '输入 Tavily API Key'" type="password" />
+    <div class="tool-block">
+      <div class="tool-header">
+        <span class="tool-title">Tavily Search</span>
+        <HPill variant="info">内置</HPill>
+        <HPill :variant="tavilyKeySet ? 'success' : 'neutral'">{{ tavilyKeySet ? '已启用' : '未启用' }}</HPill>
       </div>
-    </div>
-    <div class="form-row-inline">
-      <label class="form-label">Tavily Key 环境变量</label>
-      <div class="form-field">
-        <HInput v-model="tavilyKeyEnv" placeholder="TAVILY_API_KEY" />
+      <div class="form-row-inline">
+        <label class="form-label">API Key</label>
+        <div class="form-field">
+          <HInput v-model="tavilyKey" :placeholder="tavilyKeySet ? '已设置(输入新值覆盖)' : '输入 Tavily API Key'" type="password" />
+        </div>
       </div>
+      <HCollapse v-model="builtinAdvancedOpen">
+        <HCollapseItem name="tavily-advanced" title="高级">
+          <div class="form-row-inline">
+            <label class="form-label">环境变量名</label>
+            <div class="form-field">
+              <HInput v-model="tavilyKeyEnv" placeholder="TAVILY_API_KEY" />
+            </div>
+          </div>
+        </HCollapseItem>
+      </HCollapse>
     </div>
 
-    <div class="section-divider">外部 MCP Server</div>
-    <div class="form-hint" style="margin-bottom: 10px;">
-      连接外部 MCP server(如自建搜索服务)。stdio 模式会派生子进程。连接失败不影响其他工具。
-    </div>
-
-    <div v-for="(srv, idx) in servers" :key="idx" class="server-block">
+    <!-- 自定义 MCP Server:可增删改,http/sse/stdio 三种传输方式。 -->
+    <div v-for="(srv, idx) in servers" :key="idx" class="tool-block">
+      <div class="tool-header">
+        <span class="tool-title">{{ srv.name || '未命名 Server' }}</span>
+        <HPill variant="neutral">{{ srv.transport }}</HPill>
+      </div>
       <div class="form-row-inline">
         <label class="form-label">名称</label>
         <div class="form-field">
@@ -226,7 +255,7 @@ defineExpose({ reload: fetchConfig })
     </div>
 
     <div class="card-actions">
-      <HButton variant="ghost" size="sm" @click="addServer">+ 添加 Server</HButton>
+      <HButton variant="ghost" size="sm" @click="addServer">+ 添加自定义 Server</HButton>
       <HButton variant="primary" :loading="saving" @click="save">保存配置</HButton>
     </div>
   </HCard>
@@ -241,11 +270,21 @@ defineExpose({ reload: fetchConfig })
   padding-bottom: 6px;
   border-bottom: 1px solid var(--border);
 }
-.server-block {
+.tool-block {
   padding: 12px;
   margin-bottom: 12px;
   background: var(--bg-secondary, var(--bg));
   border: 1px solid var(--border);
   border-radius: 6px;
+}
+.tool-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.tool-title {
+  font-weight: 600;
+  font-size: 13px;
 }
 </style>
