@@ -82,11 +82,9 @@ function typeLabel(type: string): string {
 
 .section-title {
   margin: 0;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
+  color: var(--text);
 }
 
 .table-wrap {
@@ -112,8 +110,6 @@ th {
   font-weight: 600;
   font-size: 11.5px;
   color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
   border-bottom: 1px solid var(--border);
 }
 

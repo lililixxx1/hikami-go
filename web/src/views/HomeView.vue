@@ -222,6 +222,13 @@ onMounted(async () => {
   max-width: 1200px;
   margin: 0 auto;
   display: grid;
-  gap: 28px;
+  gap: 32px;
+}
+
+/* 首页内表单 focus ring(仅首页生效,不溢出到其他页面;叠加在 ui.css 既有 border-color 之上) */
+.home-page :deep(.input:focus),
+.home-page :deep(.select:focus),
+.home-page :deep(.textarea:focus) {
+  box-shadow: 0 0 0 3px var(--accent-glow);
 }
 </style>

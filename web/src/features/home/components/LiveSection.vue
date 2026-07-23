@@ -68,11 +68,9 @@ const emit = defineEmits<{
 
 .section-title {
   margin: 0;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
+  color: var(--text);
 }
 
 .live-grid {
@@ -87,12 +85,15 @@ const emit = defineEmits<{
   background: var(--canvas);
   padding: 16px 18px;
   box-shadow: var(--shadow-sm);
-  transition: box-shadow 0.2s;
+  transition: box-shadow 0.2s, transform 0.2s;
   position: relative;
   overflow: hidden;
 }
 
-.live-card:hover { box-shadow: var(--shadow-md); }
+.live-card:hover {
+  box-shadow: var(--shadow-card-hover);
+  transform: translateY(-2px);
+}
 
 .live-card::before {
   content: "";

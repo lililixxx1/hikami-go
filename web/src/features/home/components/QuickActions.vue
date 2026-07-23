@@ -20,6 +20,5 @@ const emit = defineEmits<{
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 20px;
 }
 </style>

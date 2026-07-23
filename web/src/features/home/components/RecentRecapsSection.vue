@@ -60,11 +60,9 @@ function pillVariant(color: string): 'success' | 'warning' | 'danger' | 'info' |
 
 .section-title {
   margin: 0;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
+  color: var(--text);
 }
 
 .review-grid {
@@ -80,12 +78,13 @@ function pillVariant(color: string): 'success' | 'warning' | 'danger' | 'info' |
   background: var(--canvas);
   box-shadow: var(--shadow-sm);
   cursor: pointer;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
 }
 
 .review-card:hover {
   border-color: var(--accent);
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-card-hover);
+  transform: translateY(-1px);
 }
 
 .review-card-title {

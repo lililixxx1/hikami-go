@@ -60,11 +60,9 @@ const emit = defineEmits<{
 
 .section-title {
   margin: 0;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
+  color: var(--text);
 }
 
 .alert-list {
