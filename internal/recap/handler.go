@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"hikami-go/internal/aiprovider"
 	"hikami-go/internal/channel"
 	"hikami-go/internal/config"
 	"hikami-go/internal/glossary"
@@ -254,6 +255,97 @@ type Handler struct {
 	notifyMgr          *notify.Manager
 	glossaryDiscoverer glossaryDiscoverer
 	capabilityChecker  CapabilityChecker
+	mcpManager         MCPToolkit // MCP 搜索工具(Phase 4),nil 时降级普通 Generate
+}
+
+// MCPToolkit 是 MCP 工具管理器的最小接口(duck-typing,避免 recap 反向导入 mcp 包)。
+// internal/mcp.Manager 实现此接口。Phase 4 的 agent loop 用 ListTools + CallTool。
+type MCPToolkit interface {
+	HasTools() bool
+	ListTools(ctx context.Context) []aiprovider.Tool
+	CallTool(ctx context.Context, name, args string) (string, error)
+}
+
+// SetMCPManager 注入 MCP 搜索工具管理器。nil 表示禁用 tool-calling(零回归)。
+// Phase 4 的 HandleTask 会判断 mcpManager != nil 且 provider 支持 ToolCapableProvider 时,
+// 走 RunWithTools agent loop 替代普通 Generate。
+func (h *Handler) SetMCPManager(m MCPToolkit) {
+	h.mcpManager = m
+}
+
+// generateRecap 是回顾生成的 AI 调用入口,根据是否配置 MCP 工具选择路径:
+//   - 有 MCP 工具 + provider 支持 tool calling → 走 mcpRunWithTools agent loop(模型可主动联网查证术语)。
+//   - 否则 → 普通 provider.Generate(零回归,行为与无 MCP 完全一致)。
+//
+// agent loop 的实现在 internal/mcp 包,这里通过 runToolsAwareGenerate 间接调用以避免 recap 反向导入 mcp。
+// runToolsAwareGenerate 字段在装配时注入(main.go),nil 时退回普通路径。
+func (h *Handler) generateRecap(ctx context.Context, systemPrompt, prompt string, sessionInfo session.Session) (aiprovider.GenerateResult, error) {
+	// 判断是否走 tool-calling 路径:有 MCP 工具 + provider 实现 ToolCapableProvider。
+	if h.mcpManager != nil && h.mcpManager.HasTools() {
+		if tcp, ok := h.provider.(aiprovider.ToolCapableProvider); ok {
+			tools := h.mcpManager.ListTools(ctx)
+			if len(tools) > 0 {
+				// 构造 tool-calling 请求:工具使用指引追加到 system prompt。
+				enhancedSystem := systemPrompt + "\n\n" + toolUseGuidance(tools)
+				req := aiprovider.GenerateRequest{
+					SystemPrompt: enhancedSystem,
+					Messages:     []aiprovider.Message{{Role: aiprovider.RoleUser, Content: prompt}},
+					Tools:        tools,
+				}
+				maxRounds := h.maxToolRounds()
+				return h.runToolsAwareGenerate(ctx, tcp, req, maxRounds)
+			}
+		}
+	}
+	// 降级:普通 Generate(零回归)。
+	return h.provider.Generate(ctx, systemPrompt, prompt, sessionInfo)
+}
+
+// maxToolRounds 返回 agent loop 最大轮次(默认 5,可由 config.MCP.MaxToolRounds 覆盖)。
+func (h *Handler) maxToolRounds() int {
+	if h.cfg != nil && h.cfg.MCP.MaxToolRounds > 0 {
+		return h.cfg.MCP.MaxToolRounds
+	}
+	return 5
+}
+
+// runToolsAwareGenerate 默认实现:调 mcp.RunWithTools。
+// 装配时由 main.go 注入(避免 recap 导入 mcp 包)。这里用包级函数变量注入。
+func (h *Handler) runToolsAwareGenerate(ctx context.Context, tcp aiprovider.ToolCapableProvider, req aiprovider.GenerateRequest, maxRounds int) (aiprovider.GenerateResult, error) {
+	if RunToolsAwareGenerate != nil {
+		return RunToolsAwareGenerate(ctx, tcp, h.mcpManager, req, maxRounds)
+	}
+	// 未注入(如测试场景):退回普通 Generate(忽略工具,降级)。
+	return h.provider.Generate(ctx, req.SystemPrompt, userPromptFromMessages(req.Messages), session.Session{})
+}
+
+// RunToolsAwareGenerate 是 agent loop 的注入点,由 main.go 装配时设置为 mcp.RunWithTools。
+// 测试可覆盖。nil 时 generateRecap 降级为普通 Generate。
+var RunToolsAwareGenerate func(ctx context.Context, tcp aiprovider.ToolCapableProvider, mgr MCPToolkit, req aiprovider.GenerateRequest, maxRounds int) (aiprovider.GenerateResult, error)
+
+// toolUseGuidance 生成追加到 system prompt 的工具使用指引(审核 Minor#11 草稿)。
+func toolUseGuidance(tools []aiprovider.Tool) string {
+	names := make([]string, 0, len(tools))
+	for _, t := range tools {
+		names = append(names, t.Name)
+	}
+	return fmt.Sprintf("你拥有联网搜索工具(%s)。使用规则:\n"+
+		"- 当遇到不确定的专有名词(人名/游戏名/作品名/品牌/术语)时,用搜索工具核实标准写法。\n"+
+		"- 不要搜索转写文本中已明确的信息,不要搜索普通词汇。\n"+
+		"- 每次搜索后,在术语后或文末标注来源。\n"+
+		"- 搜索结果仅供参考,最终判断以术语校正表为准。\n"+
+		"- 避免过度搜索,最多 3-4 次。",
+		strings.Join(names, "、"))
+}
+
+// userPromptFromMessages 从 GenerateRequest.Messages 提取首个 user 消息内容(降级时用)。
+func userPromptFromMessages(msgs []aiprovider.Message) string {
+	for _, m := range msgs {
+		if m.Role == aiprovider.RoleUser {
+			return m.Content
+		}
+	}
+	return ""
 }
 
 // SetCapabilityChecker 注入运行时能力检查器（设计 4.5）。CreateTask 会据此判定回顾能力
@@ -627,7 +719,7 @@ func (h *Handler) HandleTask(ctx context.Context, task worker.Task, reporter wor
 	fileBase := safeName("直播回顾_" + sessionInfo.Slug + outputSuffix)
 	options := h.recapOptions(ctx, sessionInfo.ChannelID)
 	providerCtx := withRecapModel(ctx, options.Model)
-	result, err := h.provider.Generate(providerCtx, resolved.SystemPrompt, prompt, sessionInfo)
+	result, err := h.generateRecap(providerCtx, resolved.SystemPrompt, prompt, sessionInfo)
 	if err != nil {
 		return err
 	}

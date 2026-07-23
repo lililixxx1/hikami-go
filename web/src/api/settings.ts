@@ -1,4 +1,4 @@
-import client, { get, put } from './client'
+import client, { get, post, put } from './client'
 import type { ASRS3Config, ArchiveConfig, BiliSeries, BiliTopic, ConfigImportResult, SecretEntry, DashScopeConfig, PublishConfig, RecapConfig, RecapModelOption, WebDAVConfig } from './types-derived'
 
 export interface SecretsResponse {
@@ -78,6 +78,58 @@ export function getToolsConfig(): Promise<ToolsConfig> {
 
 export function updateToolsConfig(config: Partial<ToolsConfig>): Promise<ToolsConfig> {
   return put('/api/config/tools', config)
+}
+
+// MCP 搜索工具配置段(MCP 搜索集成)。密钥字段只返回是否已设置(只写)。
+export interface MCPServerConfig {
+  name: string
+  transport: 'http' | 'sse' | 'stdio'
+  url: string
+  command: string
+  args: string[]
+  env: string[]
+  enabled: boolean
+  timeout_sec: number
+}
+
+export interface MCPBuiltinConfig {
+  brave_api_key_set: boolean
+  brave_api_key_env: string
+  tavily_api_key_set: boolean
+  tavily_api_key_env: string
+}
+
+export interface MCPConfig {
+  enabled: boolean
+  servers: MCPServerConfig[]
+  builtin: MCPBuiltinConfig
+  max_tool_rounds: number
+}
+
+// MCPConfig 的 PUT 请求(partial,密钥字段在 builtin 内)。
+export interface MCPConfigUpdate {
+  enabled?: boolean
+  servers?: MCPServerConfig[]
+  builtin?: {
+    brave_api_key?: string
+    brave_api_key_env?: string
+    tavily_api_key?: string
+    tavily_api_key_env?: string
+  }
+  max_tool_rounds?: number
+}
+
+export function getMCPConfig(): Promise<MCPConfig> {
+  return get('/api/config/mcp')
+}
+
+export function updateMCPConfig(config: MCPConfigUpdate): Promise<MCPConfig> {
+  return put('/api/config/mcp', config)
+}
+
+// 触发 AI 批量复核 pending 候选词(异步,返回 202)。
+export function reviewGlossaryCandidates(channelId?: string): Promise<{ ok: boolean; message: string }> {
+  return post('/api/glossary/candidates/review', channelId ? { channel_id: channelId } : {})
 }
 
 export function getOnboardingStatus(): Promise<{

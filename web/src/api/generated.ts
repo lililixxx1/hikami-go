@@ -1347,6 +1347,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/config/mcp": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 获取 MCP 搜索工具配置
+         * @description MCP(Model Context Protocol)搜索工具集成配置。
+         *     密钥字段只返回是否已设置(只写模式)。enabled=false 时零回归(不启用工具)。
+         */
+        get: operations["getMCPConfig"];
+        /**
+         * 更新 MCP 搜索工具配置
+         * @description 全字段可选(presence-aware)。密钥字段:缺席=不改,空串=清空。
+         *     保存后热重载 MCP 连接(无需重启)。未配置/失败时降级为普通 AI 调用(零回归)。
+         */
+        put: operations["updateMCPConfig"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/config/export": {
         parameters: {
             query?: never;
@@ -1577,6 +1603,28 @@ export interface paths {
          *     无请求体。
          */
         post: operations["rejectGlobalGlossaryCandidate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/glossary/candidates/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * AI 批量复核 pending 候选词
+         * @description 异步触发 AI(可带 MCP 搜索工具)批量核实 pending 候选词的 term→canonical 映射,
+         *     更新 ai_review + confidence + canonical。status 保持 pending(保留人工把关)。
+         *     立即返回 202,复核进度经 ListCandidates 的 ai_review 字段查看。
+         */
+        post: operations["reviewGlossaryCandidates"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3497,6 +3545,68 @@ export interface components {
         ToolsConfigRequest: {
             yt_dlp?: string;
             rclone?: string;
+        };
+        /** @description 外部 MCP server 连接配置 */
+        MCPServerConfig: {
+            /** @description 唯一标识(用于日志与工具名前缀) */
+            name?: string;
+            /**
+             * @description 传输方式
+             * @enum {string}
+             */
+            transport?: "http" | "sse" | "stdio";
+            /** @description http/sse 模式的 server URL */
+            url?: string;
+            /** @description stdio 模式的可执行命令 */
+            command?: string;
+            /** @description stdio 模式的命令参数 */
+            args?: string[];
+            /** @description stdio 模式的环境变量(KEY=VALUE) */
+            env?: string[];
+            enabled?: boolean;
+            /** @description 单次工具调用超时(秒),<=0 用默认30 */
+            timeout_sec?: number;
+        };
+        /** @description 内置搜索工具密钥状态(只读是否已设置) */
+        MCPBuiltinConfigResponse: {
+            /** @description Brave Search API key 是否已设置 */
+            brave_api_key_set?: boolean;
+            brave_api_key_env?: string;
+            /** @description Tavily API key 是否已设置 */
+            tavily_api_key_set?: boolean;
+            tavily_api_key_env?: string;
+        };
+        /**
+         * @description GET /api/config/mcp 响应。MCP 搜索工具集成配置。
+         *     密钥字段只返回是否已设置(bool,只写模式),不返回明文。
+         *     enabled=false 时所有 MCP 能力关闭(零回归)。
+         */
+        MCPConfigResponse: {
+            /** @description MCP 总开关 */
+            enabled: boolean;
+            /** @description 外部 MCP server 列表 */
+            servers: components["schemas"]["MCPServerConfig"][];
+            builtin: components["schemas"]["MCPBuiltinConfigResponse"];
+            /** @description agent loop 最大工具调用轮次(防死循环,默认5) */
+            max_tool_rounds: number;
+        };
+        /**
+         * @description PUT /api/config/mcp 请求。全字段可选(presence-aware)。
+         *     密钥字段(brave_api_key/tavily_api_key):缺席=不改,空串=清空,非空=设置。
+         *     保存后热重载 MCP 连接(无需重启)。
+         */
+        MCPConfigRequest: {
+            enabled?: boolean;
+            servers?: components["schemas"]["MCPServerConfig"][];
+            builtin?: {
+                /** @description Brave API key 明文(缺席=不改,空串=清空) */
+                brave_api_key?: string;
+                brave_api_key_env?: string;
+                /** @description Tavily API key 明文(缺席=不改,空串=清空) */
+                tavily_api_key?: string;
+                tavily_api_key_env?: string;
+            };
+            max_tool_rounds?: number;
         };
         /** @description 回顾 AI 段导出(指针,缺席=备份不含) */
         ExportRecapAI: {
@@ -6315,6 +6425,52 @@ export interface operations {
             401: paths["/api/health/runtime"]["get"]["responses"]["401"];
         };
     };
+    getMCPConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description MCP 配置 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPConfigResponse"];
+                };
+            };
+            401: paths["/api/health/runtime"]["get"]["responses"]["401"];
+        };
+    };
+    updateMCPConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MCPConfigRequest"];
+            };
+        };
+        responses: {
+            /** @description 更新后的 MCP 配置 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MCPConfigResponse"];
+                };
+            };
+            401: paths["/api/health/runtime"]["get"]["responses"]["401"];
+        };
+    };
     exportConfig: {
         parameters: {
             query?: never;
@@ -6752,6 +6908,42 @@ export interface operations {
             };
             /** @description 候选不存在 */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    reviewGlossaryCandidates: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @description 可选,限定频道;空则全局 */
+                    channel_id?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description 复核已启动 */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OkResponse"];
+                };
+            };
+            /** @description glossary discoverer 未配置 */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

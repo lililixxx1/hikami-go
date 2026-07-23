@@ -214,6 +214,21 @@ ALTER TABLE channels ADD COLUMN publish_topics TEXT NOT NULL DEFAULT '';`,
 	`INSERT INTO runtime_settings_v35 (section, data, updated_at) SELECT section, data, updated_at FROM runtime_settings;`,
 	`DROP TABLE runtime_settings;`,
 	`ALTER TABLE runtime_settings_v35 RENAME TO runtime_settings;`,
+	// v36: runtime_settings 表 CHECK 约束扩展 +mcp 段(MCP 搜索工具配置)。
+	// 同 v35 表重建范式:临时表→复制→DROP→建新表→回灌→DROP 临时表。
+	// 新表 CHECK 白名单扩到 8 段,旧数据全量回灌(7 段无损)。
+	`CREATE TABLE runtime_settings_v36 (
+			section TEXT NOT NULL CHECK (section IN ('publish','asr_s3','dashscope','recap_ai','webdav','archive','tools','mcp')),
+			data TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(data)),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+			PRIMARY KEY (section)
+		);`,
+	`INSERT INTO runtime_settings_v36 (section, data, updated_at) SELECT section, data, updated_at FROM runtime_settings;`,
+	`DROP TABLE runtime_settings;`,
+	`ALTER TABLE runtime_settings_v36 RENAME TO runtime_settings;`,
+	// v37: glossary_candidates 表加 ai_review 列(Phase 5 批量复核功能)。
+	// 存 AI 复核理由(核实结论 + 置信度说明),空表示未复核。status 不因此改变。
+	`ALTER TABLE glossary_candidates ADD COLUMN ai_review TEXT NOT NULL DEFAULT '';`,
 }
 
 func Migrate(database *sql.DB) error {

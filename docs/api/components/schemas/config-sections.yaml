@@ -462,6 +462,106 @@ ToolsConfigRequest:
     rclone:
       type: string
 
+# ───── MCP 搜索工具配置 ─────
+MCPConfigResponse:
+  type: object
+  description: |
+    GET /api/config/mcp 响应。MCP 搜索工具集成配置。
+    密钥字段只返回是否已设置(bool,只写模式),不返回明文。
+    enabled=false 时所有 MCP 能力关闭(零回归)。
+  required: [enabled, servers, builtin, max_tool_rounds]
+  properties:
+    enabled:
+      type: boolean
+      description: MCP 总开关
+    servers:
+      type: array
+      description: 外部 MCP server 列表
+      items:
+        $ref: '#/MCPServerConfig'
+    builtin:
+      $ref: '#/MCPBuiltinConfigResponse'
+    max_tool_rounds:
+      type: integer
+      description: agent loop 最大工具调用轮次(防死循环,默认5)
+
+MCPServerConfig:
+  type: object
+  description: 外部 MCP server 连接配置
+  properties:
+    name:
+      type: string
+      description: 唯一标识(用于日志与工具名前缀)
+    transport:
+      type: string
+      enum: [http, sse, stdio]
+      description: 传输方式
+    url:
+      type: string
+      description: http/sse 模式的 server URL
+    command:
+      type: string
+      description: stdio 模式的可执行命令
+    args:
+      type: array
+      items:
+        type: string
+      description: stdio 模式的命令参数
+    env:
+      type: array
+      items:
+        type: string
+      description: stdio 模式的环境变量(KEY=VALUE)
+    enabled:
+      type: boolean
+    timeout_sec:
+      type: integer
+      description: 单次工具调用超时(秒),<=0 用默认30
+
+MCPBuiltinConfigResponse:
+  type: object
+  description: 内置搜索工具密钥状态(只读是否已设置)
+  properties:
+    brave_api_key_set:
+      type: boolean
+      description: Brave Search API key 是否已设置
+    brave_api_key_env:
+      type: string
+    tavily_api_key_set:
+      type: boolean
+      description: Tavily API key 是否已设置
+    tavily_api_key_env:
+      type: string
+
+MCPConfigRequest:
+  type: object
+  description: |
+    PUT /api/config/mcp 请求。全字段可选(presence-aware)。
+    密钥字段(brave_api_key/tavily_api_key):缺席=不改,空串=清空,非空=设置。
+    保存后热重载 MCP 连接(无需重启)。
+  properties:
+    enabled:
+      type: boolean
+    servers:
+      type: array
+      items:
+        $ref: '#/MCPServerConfig'
+    builtin:
+      type: object
+      properties:
+        brave_api_key:
+          type: string
+          description: Brave API key 明文(缺席=不改,空串=清空)
+        brave_api_key_env:
+          type: string
+        tavily_api_key:
+          type: string
+          description: Tavily API key 明文(缺席=不改,空串=清空)
+        tavily_api_key_env:
+          type: string
+    max_tool_rounds:
+      type: integer
+
 # ───── Export / Import ─────
 ConfigExportBundle:
   type: object

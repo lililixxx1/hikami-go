@@ -40,6 +40,7 @@ type Config struct {
 	Archive    ArchiveConfig    `mapstructure:"archive"`
 	Downloader DownloaderConfig `mapstructure:"downloader"`
 	Publish    PublishConfig    `mapstructure:"publish"`
+	MCP        MCPConfig        `mapstructure:"mcp"`
 
 	Notify NotifyConfig `mapstructure:"notify"`
 
@@ -364,6 +365,73 @@ type DownloaderConfig struct {
 	Backend string `mapstructure:"backend"`
 }
 
+// MCPConfig 控制 MCP(Model Context Protocol)搜索工具集成。
+// 开启后,recap(回顾生成)与 glossary(术语发现/复核)的 AI 调用可附带工具,
+// 让模型主动联网查证人名/游戏名/专有词,增强术语校正准确性。
+// 未配置或 provider 不支持 tool calling 时,静默降级为普通 Generate(零回归)。
+type MCPConfig struct {
+	Enabled       bool              `mapstructure:"enabled"`         // 总开关,false 时所有 MCP 能力关闭
+	Servers       []MCPServerConfig `mapstructure:"servers"`         // 外部 MCP server 列表(stdio/http/sse)
+	Builtin       MCPBuiltinConfig  `mapstructure:"builtin"`         // 内置 in-process 搜索工具(Brave/Tavily)
+	MaxToolRounds int               `mapstructure:"max_tool_rounds"` // agent loop 最大工具调用轮次(防死循环)
+}
+
+// MCPServerConfig 描述一个外部 MCP server 连接。
+// Transport 取值:"http"(Streamable HTTP)/"sse"/"stdio"。
+// http/sse 用 URL;stdio 用 Command+Args+Env(子进程)。
+type MCPServerConfig struct {
+	Name       string   `mapstructure:"name"`        // 唯一标识,用于日志与工具名前缀
+	Transport  string   `mapstructure:"transport"`   // http | sse | stdio
+	URL        string   `mapstructure:"url"`         // http/sse 模式的 server URL
+	Command    string   `mapstructure:"command"`     // stdio 模式的可执行命令
+	Args       []string `mapstructure:"args"`        // stdio 模式的命令参数
+	Env        []string `mapstructure:"env"`         // stdio 模式的环境变量(KEY=VALUE)
+	Enabled    bool     `mapstructure:"enabled"`     // 是否启用此 server
+	TimeoutSec int      `mapstructure:"timeout_sec"` // 单次工具调用超时(秒),<=0 用默认 30
+}
+
+// MCPBuiltinConfig 内置搜索工具的 API 密钥配置。
+// 密钥走 env 名(与 RecapAI.APIKeyEnv 模式一致),也可直接填明文(便于 UI 配置)。
+// 对应 key 为空时该内置工具不注册(降级)。
+type MCPBuiltinConfig struct {
+	BraveAPIKey     string `mapstructure:"brave_api_key"`      // Brave Search API key 明文(UI 填)
+	BraveAPIKeyEnv  string `mapstructure:"brave_api_key_env"`  // Brave key 的环境变量名,空兜底 BRAVE_API_KEY
+	TavilyAPIKey    string `mapstructure:"tavily_api_key"`     // Tavily API key 明文(UI 填)
+	TavilyAPIKeyEnv string `mapstructure:"tavily_api_key_env"` // Tavily key 的环境变量名,空兜底 TAVILY_API_KEY
+}
+
+// EffectiveBraveAPIKey 返回生效的 Brave key:优先明文,其次 env(空名兜底 BRAVE_API_KEY)。
+func (b MCPBuiltinConfig) EffectiveBraveAPIKey() string {
+	if k := strings.TrimSpace(b.BraveAPIKey); k != "" {
+		return k
+	}
+	envName := strings.TrimSpace(b.BraveAPIKeyEnv)
+	if envName == "" {
+		envName = "BRAVE_API_KEY"
+	}
+	return os.Getenv(envName)
+}
+
+// EffectiveTavilyAPIKey 返回生效的 Tavily key(同上逻辑)。
+func (b MCPBuiltinConfig) EffectiveTavilyAPIKey() string {
+	if k := strings.TrimSpace(b.TavilyAPIKey); k != "" {
+		return k
+	}
+	envName := strings.TrimSpace(b.TavilyAPIKeyEnv)
+	if envName == "" {
+		envName = "TAVILY_API_KEY"
+	}
+	return os.Getenv(envName)
+}
+
+// EffectiveMaxToolRounds 返回生效的最大工具轮次,<=0 兜底 5。
+func (m MCPConfig) EffectiveMaxToolRounds() int {
+	if m.MaxToolRounds > 0 {
+		return m.MaxToolRounds
+	}
+	return 5
+}
+
 func (c *DownloaderConfig) NativeConfigured() bool {
 	backend := strings.ToLower(strings.TrimSpace(c.Backend))
 	return backend == "" || backend == "auto" || backend == "native"
@@ -526,6 +594,17 @@ type ArchiveSectionDTO struct {
 type ToolsSectionDTO struct {
 	YTDLP  *string `json:"yt_dlp,omitempty"`
 	Rclone *string `json:"rclone,omitempty"`
+}
+
+// MCPSectionDTO 对应 updateMCPConfig 管理的 MCP 搜索工具配置段。
+// presence-aware:指针为 nil 表示该字段不改(保留基线),非 nil 表示更新(含零值)。
+// 密钥字段(BraveAPIKey/TavilyAPIKey)在 GET 响应里只返回是否已设置(bool),
+// PUT 传空串表示清除(与 webdav password 的只写模式一致)。
+type MCPSectionDTO struct {
+	Enabled       *bool              `json:"enabled,omitempty"`
+	Servers       *[]MCPServerConfig `json:"servers,omitempty"`
+	Builtin       *MCPBuiltinConfig  `json:"builtin,omitempty"`
+	MaxToolRounds *int               `json:"max_tool_rounds,omitempty"`
 }
 
 // ApplyOverrides 用 runtime_settings 的 per-section JSON 覆盖 cfg 的对应段。
@@ -744,6 +823,25 @@ func ApplyOverrides(cfg *Config, overrides map[string]json.RawMessage) error {
 		}
 	}
 
+	// MCP 段:嵌套结构体,逐字段 presence-aware 覆盖。
+	// Servers 为切片指针:nil=不改,非 nil(含空切片)=全量替换。
+	if raw, ok := overrides["mcp"]; ok && len(raw) > 0 {
+		var dto MCPSectionDTO
+		apply("mcp", &dto)
+		if dto.Enabled != nil {
+			cfg.MCP.Enabled = *dto.Enabled
+		}
+		if dto.Servers != nil {
+			cfg.MCP.Servers = *dto.Servers
+		}
+		if dto.Builtin != nil {
+			cfg.MCP.Builtin = *dto.Builtin
+		}
+		if dto.MaxToolRounds != nil {
+			cfg.MCP.MaxToolRounds = *dto.MaxToolRounds
+		}
+	}
+
 	return cfg.Validate()
 }
 
@@ -837,6 +935,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("upload.cleanup_policy", "none")
 	v.SetDefault("archive.auto_after_publish", false)
 	v.SetDefault("archive.cleanup_policy", "none")
+	// MCP 默认关闭(零回归:未配置即不启用,行为与无 MCP 完全一致)。
+	v.SetDefault("mcp.enabled", false)
+	v.SetDefault("mcp.max_tool_rounds", 5)
+	v.SetDefault("mcp.builtin.brave_api_key_env", "BRAVE_API_KEY")
+	v.SetDefault("mcp.builtin.tavily_api_key_env", "TAVILY_API_KEY")
 	v.SetDefault("downloader.backend", "auto")
 	v.SetDefault("publish.enabled", false)
 	v.SetDefault("publish.mode", "draft")

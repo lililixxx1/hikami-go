@@ -2041,6 +2041,46 @@ paths:
         '401':
           $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
 
+  /api/config/mcp:
+    get:
+      tags: [配置]
+      operationId: getMCPConfig
+      summary: 获取 MCP 搜索工具配置
+      description: |
+        MCP(Model Context Protocol)搜索工具集成配置。
+        密钥字段只返回是否已设置(只写模式)。enabled=false 时零回归(不启用工具)。
+      responses:
+        '200':
+          description: MCP 配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/MCPConfigResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    put:
+      tags: [配置]
+      operationId: updateMCPConfig
+      summary: 更新 MCP 搜索工具配置
+      description: |
+        全字段可选(presence-aware)。密钥字段:缺席=不改,空串=清空。
+        保存后热重载 MCP 连接(无需重启)。未配置/失败时降级为普通 AI 调用(零回归)。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/config-sections.yaml#/MCPConfigRequest'
+      responses:
+        '200':
+          description: 更新后的 MCP 配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/MCPConfigResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
   /api/config/export:
     get:
       tags: [配置]
@@ -2408,6 +2448,39 @@ paths:
                 $ref: 'components/schemas/common.yaml#/Error'
         '404':
           description: 候选不存在
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/glossary/candidates/review:
+    post:
+      tags: [术语表]
+      operationId: reviewGlossaryCandidates
+      summary: AI 批量复核 pending 候选词
+      description: |
+        异步触发 AI(可带 MCP 搜索工具)批量核实 pending 候选词的 term→canonical 映射,
+        更新 ai_review + confidence + canonical。status 保持 pending(保留人工把关)。
+        立即返回 202,复核进度经 ListCandidates 的 ai_review 字段查看。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                channel_id:
+                  type: string
+                  description: 可选,限定频道;空则全局
+      responses:
+        '202':
+          description: 复核已启动
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/OkResponse'
+        '409':
+          description: glossary discoverer 未配置
           content:
             application/json:
               schema:

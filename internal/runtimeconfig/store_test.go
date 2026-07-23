@@ -82,6 +82,14 @@ func TestSaveRejectsUnknownSection(t *testing.T) {
 	}
 }
 
+// v36 迁移后 mcp 段应被 CHECK 白名单接受(不再拒绝)。
+func TestSaveAcceptsMCPSection(t *testing.T) {
+	store := NewStore(openTestDB(t))
+	if err := store.Save(context.Background(), "mcp", []byte(`{"enabled":true}`)); err != nil {
+		t.Fatalf("mcp section should be accepted after v36 migration: %v", err)
+	}
+}
+
 // SaveTx 与 WithTx：fn 成功则提交、可见；fn 失败则整段回滚。
 func TestWithTxCommits(t *testing.T) {
 	database := openTestDB(t)

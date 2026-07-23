@@ -91,6 +91,32 @@ archive:
   #   all       删除整个本地场次目录，置 local_available=false；再次编辑专栏需先 Fetch 取回
   cleanup_policy: "none"
 
+# MCP 搜索工具集成(AI 联网搜索增强术语校正)。
+# 启用后,生成回顾与发现术语时 AI 可主动联网查证人名/游戏名/专有词标准写法。
+# 未配置或连接失败时静默降级为普通 AI 调用(零回归,不影响现有功能)。
+mcp:
+  enabled: false
+  # agent loop 最大工具调用轮次(防死循环,默认 5)。
+  max_tool_rounds: 5
+  # 内置搜索工具 API 密钥(两者皆空则无内置工具,仅外部 server 可用)。
+  # 密钥也可走环境变量(下方 *_env 配置,空则兜底 BRAVE_API_KEY / TAVILY_API_KEY)。
+  builtin:
+    brave_api_key: ""        # Brave Search API key 明文(也可走 env)
+    brave_api_key_env: "BRAVE_API_KEY"
+    tavily_api_key: ""       # Tavily API key 明文
+    tavily_api_key_env: "TAVILY_API_KEY"
+  # 外部 MCP server 列表(stdio/http/sse transport)。
+  # 示例:连接一个本地 stdio MCP server
+  # servers:
+  #   - name: "local-search"
+  #     transport: "stdio"
+  #     command: "npx"
+  #     args: ["-y", "@some/mcp-search-server"]
+  #     env: ["API_KEY=xxx"]
+  #     enabled: true
+  #     timeout_sec: 30
+  servers: []
+
 downloader:
   # 回放下载后端：
   #   auto/native 使用 Go 原生 B 站下载链路（单 P 音频 + 弹幕 XML）

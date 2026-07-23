@@ -40,6 +40,9 @@ type Candidate struct {
 	CreatedAt       string  `json:"created_at"`
 	UpdatedAt       string  `json:"updated_at"`
 	ReviewedAt      string  `json:"reviewed_at,omitempty"`
+	// AIReview 是 Phase 5 批量复核步骤写入的 AI 复核理由(含核实结论 + 置信度说明)。
+	// 空表示未复核。status 不因此改变(仍 pending,保留人工把关)。
+	AIReview string `json:"ai_review,omitempty"`
 }
 
 var normalizeSpaceRe = regexp.MustCompile(`\s+`)
@@ -54,7 +57,7 @@ func (s *Store) ListCandidates(ctx context.Context, channelID string, status str
 		err  error
 	)
 	if status == "all" {
-		rows, err = s.db.QueryContext(ctx, `SELECT id, channel_id, term, canonical, category, status, confidence, score, occurrence_count, session_count, first_session_id, last_session_id, reason, normalized_key, created_at, updated_at, COALESCE(reviewed_at, '')
+		rows, err = s.db.QueryContext(ctx, `SELECT id, channel_id, term, canonical, category, status, confidence, score, occurrence_count, session_count, first_session_id, last_session_id, reason, normalized_key, created_at, updated_at, COALESCE(reviewed_at, ''), ai_review
 FROM glossary_candidates
 WHERE channel_id = ?
 ORDER BY score DESC, updated_at DESC`, channelID)
@@ -62,7 +65,7 @@ ORDER BY score DESC, updated_at DESC`, channelID)
 		if !validCandidateStatus(status) {
 			return nil, fmt.Errorf("%w: invalid status %q", ErrInvalidCandidate, status)
 		}
-		rows, err = s.db.QueryContext(ctx, `SELECT id, channel_id, term, canonical, category, status, confidence, score, occurrence_count, session_count, first_session_id, last_session_id, reason, normalized_key, created_at, updated_at, COALESCE(reviewed_at, '')
+		rows, err = s.db.QueryContext(ctx, `SELECT id, channel_id, term, canonical, category, status, confidence, score, occurrence_count, session_count, first_session_id, last_session_id, reason, normalized_key, created_at, updated_at, COALESCE(reviewed_at, ''), ai_review
 FROM glossary_candidates
 WHERE channel_id = ? AND status = ?
 ORDER BY score DESC, updated_at DESC`, channelID, status)
@@ -84,7 +87,7 @@ ORDER BY score DESC, updated_at DESC`, channelID, status)
 }
 
 func (s *Store) GetCandidate(ctx context.Context, id int64) (Candidate, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, channel_id, term, canonical, category, status, confidence, score, occurrence_count, session_count, first_session_id, last_session_id, reason, normalized_key, created_at, updated_at, COALESCE(reviewed_at, '')
+	row := s.db.QueryRowContext(ctx, `SELECT id, channel_id, term, canonical, category, status, confidence, score, occurrence_count, session_count, first_session_id, last_session_id, reason, normalized_key, created_at, updated_at, COALESCE(reviewed_at, ''), ai_review
 FROM glossary_candidates
 WHERE id = ?`, id)
 	candidate, err := scanCandidate(row)
@@ -105,6 +108,29 @@ func (s *Store) ApproveCandidate(ctx context.Context, id int64, term string, can
 		return err
 	}
 	return tx.Commit()
+}
+
+// UpdateCandidateReview 写入 AI 批量复核结果(Phase 5)。
+// 只更新 ai_review + confidence + canonical(AI 可能纠正),不改 status(仍 pending,保留人工把关)。
+// 高置信度(>0.9)的候选项前端会高亮,提示优先 approve。
+func (s *Store) UpdateCandidateReview(ctx context.Context, id int64, canonical string, confidence float64, aiReview string) error {
+	canonical = strings.TrimSpace(canonical)
+	aiReview = strings.TrimSpace(aiReview)
+	if canonical == "" {
+		return fmt.Errorf("%w: canonical empty", ErrInvalidCandidate)
+	}
+	now := nowRFC3339()
+	res, err := s.db.ExecContext(ctx, `UPDATE glossary_candidates
+SET canonical = ?, confidence = ?, ai_review = ?, updated_at = ?
+WHERE id = ? AND status = ?`, canonical, confidence, aiReview, now, id, CandidateStatusPending)
+	if err != nil {
+		return err
+	}
+	// 审核code-review Minor#4:检查影响行数,0 = 候选不存在或非 pending。
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrCandidateNotFound
+	}
+	return nil
 }
 
 func (s *Store) RejectCandidate(ctx context.Context, id int64) error {
@@ -224,10 +250,10 @@ func (s *Store) UpsertCandidate(ctx context.Context, channelID string, item Disc
 	defer tx.Rollback()
 
 	var existing Candidate
-	row := tx.QueryRowContext(ctx, `SELECT id, channel_id, term, canonical, category, status, confidence, score, occurrence_count, session_count, first_session_id, last_session_id, reason, normalized_key, created_at, updated_at, COALESCE(reviewed_at, '')
+	row := tx.QueryRowContext(ctx, `SELECT id, channel_id, term, canonical, category, status, confidence, score, occurrence_count, session_count, first_session_id, last_session_id, reason, normalized_key, created_at, updated_at, COALESCE(reviewed_at, ''), ai_review
 FROM glossary_candidates
 WHERE channel_id = ? AND normalized_key = ?`, channelID, key)
-	err = row.Scan(&existing.ID, &existing.ChannelID, &existing.Term, &existing.Canonical, &existing.Category, &existing.Status, &existing.Confidence, &existing.Score, &existing.OccurrenceCount, &existing.SessionCount, &existing.FirstSessionID, &existing.LastSessionID, &existing.Reason, &existing.NormalizedKey, &existing.CreatedAt, &existing.UpdatedAt, &existing.ReviewedAt)
+	err = row.Scan(&existing.ID, &existing.ChannelID, &existing.Term, &existing.Canonical, &existing.Category, &existing.Status, &existing.Confidence, &existing.Score, &existing.OccurrenceCount, &existing.SessionCount, &existing.FirstSessionID, &existing.LastSessionID, &existing.Reason, &existing.NormalizedKey, &existing.CreatedAt, &existing.UpdatedAt, &existing.ReviewedAt, &existing.AIReview)
 	if errors.Is(err, sql.ErrNoRows) {
 		score := calculateCandidateScore(item.Confidence, item.OccurrenceCount, 1)
 		now := nowRFC3339()
@@ -287,7 +313,7 @@ WHERE id = ?`,
 }
 
 func (s *Store) approveCandidateTx(ctx context.Context, tx *sql.Tx, id int64, channelID string, term string, canonical string, category string) error {
-	query := `SELECT id, channel_id, term, canonical, category, status, confidence, score, occurrence_count, session_count, first_session_id, last_session_id, reason, normalized_key, created_at, updated_at, COALESCE(reviewed_at, '')
+	query := `SELECT id, channel_id, term, canonical, category, status, confidence, score, occurrence_count, session_count, first_session_id, last_session_id, reason, normalized_key, created_at, updated_at, COALESCE(reviewed_at, ''), ai_review
 FROM glossary_candidates
 WHERE id = ?`
 	args := []any{id}
@@ -296,7 +322,7 @@ WHERE id = ?`
 		args = append(args, channelID)
 	}
 	var candidate Candidate
-	err := tx.QueryRowContext(ctx, query, args...).Scan(&candidate.ID, &candidate.ChannelID, &candidate.Term, &candidate.Canonical, &candidate.Category, &candidate.Status, &candidate.Confidence, &candidate.Score, &candidate.OccurrenceCount, &candidate.SessionCount, &candidate.FirstSessionID, &candidate.LastSessionID, &candidate.Reason, &candidate.NormalizedKey, &candidate.CreatedAt, &candidate.UpdatedAt, &candidate.ReviewedAt)
+	err := tx.QueryRowContext(ctx, query, args...).Scan(&candidate.ID, &candidate.ChannelID, &candidate.Term, &candidate.Canonical, &candidate.Category, &candidate.Status, &candidate.Confidence, &candidate.Score, &candidate.OccurrenceCount, &candidate.SessionCount, &candidate.FirstSessionID, &candidate.LastSessionID, &candidate.Reason, &candidate.NormalizedKey, &candidate.CreatedAt, &candidate.UpdatedAt, &candidate.ReviewedAt, &candidate.AIReview)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrCandidateNotFound
 	}
@@ -342,7 +368,7 @@ type candidateScanner interface {
 
 func scanCandidate(row candidateScanner) (Candidate, error) {
 	var candidate Candidate
-	err := row.Scan(&candidate.ID, &candidate.ChannelID, &candidate.Term, &candidate.Canonical, &candidate.Category, &candidate.Status, &candidate.Confidence, &candidate.Score, &candidate.OccurrenceCount, &candidate.SessionCount, &candidate.FirstSessionID, &candidate.LastSessionID, &candidate.Reason, &candidate.NormalizedKey, &candidate.CreatedAt, &candidate.UpdatedAt, &candidate.ReviewedAt)
+	err := row.Scan(&candidate.ID, &candidate.ChannelID, &candidate.Term, &candidate.Canonical, &candidate.Category, &candidate.Status, &candidate.Confidence, &candidate.Score, &candidate.OccurrenceCount, &candidate.SessionCount, &candidate.FirstSessionID, &candidate.LastSessionID, &candidate.Reason, &candidate.NormalizedKey, &candidate.CreatedAt, &candidate.UpdatedAt, &candidate.ReviewedAt, &candidate.AIReview)
 	return candidate, err
 }
 

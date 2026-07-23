@@ -87,6 +87,11 @@ type Server struct {
 	notifyMgr          interface {
 		Send(ctx context.Context, eventType, title, body string)
 	}
+	// mcpManager 是 MCP 搜索工具管理器(Phase 3 的 internal/mcp.Manager 实现此接口)。
+	// nil 表示未启用 MCP;handler 在 PUT 配置后调 Reload 热重载。
+	mcpManager interface {
+		Reload(ctx context.Context, cfg config.MCPConfig) error
+	}
 }
 
 func NewServer(
@@ -353,6 +358,8 @@ func (s *Server) routes() {
 	p.PUT("/api/config/archive", s.updateArchiveConfig)
 	p.GET("/api/config/tools", s.getToolsConfig)
 	p.PUT("/api/config/tools", s.updateToolsConfig)
+	p.GET("/api/config/mcp", s.getMCPConfig)
+	p.PUT("/api/config/mcp", s.updateMCPConfig)
 	p.GET("/api/config/export", s.handleExportConfig)
 	p.POST("/api/config/import", s.handleImportConfig)
 
@@ -391,6 +398,7 @@ func (s *Server) routes() {
 	p.GET("/api/glossary/candidates", s.listGlobalGlossaryCandidates)
 	p.POST("/api/glossary/candidates/:cid/approve", s.approveGlossaryCandidate)
 	p.POST("/api/glossary/candidates/:cid/reject", s.rejectGlossaryCandidate)
+	p.POST("/api/glossary/candidates/review", s.reviewGlossaryCandidates)
 
 	p.GET("/api/channels/:id/glossary/entries", s.listChannelGlossary)
 	p.POST("/api/channels/:id/glossary/entries", s.upsertChannelGlossary)
@@ -1580,6 +1588,16 @@ func (s *Server) websocket(ctx *gin.Context) {
 			return
 		}
 	}
+}
+
+// SetMCPManager 注入 MCP 搜索工具管理器(Phase 3)。nil 表示禁用 MCP。
+// 由 main.go 在装配时调用;handler 在 PUT /api/config/mcp 成功后调 Reload 热重载连接。
+func (s *Server) SetMCPManager(m interface {
+	Reload(ctx context.Context, cfg config.MCPConfig) error
+}) {
+	s.publishMu.Lock()
+	s.mcpManager = m
+	s.publishMu.Unlock()
 }
 
 func (s *Server) handleNotifyTest(ctx *gin.Context) {
@@ -3143,7 +3161,149 @@ func (s *Server) updateToolsConfig(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, resp)
 }
 
-// --- Global glossary handlers ---
+// --- MCP config handlers (MCP 搜索工具集成) ---
+// 与 tools 段同模式(runtimeconfig 持久化),但为嵌套结构体。
+// 密钥字段(brave/tavily key)GET 只返回 *_set bool(只写),PUT 传明文或空串(清空)。
+// 保存成功后调 mcpManager.Reload 热重载连接(若 Manager 已装配,见 main.go)。
+
+type mcpBuiltinConfigResponse struct {
+	BraveAPIKeySet  bool   `json:"brave_api_key_set"`
+	BraveAPIKeyEnv  string `json:"brave_api_key_env"`
+	TavilyAPIKeySet bool   `json:"tavily_api_key_set"`
+	TavilyAPIKeyEnv string `json:"tavily_api_key_env"`
+}
+
+type mcpServerConfigResponse struct {
+	Name       string   `json:"name"`
+	Transport  string   `json:"transport"`
+	URL        string   `json:"url"`
+	Command    string   `json:"command"`
+	Args       []string `json:"args"`
+	Env        []string `json:"env"`
+	Enabled    bool     `json:"enabled"`
+	TimeoutSec int      `json:"timeout_sec"`
+}
+
+type mcpConfigResponse struct {
+	Enabled       bool                      `json:"enabled"`
+	Servers       []mcpServerConfigResponse `json:"servers"`
+	Builtin       mcpBuiltinConfigResponse  `json:"builtin"`
+	MaxToolRounds int                       `json:"max_tool_rounds"`
+}
+
+func newMCPConfigResponse(cfg config.Config) mcpConfigResponse {
+	servers := make([]mcpServerConfigResponse, 0, len(cfg.MCP.Servers))
+	for _, sv := range cfg.MCP.Servers {
+		servers = append(servers, mcpServerConfigResponse{
+			Name:       sv.Name,
+			Transport:  sv.Transport,
+			URL:        sv.URL,
+			Command:    sv.Command,
+			Args:       sv.Args,
+			Env:        sv.Env,
+			Enabled:    sv.Enabled,
+			TimeoutSec: sv.TimeoutSec,
+		})
+	}
+	return mcpConfigResponse{
+		Enabled: cfg.MCP.Enabled,
+		Servers: servers,
+		Builtin: mcpBuiltinConfigResponse{
+			// 密钥只返回是否已设置(只写模式,与 webdav password_set 一致)。
+			BraveAPIKeySet:  cfg.MCP.Builtin.EffectiveBraveAPIKey() != "",
+			BraveAPIKeyEnv:  cfg.MCP.Builtin.BraveAPIKeyEnv,
+			TavilyAPIKeySet: cfg.MCP.Builtin.EffectiveTavilyAPIKey() != "",
+			TavilyAPIKeyEnv: cfg.MCP.Builtin.TavilyAPIKeyEnv,
+		},
+		MaxToolRounds: cfg.MCP.MaxToolRounds,
+	}
+}
+
+func (s *Server) getMCPConfig(ctx *gin.Context) {
+	s.publishMu.RLock()
+	resp := newMCPConfigResponse(*s.cfg)
+	s.publishMu.RUnlock()
+	ctx.JSON(http.StatusOK, resp)
+}
+
+// mcpBuiltinInput 是 PUT 的内置工具密钥输入(presence-aware 指针)。
+// BraveAPIKey/TavilyAPIKey:nil=不改,""=清空,非空=设置。
+type mcpBuiltinInput struct {
+	BraveAPIKey     *string `json:"brave_api_key,omitempty"`
+	BraveAPIKeyEnv  *string `json:"brave_api_key_env,omitempty"`
+	TavilyAPIKey    *string `json:"tavily_api_key,omitempty"`
+	TavilyAPIKeyEnv *string `json:"tavily_api_key_env,omitempty"`
+}
+
+func (s *Server) updateMCPConfig(ctx *gin.Context) {
+	var input struct {
+		Enabled       *bool                     `json:"enabled,omitempty"`
+		Servers       *[]config.MCPServerConfig `json:"servers,omitempty"`
+		Builtin       *mcpBuiltinInput          `json:"builtin,omitempty"`
+		MaxToolRounds *int                      `json:"max_tool_rounds,omitempty"`
+	}
+	if err := ctx.ShouldBindJSON(&input); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid json body"})
+		return
+	}
+
+	s.publishMu.Lock()
+	// 计算下一状态(presence-aware:指针 nil=保留基线)。
+	next := s.cfg.MCP // 拷贝基线
+	if input.Enabled != nil {
+		next.Enabled = *input.Enabled
+	}
+	if input.Servers != nil {
+		next.Servers = *input.Servers
+	}
+	if input.MaxToolRounds != nil {
+		next.MaxToolRounds = *input.MaxToolRounds
+	}
+	if input.Builtin != nil {
+		if input.Builtin.BraveAPIKey != nil {
+			next.Builtin.BraveAPIKey = strings.TrimSpace(*input.Builtin.BraveAPIKey)
+		}
+		if input.Builtin.BraveAPIKeyEnv != nil {
+			next.Builtin.BraveAPIKeyEnv = strings.TrimSpace(*input.Builtin.BraveAPIKeyEnv)
+		}
+		if input.Builtin.TavilyAPIKey != nil {
+			next.Builtin.TavilyAPIKey = strings.TrimSpace(*input.Builtin.TavilyAPIKey)
+		}
+		if input.Builtin.TavilyAPIKeyEnv != nil {
+			next.Builtin.TavilyAPIKeyEnv = strings.TrimSpace(*input.Builtin.TavilyAPIKeyEnv)
+		}
+	}
+
+	dto := config.MCPSectionDTO{
+		Enabled:       &next.Enabled,
+		Servers:       &next.Servers,
+		Builtin:       &next.Builtin,
+		MaxToolRounds: &next.MaxToolRounds,
+	}
+	if err := runtimeconfig.WithTx(ctx.Request.Context(), s.runtimeCfg.DB(), func(tx *sql.Tx) error {
+		return s.persistSectionTx(ctx.Request.Context(), tx, "mcp", dto)
+	}); err != nil {
+		s.publishMu.Unlock()
+		slog.Warn("persist mcp config failed", "error", err)
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist mcp config"})
+		return
+	}
+	s.cfg.MCP = next
+	resp := newMCPConfigResponse(*s.cfg)
+	mcpManager := s.mcpManager // 快照(Phase 3 注入),锁外调用 Reload 避免死锁
+	cfgSnapshot := *s.cfg
+	s.bumpConfigGen() // 通知 WebSocket 订阅者配置已变更
+	s.publishMu.Unlock()
+
+	// 热重载 MCP 连接(若有 Manager);失败仅告警不阻断响应(MCP 是增强项,降级可接受)。
+	if mcpManager != nil {
+		if err := mcpManager.Reload(ctx.Request.Context(), cfgSnapshot.MCP); err != nil {
+			slog.Warn("mcp manager reload after config update failed (degraded)", "error", err)
+		}
+	}
+
+	ctx.JSON(http.StatusOK, resp)
+}
 
 func (s *Server) listGlobalGlossary(ctx *gin.Context) {
 	entries, err := s.glossary.ListGlobal(ctx.Request.Context())
@@ -3335,6 +3495,33 @@ func (s *Server) rejectGlossaryCandidate(ctx *gin.Context) {
 		return
 	}
 	ctx.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// reviewGlossaryCandidates 触发 AI 批量复核 pending 候选项(Phase 5)。
+// 异步执行(后台 goroutine + context.Background 脱离请求 ctx),立即返回 202。
+// 复核进度/结果通过 ListCandidates 的 ai_review 字段查看。
+// 安全:goroutine 用独立 context(2分钟超时),请求返回不取消;进程退出时 context 自然取消。
+func (s *Server) reviewGlossaryCandidates(ctx *gin.Context) {
+	if s.glossaryDiscoverer == nil {
+		ctx.JSON(http.StatusConflict, gin.H{"error": "glossary discoverer not configured"})
+		return
+	}
+	var input struct {
+		ChannelID string `json:"channel_id"` // 可选,空则全局
+	}
+	_ = ctx.ShouldBindJSON(&input) // 允许空 body
+	channelID := strings.TrimSpace(input.ChannelID)
+
+	// 异步执行(避免阻塞 HTTP 请求,AI 复核可能耗时)。
+	go func() {
+		bg, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		if err := s.glossaryDiscoverer.Review(bg, channelID); err != nil {
+			slog.Warn("glossary review failed", "channel_id", channelID, "error", err)
+		}
+	}()
+
+	ctx.JSON(http.StatusAccepted, gin.H{"ok": true, "message": "review started"})
 }
 
 func (s *Server) batchApproveGlossaryCandidates(ctx *gin.Context) {

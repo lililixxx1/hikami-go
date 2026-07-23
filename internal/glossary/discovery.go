@@ -62,7 +62,63 @@ type Discoverer struct {
 
 	maxRetries int
 	retryDelay time.Duration
+
+	mcpToolkit    MCPTermToolkit // MCP 搜索工具(Phase 4),nil 时降级普通 Generate
+	maxToolRounds int            // MCP agent loop 最大轮次(审核code-review Important#3:不再硬编码5)
 }
+
+// MCPTermToolkit 是 MCP 工具管理器的最小接口(duck-typing,避免 glossary 反向导入 mcp 包)。
+// 与 recap.MCPToolkit 等价,内部/mcp.Manager 实现此接口。
+type MCPTermToolkit interface {
+	HasTools() bool
+	ListTools(ctx context.Context) []aiprovider.Tool
+	CallTool(ctx context.Context, name, args string) (string, error)
+}
+
+// SetMCPManager 注入 MCP 搜索工具管理器(Phase 4 用)。nil 表示禁用。
+func (d *Discoverer) SetMCPManager(m MCPTermToolkit) {
+	d.mcpToolkit = m
+}
+
+// SetMaxToolRounds 设置 agent loop 最大轮次(审核code-review Important#3:配置生效,不硬编码)。
+// main.go 装配时从 cfg.MCP.MaxToolRounds 读取后调用;默认 5。
+func (d *Discoverer) SetMaxToolRounds(n int) {
+	if n > 0 {
+		d.maxToolRounds = n
+	}
+}
+
+// generateChunk 是术语发现逐块 AI 调用入口,根据是否配置 MCP 工具选择路径:
+//   - 有 MCP 工具 + provider 支持 tool calling → RunWithTools(模型可核实候选术语标准写法)。
+//   - 否则 → 普通 provider.Generate(零回归)。
+//
+// RunToolsAwareGenerate 是注入点(避免 glossary 反向导入 mcp),nil 时降级。
+func (d *Discoverer) generateChunk(ctx context.Context, systemPrompt, userPrompt string, sessionInfo session.Session) (aiprovider.GenerateResult, error) {
+	if d.mcpToolkit != nil && d.mcpToolkit.HasTools() {
+		if tcp, ok := d.provider.(aiprovider.ToolCapableProvider); ok {
+			tools := d.mcpToolkit.ListTools(ctx)
+			if len(tools) > 0 {
+				req := aiprovider.GenerateRequest{
+					SystemPrompt: systemPrompt + "\n\n发现候选术语后,如对 canonical 标准写法不确定,可用搜索工具核实。",
+					Messages:     []aiprovider.Message{{Role: aiprovider.RoleUser, Content: userPrompt}},
+					Tools:        tools,
+				}
+				if RunToolsAwareGenerate != nil {
+					rounds := d.maxToolRounds // 审核code-review Important#3:跟随配置
+					if rounds <= 0 {
+						rounds = 5
+					}
+					return RunToolsAwareGenerate(ctx, tcp, d.mcpToolkit, req, rounds)
+				}
+			}
+		}
+	}
+	return d.provider.Generate(ctx, systemPrompt, userPrompt, sessionInfo)
+}
+
+// RunToolsAwareGenerate 是 agent loop 注入点,由 main.go 装配为 mcp.RunWithTools。
+// 与 recap.RunToolsAwareGenerate 等价(各自定义避免反向依赖)。
+var RunToolsAwareGenerate func(ctx context.Context, tcp aiprovider.ToolCapableProvider, mgr MCPTermToolkit, req aiprovider.GenerateRequest, maxRounds int) (aiprovider.GenerateResult, error)
 
 type DiscovererOption func(*Discoverer)
 
@@ -154,7 +210,7 @@ func (d *Discoverer) Discover(ctx context.Context, channelID string, sessionID s
 		var result aiprovider.GenerateResult
 		var err error
 		for attempt := 0; attempt <= d.maxRetries; attempt++ {
-			result, err = d.provider.Generate(ctx, discoverySystemPrompt, userPrompt, sessionInfo)
+			result, err = d.generateChunk(ctx, discoverySystemPrompt, userPrompt, sessionInfo)
 			if err == nil {
 				break
 			}

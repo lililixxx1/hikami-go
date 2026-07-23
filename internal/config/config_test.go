@@ -638,6 +638,84 @@ func TestApplyOverrides_ToolsEmptyStringClears(t *testing.T) {
 	}
 }
 
+// mcp section 覆盖测试(MCP 搜索工具配置)。
+func TestApplyOverrides_OverridesMCPFields(t *testing.T) {
+	cfg := baseCfg()
+	enabled := true
+	rounds := 8
+	servers := []MCPServerConfig{{Name: "test", Transport: "http", URL: "http://localhost:9090", Enabled: true}}
+	builtin := MCPBuiltinConfig{BraveAPIKey: "key123"}
+	overrides := map[string]json.RawMessage{
+		"mcp": rawJSON(t, MCPSectionDTO{
+			Enabled:       &enabled,
+			MaxToolRounds: &rounds,
+			Servers:       &servers,
+			Builtin:       &builtin,
+		}),
+	}
+	if err := ApplyOverrides(cfg, overrides); err != nil {
+		t.Fatalf("ApplyOverrides: %v", err)
+	}
+	if !cfg.MCP.Enabled {
+		t.Errorf("MCP.Enabled should be true")
+	}
+	if cfg.MCP.MaxToolRounds != 8 {
+		t.Errorf("MaxToolRounds = %d, want 8", cfg.MCP.MaxToolRounds)
+	}
+	if len(cfg.MCP.Servers) != 1 || cfg.MCP.Servers[0].Name != "test" {
+		t.Errorf("Servers not overridden: %+v", cfg.MCP.Servers)
+	}
+	if cfg.MCP.Builtin.BraveAPIKey != "key123" {
+		t.Errorf("Builtin.BraveAPIKey = %q", cfg.MCP.Builtin.BraveAPIKey)
+	}
+}
+
+// presence-aware:MCPSectionDTO 部分字段 nil 保留基线。
+func TestApplyOverrides_MCPPresenceAware(t *testing.T) {
+	cfg := baseCfg()
+	cfg.MCP.MaxToolRounds = 10 // 设基线
+	enabled := true
+	overrides := map[string]json.RawMessage{
+		"mcp": rawJSON(t, MCPSectionDTO{Enabled: &enabled}), // 其余字段 nil
+	}
+	if err := ApplyOverrides(cfg, overrides); err != nil {
+		t.Fatalf("ApplyOverrides: %v", err)
+	}
+	if !cfg.MCP.Enabled {
+		t.Errorf("Enabled should be overridden to true")
+	}
+	if cfg.MCP.MaxToolRounds != 10 {
+		t.Errorf("MaxToolRounds should retain baseline 10, got %d", cfg.MCP.MaxToolRounds)
+	}
+}
+
+// Servers 为空切片(非 nil)= 全量清空。
+func TestApplyOverrides_MCPClearServers(t *testing.T) {
+	cfg := baseCfg()
+	cfg.MCP.Servers = []MCPServerConfig{{Name: "old", Transport: "http"}}
+	emptyServers := []MCPServerConfig{}
+	overrides := map[string]json.RawMessage{
+		"mcp": rawJSON(t, MCPSectionDTO{Servers: &emptyServers}),
+	}
+	if err := ApplyOverrides(cfg, overrides); err != nil {
+		t.Fatalf("ApplyOverrides: %v", err)
+	}
+	if len(cfg.MCP.Servers) != 0 {
+		t.Errorf("Servers should be cleared, got %d items", len(cfg.MCP.Servers))
+	}
+}
+
+// EffectiveMaxToolRounds 兜底测试。
+func TestMCPConfig_EffectiveMaxToolRounds(t *testing.T) {
+	if (&MCPConfig{}).EffectiveMaxToolRounds() != 5 {
+		t.Error("零值应兜底 5")
+	}
+	m := MCPConfig{MaxToolRounds: 3}
+	if m.EffectiveMaxToolRounds() != 3 {
+		t.Error("正值应原样返回")
+	}
+}
+
 // r13 [Medium] NativeConfigured 要求密码：清除密码后 capability 关闭。
 func TestNativeConfigured_RequiresPassword(t *testing.T) {
 	cfg := baseCfg()

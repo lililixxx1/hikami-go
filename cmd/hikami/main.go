@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"hikami-go/internal/aiprovider"
 	"hikami-go/internal/archive"
 	"hikami-go/internal/asr"
 	"hikami-go/internal/biliutil"
@@ -30,6 +31,7 @@ import (
 	"hikami-go/internal/handler"
 	"hikami-go/internal/importer"
 	"hikami-go/internal/live_record"
+	"hikami-go/internal/mcp"
 	"hikami-go/internal/normalize"
 	"hikami-go/internal/notify"
 	"hikami-go/internal/publisher"
@@ -261,6 +263,28 @@ func main() {
 	)
 	recapHandler.SetGlossaryDiscoverer(glossaryDiscoverer)
 	recapHandler.SetNotifyManager(notifyMgr)
+
+	// MCP 搜索工具管理器:启动时按配置建立连接,注入 recap/glossary/Server。
+	// 未配置或连接失败时降级(Manager 无工具 → 上层走普通 Generate,零回归)。
+	mcpManager := mcp.NewManager()
+	defer mcpManager.Close() // LIFO:在 workerPool/sched/database 关闭前关闭 MCP 连接
+	if err := mcpManager.Reload(context.Background(), cfg.MCP); err != nil {
+		// Reload 内部已对单 server 失败做 Warn 降级,这里仅记录总体错误。
+		slog.Warn("mcp manager initial reload failed (degraded)", "error", err)
+	}
+	// 注入 agent loop 实现点(连接 recap 与 mcp 包,避免 recap 反向导入 mcp)。
+	recap.RunToolsAwareGenerate = func(ctx context.Context, tcp aiprovider.ToolCapableProvider, mgr recap.MCPToolkit, req aiprovider.GenerateRequest, maxRounds int) (aiprovider.GenerateResult, error) {
+		return mcp.RunWithTools(ctx, tcp, mcpManager, req, maxRounds)
+	}
+	glossary.RunToolsAwareGenerate = func(ctx context.Context, tcp aiprovider.ToolCapableProvider, mgr glossary.MCPTermToolkit, req aiprovider.GenerateRequest, maxRounds int) (aiprovider.GenerateResult, error) {
+		return mcp.RunWithTools(ctx, tcp, mcpManager, req, maxRounds)
+	}
+	recapHandler.SetMCPManager(mcpManager)       // Phase 4: handler 用它走 tool-calling
+	glossaryDiscoverer.SetMCPManager(mcpManager) // Phase 4: glossary 同理
+	glossaryDiscoverer.SetMaxToolRounds(cfg.MCP.EffectiveMaxToolRounds()) // 审核code-review Important#3
+	if mcpManager.HasTools() {
+		slog.Info("mcp tools available", "tools", len(mcpManager.ListTools(context.Background())))
+	}
 	asrHandler.SetOnSuccess(func(ctx context.Context, task worker.Task) {
 		ch, err := channelStore.Get(ctx, task.ChannelID)
 		if err != nil || !ch.AutoRecap {
@@ -449,6 +473,7 @@ func main() {
 		cookieAccountStore,
 		notifyMgr,
 	)
+	server.SetMCPManager(mcpManager) // PUT /api/config/mcp 保存后调 Reload 热重载
 	// 设计 4.5：把能力判断下沉到 recap.CreateTask，注入一个读取 server 最新运行时状态的
 	// CapabilityChecker（而非 main.go 启动时 Probe 的陈旧快照）。必须在 workerPool.Start() 之前注入：
 	// 否则 recoverRunning 重新入队的 ASR 任务可能在 checker 注入前完成，触发回调时 CreateTask
