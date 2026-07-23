@@ -90,6 +90,7 @@ export interface MCPServerConfig {
   env: string[]
   enabled: boolean
   timeout_sec: number
+  headers?: Record<string, string>
 }
 
 export interface MCPBuiltinConfig {

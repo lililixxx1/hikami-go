@@ -380,14 +380,15 @@ type MCPConfig struct {
 // Transport 取值:"http"(Streamable HTTP)/"sse"/"stdio"。
 // http/sse 用 URL;stdio 用 Command+Args+Env(子进程)。
 type MCPServerConfig struct {
-	Name       string   `mapstructure:"name"`        // 唯一标识,用于日志与工具名前缀
-	Transport  string   `mapstructure:"transport"`   // http | sse | stdio
-	URL        string   `mapstructure:"url"`         // http/sse 模式的 server URL
-	Command    string   `mapstructure:"command"`     // stdio 模式的可执行命令
-	Args       []string `mapstructure:"args"`        // stdio 模式的命令参数
-	Env        []string `mapstructure:"env"`         // stdio 模式的环境变量(KEY=VALUE)
-	Enabled    bool     `mapstructure:"enabled"`     // 是否启用此 server
-	TimeoutSec int      `mapstructure:"timeout_sec"` // 单次工具调用超时(秒),<=0 用默认 30
+	Name       string            `mapstructure:"name"`        // 唯一标识,用于日志与工具名前缀
+	Transport  string            `mapstructure:"transport"`   // http | sse | stdio
+	URL        string            `mapstructure:"url"`         // http/sse 模式的 server URL
+	Command    string            `mapstructure:"command"`     // stdio 模式的可执行命令
+	Args       []string          `mapstructure:"args"`        // stdio 模式的命令参数
+	Env        []string          `mapstructure:"env"`         // stdio 模式的环境变量(KEY=VALUE)
+	Enabled    bool              `mapstructure:"enabled"`     // 是否启用此 server
+	TimeoutSec int               `mapstructure:"timeout_sec"` // 单次工具调用超时(秒),<=0 用默认 30
+	Headers    map[string]string `mapstructure:"headers"`     // http/sse 模式的自定义请求头(如 Authorization)
 }
 
 // MCPBuiltinConfig 内置搜索工具的 API 密钥配置。

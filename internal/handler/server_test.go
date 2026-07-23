@@ -265,8 +265,8 @@ func TestMCPConfigRoundTrip(t *testing.T) {
 		t.Fatalf("初始 mcp.enabled 应为 false, got: %s", getRec.Body.String())
 	}
 
-	// 2. PUT 开启 + 配置 server + 密钥
-	putBody := `{"enabled":true,"max_tool_rounds":7,"servers":[{"name":"srv1","transport":"http","url":"http://localhost:9090","enabled":true}],"builtin":{"brave_api_key":"secret123"}}`
+	// 2. PUT 开启 + 配置 server(含 headers) + 密钥
+	putBody := `{"enabled":true,"max_tool_rounds":7,"servers":[{"name":"srv1","transport":"http","url":"http://localhost:9090","enabled":true,"headers":{"Authorization":"Bearer y"}}],"builtin":{"brave_api_key":"secret123"}}`
 	putRec := performRequest(server, http.MethodPut, "/api/config/mcp", putBody)
 	if putRec.Code != http.StatusOK {
 		t.Fatalf("PUT mcp status = %d, body=%s", putRec.Code, putRec.Body.String())
@@ -285,6 +285,10 @@ func TestMCPConfigRoundTrip(t *testing.T) {
 	if !strings.Contains(putRec.Body.String(), `"srv1"`) {
 		t.Fatalf("响应应含 server srv1, got: %s", putRec.Body.String())
 	}
+	// headers 注入往返:响应应含提交的 Authorization 头
+	if !strings.Contains(putRec.Body.String(), `"Authorization":"Bearer y"`) {
+		t.Fatalf("响应应含 server headers, got: %s", putRec.Body.String())
+	}
 
 	// 4. GET 回读一致(round-trip)
 	getRec2 := performRequest(server, http.MethodGet, "/api/config/mcp", "")
@@ -293,6 +297,9 @@ func TestMCPConfigRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(getRec2.Body.String(), `"brave_api_key_set":true`) {
 		t.Fatalf("GET 回读应反映已设置, got: %s", getRec2.Body.String())
+	}
+	if !strings.Contains(getRec2.Body.String(), `"Authorization":"Bearer y"`) {
+		t.Fatalf("GET 回读应含 server headers, got: %s", getRec2.Body.String())
 	}
 
 	// 5. runtime_settings 表持久化了 mcp section

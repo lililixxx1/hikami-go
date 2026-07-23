@@ -643,7 +643,7 @@ func TestApplyOverrides_OverridesMCPFields(t *testing.T) {
 	cfg := baseCfg()
 	enabled := true
 	rounds := 8
-	servers := []MCPServerConfig{{Name: "test", Transport: "http", URL: "http://localhost:9090", Enabled: true}}
+	servers := []MCPServerConfig{{Name: "test", Transport: "http", URL: "http://localhost:9090", Enabled: true, Headers: map[string]string{"Authorization": "Bearer x"}}}
 	builtin := MCPBuiltinConfig{BraveAPIKey: "key123"}
 	overrides := map[string]json.RawMessage{
 		"mcp": rawJSON(t, MCPSectionDTO{
@@ -664,6 +664,9 @@ func TestApplyOverrides_OverridesMCPFields(t *testing.T) {
 	}
 	if len(cfg.MCP.Servers) != 1 || cfg.MCP.Servers[0].Name != "test" {
 		t.Errorf("Servers not overridden: %+v", cfg.MCP.Servers)
+	}
+	if got := cfg.MCP.Servers[0].Headers["Authorization"]; got != "Bearer x" {
+		t.Errorf("Servers[0].Headers[Authorization] = %q, want %q", got, "Bearer x")
 	}
 	if cfg.MCP.Builtin.BraveAPIKey != "key123" {
 		t.Errorf("Builtin.BraveAPIKey = %q", cfg.MCP.Builtin.BraveAPIKey)

@@ -9,7 +9,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { HMessage } from '@/components/ui/message'
-import { HCard, HButton, HInput, HSelect, HSwitch } from '@/components/ui'
+import { HCard, HButton, HInput, HSelect, HSwitch, HTextarea } from '@/components/ui'
 import { getMCPConfig, updateMCPConfig } from '@/api/settings'
 import type { MCPConfig, MCPServerConfig, MCPConfigUpdate } from '@/api/settings'
 
@@ -32,6 +32,23 @@ const transportOptions = [
   { label: 'SSE', value: 'sse' },
   { label: 'Stdio (子进程)', value: 'stdio' },
 ]
+
+// headers(map) ↔ 多行文本(每行 KEY: VALUE)的双向转换,供 HTextarea 使用。
+function headersToText(headers?: Record<string, string>): string {
+  if (!headers) return ''
+  return Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join('\n')
+}
+function textToHeaders(text: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const line of text.split('\n')) {
+    const t = line.trim()
+    if (!t) continue
+    const sep = t.indexOf(':')
+    if (sep <= 0) continue // 跳过空 key / 无冒号行
+    out[t.slice(0, sep).trim()] = t.slice(sep + 1).trim()
+  }
+  return out
+}
 
 async function fetchConfig() {
   try {
@@ -59,6 +76,7 @@ function addServer() {
     env: [],
     enabled: true,
     timeout_sec: 30,
+    headers: {},
   })
 }
 
@@ -176,6 +194,12 @@ defineExpose({ reload: fetchConfig })
         <label class="form-label">URL</label>
         <div class="form-field">
           <HInput v-model="srv.url" placeholder="http://localhost:9090/mcp" />
+        </div>
+      </div>
+      <div v-if="srv.transport === 'http' || srv.transport === 'sse'" class="form-row-inline">
+        <label class="form-label">请求头</label>
+        <div class="form-field">
+          <HTextarea :model-value="headersToText(srv.headers)" @update:model-value="srv.headers = textToHeaders(String($event))" placeholder="每行一个,格式 KEY: VALUE(如 Authorization: Bearer xxx)" :rows="2" />
         </div>
       </div>
       <template v-else>

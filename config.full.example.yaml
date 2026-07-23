@@ -115,6 +115,15 @@ mcp:
   #     env: ["API_KEY=xxx"]
   #     enabled: true
   #     timeout_sec: 30
+  # 示例:连接一个需鉴权的远程 HTTP MCP server(用 headers 注入 Authorization)
+  # servers:
+  #   - name: "stepfun-search"
+  #     transport: "http"
+  #     url: "https://api.stepfun.com/step_plan/v1/mcp/web_search/mcp"
+  #     headers:
+  #       Authorization: "Bearer <your-token>"
+  #     enabled: true
+  #     timeout_sec: 30
   servers: []
 
 downloader:

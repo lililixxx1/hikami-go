@@ -3174,14 +3174,15 @@ type mcpBuiltinConfigResponse struct {
 }
 
 type mcpServerConfigResponse struct {
-	Name       string   `json:"name"`
-	Transport  string   `json:"transport"`
-	URL        string   `json:"url"`
-	Command    string   `json:"command"`
-	Args       []string `json:"args"`
-	Env        []string `json:"env"`
-	Enabled    bool     `json:"enabled"`
-	TimeoutSec int      `json:"timeout_sec"`
+	Name       string            `json:"name"`
+	Transport  string            `json:"transport"`
+	URL        string            `json:"url"`
+	Command    string            `json:"command"`
+	Args       []string          `json:"args"`
+	Env        []string          `json:"env"`
+	Enabled    bool              `json:"enabled"`
+	TimeoutSec int               `json:"timeout_sec"`
+	Headers    map[string]string `json:"headers"`
 }
 
 type mcpConfigResponse struct {
@@ -3203,6 +3204,7 @@ func newMCPConfigResponse(cfg config.Config) mcpConfigResponse {
 			Env:        sv.Env,
 			Enabled:    sv.Enabled,
 			TimeoutSec: sv.TimeoutSec,
+			Headers:    sv.Headers,
 		})
 	}
 	return mcpConfigResponse{

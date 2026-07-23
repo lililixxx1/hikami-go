@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"hikami-go/internal/aiprovider"
@@ -46,7 +47,7 @@ type builtinEntry struct {
 type connectedServer struct {
 	name    string
 	c       *client.Client
-	tools   []mcp.Tool // 初始化时 ListTools 的快照
+	tools   []mcp.Tool    // 初始化时 ListTools 的快照
 	timeout time.Duration // 单次工具调用超时(审核 code-review Important#2:TimeoutSec 生效)
 	// inflight 跟踪在途 CallTool 调用(Reload 关闭前等待,审核 code-review Important#1)。
 	inflight sync.WaitGroup
@@ -279,12 +280,16 @@ func connectOne(ctx context.Context, sc config.MCPServerConfig) (*client.Client,
 }
 
 // buildClient 按 transport 类型构造 mcp-go client。
+//
+// http/sse 模式会把 sc.Headers 作为自定义请求头注入(如 Authorization 鉴权);
+// stdio 不支持请求头,鉴权场景改用 env 字段。
+// sc.Headers 为 nil 时 mcp-go 的 WithHTTPHeaders/WithHeaders 是 no-op,行为不变。
 func buildClient(sc config.MCPServerConfig) (*client.Client, error) {
 	switch sc.Transport {
 	case "http", "streamable_http":
-		return client.NewStreamableHttpClient(sc.URL)
+		return client.NewStreamableHttpClient(sc.URL, transport.WithHTTPHeaders(sc.Headers))
 	case "sse":
-		return client.NewSSEMCPClient(sc.URL)
+		return client.NewSSEMCPClient(sc.URL, transport.WithHeaders(sc.Headers))
 	case "stdio":
 		if sc.Command == "" {
 			return nil, fmt.Errorf("stdio server %q missing command", sc.Name)

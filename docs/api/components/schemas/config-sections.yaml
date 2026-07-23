@@ -517,6 +517,11 @@ MCPServerConfig:
     timeout_sec:
       type: integer
       description: 单次工具调用超时(秒),<=0 用默认30
+    headers:
+      type: object
+      additionalProperties:
+        type: string
+      description: 自定义 HTTP 请求头(http/sse transport,如 Authorization 鉴权)
 
 MCPBuiltinConfigResponse:
   type: object
