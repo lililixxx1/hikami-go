@@ -113,19 +113,22 @@ onUnmounted(() => {
   font-weight: 600;
   color: var(--text);
   flex-shrink: 0;
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
 }
 
 .brand-icon {
   width: 28px;
   height: 28px;
-  border-radius: var(--radius-md);
-  background: var(--accent);
+  border-radius: 9px;
+  background: linear-gradient(135deg, var(--accent) 0%, #338ae6 100%);
   color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
   font-weight: 700;
   font-size: 14px;
+  box-shadow: 0 2px 6px rgba(0, 102, 204, 0.25);
 }
 
 .topbar-nav {
@@ -155,6 +158,7 @@ onUnmounted(() => {
 .topbar-nav-item.active {
   color: var(--accent);
   background: var(--accent-bg);
+  font-weight: 600;
 }
 
 .topbar-spacer { flex: 1; }

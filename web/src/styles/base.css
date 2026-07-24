@@ -21,3 +21,23 @@ a:hover { color: var(--accent-hover); }
   background: var(--accent); border-radius: var(--radius-sm);
 }
 .skip-link:focus { top: 8px; }
+
+/* ===== v2 视觉统一:stagger 入场动画(原型 line 64-81) ===== */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.stagger > * { animation: fadeUp 0.5s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.stagger > *:nth-child(1) { animation-delay: 0.03s; }
+.stagger > *:nth-child(2) { animation-delay: 0.06s; }
+.stagger > *:nth-child(3) { animation-delay: 0.09s; }
+.stagger > *:nth-child(4) { animation-delay: 0.12s; }
+.stagger > *:nth-child(5) { animation-delay: 0.15s; }
+.stagger > *:nth-child(6) { animation-delay: 0.18s; }
+.stagger > *:nth-child(7) { animation-delay: 0.21s; }
+.stagger > *:nth-child(8) { animation-delay: 0.24s; }
+
+/* 无障碍:尊重系统「减少动态效果」设置(审核 Important#3) */
+@media (prefers-reduced-motion: reduce) {
+  .stagger > * { animation: none; }
+}

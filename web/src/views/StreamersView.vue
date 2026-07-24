@@ -202,7 +202,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="streamers-page">
+  <div class="streamers-page stagger">
     <div class="page-header">
       <h2>我的主播</h2>
       <div class="page-actions">

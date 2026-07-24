@@ -1,37 +1,45 @@
 /* web/src/styles/design-tokens.css */
-/* V10 设计 token（从 ~/文档/V10 Hikami-Go 全页面重设计.html :root 提取） */
+/* V10 设计 token — v2 视觉统一升级(2026-07-24):accent 加深、圆角加大、
+   新增 font-display(Sora)/font-mono、success 改暖、live/recording 语义色。
+   对齐 hikami-full-redesign.html 原型。改 token = 所有 var() 消费者自动统一。 */
 :root {
   --canvas: #ffffff;
-  --surface: #fbfbfa;
-  --surface-warm: #f6f5f4;
+  --surface: #fafaf9;
+  --surface-warm: #f5f4f2;
   --sidebar-bg: #fafaf8;
-  --text: rgba(0,0,0,0.95);
-  --text-secondary: #615d59;
-  --text-muted: #a39e98;
-  --border: rgba(0,0,0,0.08);
-  --border-light: rgba(0,0,0,0.05);
-  --accent: #0075de;
-  --accent-hover: #005bab;
-  --accent-bg: #f2f7fc;
-  --accent-glow: rgba(0,117,222,0.14);
-  --success: #2a9d99;
-  --success-bg: #edf8f7;
+  --text: #1a1917;
+  --text-secondary: #5c5852;
+  --text-muted: #9e9890;
+  --border: rgba(0,0,0,0.07);
+  --border-light: rgba(0,0,0,0.04);
+  --accent: #0066cc;
+  --accent-hover: #0052a3;
+  --accent-bg: #eef5fc;
+  --accent-glow: rgba(0,102,204,0.08);
+  --live: #e85d04;
+  --live-bg: #fef4ec;
+  --recording: #d00000;
+  --recording-bg: #fef2f2;
+  --success: #1a7a5c;
+  --success-bg: #edf7f3;
   --warning: #dd5b00;
   --warning-bg: #fef6ee;
-  --danger: #e03e2d;
-  --danger-bg: #fef2f2;
-  --radius-sm: 4px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 14px;
+  --danger: #d63020;
+  --danger-bg: #fef2f1;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
   --radius-full: 999px;
   --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
-  --shadow-md: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
-  --shadow-lg: 0 4px 12px rgba(0,0,0,0.06), 0 2px 4px rgba(0,0,0,0.04);
+  --shadow-md: 0 2px 8px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-lg: 0 4px 16px rgba(0,0,0,0.07), 0 2px 4px rgba(0,0,0,0.04);
   --shadow-xl: 0 8px 24px rgba(0,0,0,0.08), 0 2px 8px rgba(0,0,0,0.04);
-  --shadow-card: 0 1px 3px rgba(0,0,0,0.03), 0 3px 8px rgba(0,0,0,0.02);
-  --shadow-card-hover: 0 1px 2px rgba(0,0,0,0.05), 0 4px 14px rgba(0,0,0,0.04);
-  --sidebar-w: 228px;
-  --topbar-h: 52px;
-  --font: Inter, -apple-system, "Segoe UI", Helvetica, sans-serif;
+  --shadow-card: 0 1px 3px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.02);
+  --shadow-card-hover: 0 2px 4px rgba(0,0,0,0.06), 0 8px 24px rgba(0,0,0,0.05);
+  --sidebar-w: 220px;
+  --topbar-h: 54px;
+  --font-display: 'Sora', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-mono: "SF Mono", "Cascadia Code", "JetBrains Mono", monospace;
 }

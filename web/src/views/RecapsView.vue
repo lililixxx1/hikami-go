@@ -523,7 +523,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="recaps-view">
+  <div class="recaps-view stagger">
     <RecapToolbarV10
       v-model:active-tab="activeTab"
       :failed-count="failedCount"

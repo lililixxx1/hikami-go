@@ -83,7 +83,7 @@ const emit = defineEmits<{
 }
 
 .alert-card.danger {
-  background: rgba(224, 62, 45, 0.08);
+  background: var(--danger-bg);
   color: var(--danger);
   cursor: pointer;
 }
@@ -91,7 +91,7 @@ const emit = defineEmits<{
 .alert-card.danger:hover { opacity: 0.85; }
 
 .alert-card.warning {
-  background: rgba(221, 91, 0, 0.08);
+  background: var(--warning-bg);
   color: var(--warning);
 }
 

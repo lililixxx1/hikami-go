@@ -54,10 +54,10 @@
 .pill-dot {
   width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0;
 }
-.pill-success { background: rgba(26,174,57,0.1); color: #0d7a26; }
-.pill-warning { background: rgba(221,91,0,0.1); color: #ad4700; }
-.pill-danger { background: rgba(224,62,45,0.1); color: #b83022; }
-.pill-info { background: rgba(0,117,222,0.1); color: #005bab; }
+.pill-success { background: var(--success-bg); color: var(--success); }
+.pill-warning { background: var(--warning-bg); color: var(--warning); }
+.pill-danger { background: var(--danger-bg); color: var(--danger); }
+.pill-info { background: var(--accent-bg); color: var(--accent); }
 .pill-neutral { background: var(--surface); color: var(--text-secondary); }
 
 /* ===== Form (HInput / HTextarea / HSelect) ===== */
