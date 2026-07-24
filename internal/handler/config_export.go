@@ -23,12 +23,14 @@ import (
 
 // ConfigExportBundle is the top-level JSON structure for full config export.
 //
-// 全部 6 个全局配置段（recap_ai/publish/webdav/asr_s3/dashscope/archive）均以指针形式参与
-// 备份，缺失段反序列化后为 nil，导入侧据此用「段是否存在」判断是否覆盖（统一 presence 语义）。
+// 全部 7 个全局配置段（recap_ai/publish/webdav/asr_s3/dashscope/archive/mcp）均以指针
+// 形式参与备份，缺失段反序列化后为 nil，导入侧据此用「段是否存在」判断是否覆盖（统一 presence 语义）。
 //
-// WebDAV / ASR S3 使用专用 DTO（WebDAVExportSection / ASRS3ExportSection）而非直接嵌入
-// config 包的结构体，原因是后者含明文密钥字段（WebDAVConfig.Password、ASRS3Config.AccessKeySecret），
-// 会被 encoding/json 直接序列化进导出文件，违背项目「密钥字段不进配置 DTO，统一走 secrets 表」的设计
+// WebDAV / ASR S3 / MCP 使用专用投影 DTO（WebDAVExportSection / ASRS3ExportSection /
+// MCPExportSection）而非直接嵌入 config 包的结构体，原因是后者含明文密钥字段
+// （WebDAVConfig.Password、ASRS3Config.AccessKeySecret、MCPConfig.Builtin.BraveAPIKey/
+// TavilyAPIKey、MCPServerConfig.Headers["Authorization"]），会被 encoding/json 直接
+// 序列化进导出文件，违背项目「密钥字段不进配置 DTO，统一走 secrets 表」的设计
 // （见 internal/config/config.go 中 ASRS3SectionDTO 的注释）。这里只导出非密钥字段。
 // dashscope/archive 不含明文密钥，直接嵌 config 结构体。
 type ConfigExportBundle struct {
@@ -40,6 +42,7 @@ type ConfigExportBundle struct {
 	ASRS3        *ASRS3ExportSection     `json:"asr_s3,omitempty"`
 	DashScope    *config.DashScopeConfig `json:"dashscope,omitempty"`
 	Archive      *config.ArchiveConfig   `json:"archive,omitempty"`
+	MCP          *MCPExportSection       `json:"mcp,omitempty"`
 	Secrets      map[string]string       `json:"secrets"`
 	Channels     []channel.UpsertInput   `json:"channels"`
 	Glossary     GlossaryExportSection   `json:"glossary"`
@@ -90,6 +93,157 @@ func asrs3ToExport(c config.ASRS3Config) *ASRS3ExportSection {
 	}
 }
 
+// MCPExportSection 是 MCP 配置的导出投影:剔除明文密钥(Builtin.BraveAPIKey/
+// TavilyAPIKey、Servers[].Headers["Authorization"]),密钥随 Secrets 段走。
+// 仿 WebDAVExportSection / ASRS3ExportSection(本项目「密钥字段不进配置 DTO,
+// 统一走 secrets 表」的设计;见 internal/config/config.go 中 MCPSectionDTO 注释)。
+type MCPExportSection struct {
+	Enabled       bool              `json:"enabled"`
+	Servers       []mcpServerExport `json:"servers"`
+	Builtin       mcpBuiltinExport  `json:"builtin"`
+	MaxToolRounds int               `json:"max_tool_rounds"`
+}
+
+// mcpServerExport 是单个外部 MCP server 的导出投影。Headers 不含 Authorization
+// (鉴权 token 进 Secrets);其它头(如 User-Agent)视为配置项留在投影里。
+type mcpServerExport struct {
+	Name       string            `json:"name"`
+	Transport  string            `json:"transport"`
+	URL        string            `json:"url"`
+	Command    string            `json:"command"`
+	Args       []string          `json:"args"`
+	Env        []string          `json:"env"`
+	Enabled    bool              `json:"enabled"`
+	TimeoutSec int               `json:"timeout_sec"`
+	Headers    map[string]string `json:"headers"`
+}
+
+// mcpBuiltinExport 只保留内置搜索工具的 env 名字段;明文 key(BraveAPIKey/TavilyAPIKey)
+// 不投影,值随 Secrets 段走。MCP key 既能存明文又能存 env 名(config.MCPBuiltinConfig),
+// 导出投影只留 env 名,导入时把 secrets 里的明文回填到 BraveAPIKey 字段。
+type mcpBuiltinExport struct {
+	BraveAPIKeyEnv  string `json:"brave_api_key_env"`
+	TavilyAPIKeyEnv string `json:"tavily_api_key_env"`
+}
+
+// mcpToExport 把 config.MCPConfig 投影成导出 DTO,并把鉴权头/内置 key 明文写入
+// secrets(调用方传入 bundle.Secrets)。返回值不含任何明文密钥。
+//
+// headers 仅在原 Headers 非空时分配(保持 nil 语义,避免 runtime_settings JSON 从
+// null→{})。Authorization 头的抽取按大小写无关匹配(EqualFold),覆盖所有大小写变体。
+// 下标参与 secrets key 构成,彻底防同名/归一化碰撞(见 mcpServerSecretKey)。
+func mcpToExport(c config.MCPConfig, secrets map[string]string) *MCPExportSection {
+	servers := make([]mcpServerExport, 0, len(c.Servers))
+	for i, sv := range c.Servers {
+		var headers map[string]string
+		if len(sv.Headers) > 0 {
+			headers = make(map[string]string, len(sv.Headers))
+			for k, v := range sv.Headers {
+				if strings.EqualFold(k, "Authorization") {
+					if secrets != nil {
+						secrets[mcpServerSecretKey(i, sv.Name)] = v
+					}
+					continue
+				}
+				headers[k] = v
+			}
+		}
+		servers = append(servers, mcpServerExport{
+			Name:       sv.Name,
+			Transport:  sv.Transport,
+			URL:        sv.URL,
+			Command:    sv.Command,
+			Args:       sv.Args,
+			Env:        sv.Env,
+			Enabled:    sv.Enabled,
+			TimeoutSec: sv.TimeoutSec,
+			Headers:    headers,
+		})
+	}
+	if secrets != nil {
+		if bk := strings.TrimSpace(c.Builtin.BraveAPIKey); bk != "" {
+			secrets["MCP_BRAVE_API_KEY"] = bk
+		}
+		if tk := strings.TrimSpace(c.Builtin.TavilyAPIKey); tk != "" {
+			secrets["MCP_TAVILY_API_KEY"] = tk
+		}
+	}
+	return &MCPExportSection{
+		Enabled: c.Enabled,
+		Servers: servers,
+		Builtin: mcpBuiltinExport{
+			BraveAPIKeyEnv:  c.Builtin.BraveAPIKeyEnv,
+			TavilyAPIKeyEnv: c.Builtin.TavilyAPIKeyEnv,
+		},
+		MaxToolRounds: c.MaxToolRounds,
+	}
+}
+
+// mcpServerSecretKey 把 server 下标 + name 转成稳定 secrets key。
+// 格式:MCP_SERVER_{index}_{NAME大写非字母数字转_}_AUTHORIZATION。
+// 双键(index+name)彻底防碰撞:即使两个 name 归一化后相同(my-server vs my_server),
+// index 不同 → key 不同 → 各自 token 正确回填。export/import 同序遍历保证可逆。
+func mcpServerSecretKey(index int, name string) string {
+	var b strings.Builder
+	b.Grow(len(name) + 40)
+	fmt.Fprintf(&b, "MCP_SERVER_%d_", index)
+	for _, r := range strings.ToUpper(name) {
+		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	b.WriteString("_AUTHORIZATION")
+	return b.String()
+}
+
+// mcpFromExport 把导出 DTO 还原成 config.MCPConfig,从 secrets 回填密钥。
+// 遍历顺序与 mcpToExport 一致,用相同 index 查 secrets key(可逆)。
+func mcpFromExport(e *MCPExportSection, secrets map[string]string) config.MCPConfig {
+	servers := make([]config.MCPServerConfig, 0, len(e.Servers))
+	for i, sv := range e.Servers {
+		headers := sv.Headers
+		if secrets != nil {
+			if auth, ok := secrets[mcpServerSecretKey(i, sv.Name)]; ok && auth != "" {
+				if headers == nil {
+					headers = make(map[string]string)
+				}
+				headers["Authorization"] = auth
+			}
+		}
+		servers = append(servers, config.MCPServerConfig{
+			Name:       sv.Name,
+			Transport:  sv.Transport,
+			URL:        sv.URL,
+			Command:    sv.Command,
+			Args:       sv.Args,
+			Env:        sv.Env,
+			Enabled:    sv.Enabled,
+			TimeoutSec: sv.TimeoutSec,
+			Headers:    headers,
+		})
+	}
+	c := config.MCPConfig{
+		Enabled:       e.Enabled,
+		Servers:       servers,
+		MaxToolRounds: e.MaxToolRounds,
+		Builtin: config.MCPBuiltinConfig{
+			BraveAPIKeyEnv:  e.Builtin.BraveAPIKeyEnv,
+			TavilyAPIKeyEnv: e.Builtin.TavilyAPIKeyEnv,
+		},
+	}
+	if secrets != nil {
+		if bk, ok := secrets["MCP_BRAVE_API_KEY"]; ok {
+			c.Builtin.BraveAPIKey = bk
+		}
+		if tk, ok := secrets["MCP_TAVILY_API_KEY"]; ok {
+			c.Builtin.TavilyAPIKey = tk
+		}
+	}
+	return c
+}
+
 type GlossaryExportSection struct {
 	Global  *glossary.GlossaryExport            `json:"global,omitempty"`
 	Channel map[string]*glossary.GlossaryExport `json:"channels,omitempty"`
@@ -135,6 +289,7 @@ func (s *Server) handleExportConfig(ctx *gin.Context) {
 	publish := s.cfg.Publish
 	dashscope := s.cfg.DashScope
 	archive := s.cfg.Archive
+	mcp := s.cfg.MCP
 	bundle.RecapAI = &recapAI
 	bundle.Publish = &publish
 	bundle.DashScope = &dashscope
@@ -142,6 +297,10 @@ func (s *Server) handleExportConfig(ctx *gin.Context) {
 	bundle.WebDAV = webdavToExport(s.cfg.WebDAV)
 	bundle.ASRS3 = asrs3ToExport(s.cfg.ASRS3)
 	s.publishMu.RUnlock()
+
+	// MCP 段:投影 DTO 剔除明文密钥(Builtin key + Authorization 头),密钥随 Secrets 走。
+	// 必须在下方 Secrets 收集段之前调用,因为它要写 bundle.Secrets。
+	bundle.MCP = mcpToExport(mcp, bundle.Secrets)
 
 	// Secrets (actual values)
 	secretList, err := s.secrets.List(ctx.Request.Context())
@@ -290,6 +449,7 @@ func (s *Server) handleImportConfig(ctx *gin.Context) {
 	nextArchive := s.cfg.Archive
 	nextWebDAV := s.cfg.WebDAV
 	nextASRS3 := s.cfg.ASRS3
+	nextMCP := s.cfg.MCP // 基线拷贝:bundle 无 mcp 段时保持不变(零回归)
 
 	// tombstone 判定的 hasSecret helper：bundle.Secrets 是否含某 env key。
 	hasSecret := func(envKey string) bool {
@@ -351,6 +511,17 @@ func (s *Server) handleImportConfig(ctx *gin.Context) {
 		nextASRS3.SetAccessKeyManaged(asrs3Managed)
 		sections = append(sections, sectionDTO{"asr_s3", asrs3ConfigToDTO(nextASRS3, asrs3Managed)})
 	}
+	if bundle.MCP != nil {
+		// 从 bundle.MCP + bundle.Secrets 还原完整 MCPConfig(密钥从 secrets 回填)。
+		// 与 PUT /api/config/mcp(updateMCPConfig)走同一 MCPSectionDTO + ApplyOverrides 路径。
+		nextMCP = mcpFromExport(bundle.MCP, bundle.Secrets)
+		sections = append(sections, sectionDTO{"mcp", config.MCPSectionDTO{
+			Enabled:       &nextMCP.Enabled,
+			Servers:       &nextMCP.Servers,
+			Builtin:       &nextMCP.Builtin,
+			MaxToolRounds: &nextMCP.MaxToolRounds,
+		}})
+	}
 
 	// 待写入的 secrets（剔除空值）。
 	type secretKV struct{ k, v string }
@@ -406,6 +577,7 @@ func (s *Server) handleImportConfig(ctx *gin.Context) {
 	s.cfg.Archive = nextArchive
 	s.cfg.WebDAV = nextWebDAV
 	s.cfg.ASRS3 = nextASRS3
+	s.cfg.MCP = nextMCP
 	// 先清理旧 env keys（overwrite 下避免残留旧密钥被读到），再 set 新值。
 	if strategy == "overwrite" {
 		for k := range oldSecretKeys {
@@ -419,7 +591,17 @@ func (s *Server) handleImportConfig(ctx *gin.Context) {
 	result.Details.SecretsCount = len(newSecrets)
 	cfgSnapshot := *s.cfg // 直接拷贝，避免持锁调 configSnapshot()（它会 RLock，与当前 Lock 互斥/冗余）。
 	gen := s.bumpConfigGen()
+	mcpChanged := bundle.MCP != nil // 锁外按需触发 MCP 热重载（无 MCP 改动时不 Reload）
+	mcpManager := s.mcpManager      // 快照（Phase 3 注入），锁外调 Reload 避免死锁
 	s.publishMu.Unlock()
+
+	// MCP 段变更后热重载连接（与 PUT /api/config/mcp 一致）；失败仅告警不阻断响应
+	// （MCP 是增强项，降级可接受）。
+	if mcpChanged && mcpManager != nil {
+		if err := mcpManager.Reload(cctx, cfgSnapshot.MCP); err != nil {
+			slog.Warn("mcp manager reload after import failed (degraded)", "error", err)
+		}
+	}
 
 	// === 阶段二：非配置数据（overwrite 清理 + channels/glossary/templates/bili_accounts）===
 	// 仅在核心事务成功后执行；这些 store 无 *Tx 接口，失败记 warning 继续（与原行为一致）。
