@@ -44,7 +44,36 @@ make run          # 启动
 
 启动后浏览器打开 **http://127.0.0.1:6334** 就是管理界面。
 
-**Windows 用户**:可直接到 [Releases](../../releases) 下载已内嵌前端 + 裁剪版 ffmpeg 的单文件 exe(`*-desktop.exe`),双击运行后托盘图标「打开管理界面」即可,无需另装 ffmpeg、无需命令行。
+**Windows 用户**:可直接到 [Releases](../../releases) 下载预编译的单文件 exe,无需命令行。裁剪版 ffmpeg 只编译了本项目用到的 demuxer / 转码器(录制流复制不编码、仅 normalize/importer 需编码器),体积约完整版的 1/8。
+
+#### 该下哪个版本?
+
+Releases 里有 4 个 Windows 产物,按你的使用场景对号入座:
+
+| 产物 | 适用场景 | 说明 |
+|------|----------|------|
+| **`hikami-windows-amd64-desktop-ffmpeg.exe`** ✨推荐 | 自己电脑日常挂着录直播 | 双击运行,**托盘图标 + 无黑窗**,自带 ffmpeg,开箱即用 |
+| `hikami-windows-amd64-desktop.exe` | 同上,但机器已装 ffmpeg | 比上面少 3M(去掉内嵌 ffmpeg),其余完全一样 |
+| **`hikami-windows-amd64-ffmpeg.exe`** | 服务器 / 后台跑、命令行操作 | 普通控制台程序,自带 ffmpeg,日志打 stdout |
+| `hikami-windows-amd64.exe` | 同上,但服务器已装 ffmpeg | 去掉内嵌 ffmpeg 的控制台版(最精简) |
+
+> **命名约定**:`-ffmpeg` = 内嵌了 ffmpeg(无需另装,开箱即用);无后缀 = 不内嵌(需系统已装 ffmpeg,体积更小)。`-desktop` = 托盘 + 隐藏黑窗(双击运行)。所有版本**功能完全一样**,只是 ffmpeg 来源和运行形态不同。不确定就选 `hikami-windows-amd64-desktop-ffmpeg.exe`。
+
+#### 双击运行(desktop 版)
+
+下载 `*-desktop-ffmpeg.exe`(或机器已装 ffmpeg 则用 `*-desktop.exe`)后双击,任务栏右下角出现托盘图标 → 右键「打开管理界面」即可。日志在 `%LOCALAPPDATA%\Hikami-Go\hikami.log`。
+
+#### 命令行运行 / 后台服务(非 desktop 版)
+
+```bash
+# 命令行直接跑(日志打到终端)
+hikami-windows-amd64-ffmpeg.exe -config config.yaml
+
+# 后台服务:推荐用 NSSM 包装成 Windows Service
+# 下载 NSSM → nssm install hikami → 填 exe 路径和参数 → 自动开机启动 + 崩溃重启
+```
+
+> ⚠️ **无显示器 / 无桌面会话的 Windows 服务器(如 Server Core、以 Service 跑)请务必用非 desktop 版**。desktop 版依赖系统托盘(Win32 `Shell_NotifyIcon`),在没有桌面会话时无法创建托盘图标,关闭流程会走不通。非 desktop 版走信号监听(`SIGTERM`),能被服务管理器优雅关闭。
 
 ### 3. 填好 AI 能力(可选但推荐)
 
@@ -112,7 +141,7 @@ make run          # 启动
 
 | 组件 | 选型 |
 |------|------|
-| 后端 | Go 1.25 + Gin + gorilla/websocket |
+| 后端 | Go 1.25.5 + Gin + gorilla/websocket |
 | 数据库 | SQLite(纯 Go,无需 CGO) |
 | 配置 | Viper (YAML) + 运行时覆盖持久化 |
 | 前端 | Vue 3 + 自建 H* 组件库 + Pinia + Vite |
@@ -129,8 +158,13 @@ make run          # 启动
 ### 项目结构
 
 ```
-cmd/hikami/           程序入口(main + 自动触发链 + 托盘)
-internal/             后端各模块(config/db/handler/worker/asr/recap/glossary/publisher/mcp 等)
+cmd/hikami/           程序入口(main + 自动触发链 + Windows 托盘)
+internal/             后端各模块,按职责分层:
+                      入口编排    config / db / handler / runtime / worker / scheduler
+                      生命周期    channel / session / state / live_record / discover
+                      处理管道    download → normalize → asr → recap → upload → publisher → archive
+                      AI 能力     aiprovider / mcp / glossary
+                      支撑        biliutil / secrets / runtimeconfig / notify / fsutil / executil
 web/                  Vue 3 前端源码
 CLAUDE-detail/        API 路由、开发、测试等详细文档
 docs/                 架构与设计文档(含 screenshots/ 界面截图)

@@ -24,11 +24,11 @@ make build-linux-amd64    # Linux x86_64
 make build-linux-arm64    # Linux ARM64
 make build-darwin-arm64   # macOS ARM64
 
-# Windows（4 个 target）
-make build-windows-amd64         # 完整 ffmpeg + 前端，控制台版（-tags embed_ffmpeg,embedded_web）
-make build-windows-amd64-lite    # 无 ffmpeg，控制台版（-tags embedded_web）
-make build-windows-desktop       # 完整 ffmpeg + 系统托盘 + 隐藏控制台（-tags 'embed_ffmpeg,embedded_web,systray' -ldflags='-H windowsgui'，2026-07-14 新增）
-make build-windows-desktop-lite  # 无 ffmpeg + 系统托盘 + 隐藏控制台
+# Windows（4 个 target，命名约定：默认=不内嵌 ffmpeg，-ffmpeg=内嵌 ffmpeg）
+make build-windows-amd64              # 无 ffmpeg + 前端，控制台版（-tags embedded_web）
+make build-windows-amd64-ffmpeg       # 内嵌 ffmpeg + 前端，控制台版（-tags embed_ffmpeg,embedded_web）
+make build-windows-desktop            # 无 ffmpeg + 系统托盘 + 隐藏控制台（-tags 'embedded_web,systray' -ldflags='-H windowsgui'）
+make build-windows-desktop-ffmpeg     # 内嵌 ffmpeg + 系统托盘 + 隐藏控制台（-tags 'embed_ffmpeg,embedded_web,systray'，2026-07-14 新增）
 ```
 
 > **Windows 系统托盘**（2026-07-14，`ad34a15`）：`-tags systray` 启用 `cmd/hikami/tray_windows.go`（基于 `fyne.io/systray`），托盘菜单「打开管理界面/退出」；`-ldflags='-H windowsgui'` 隐藏控制台窗口；桌面模式日志写 `%LOCALAPPDATA%/Hikami-Go/hikami.log`。非 Windows / 无 systray tag 走 `tray_other.go` 等价占位。CI release.yml 的 windows 矩阵含 `desktop: true` 变体。
