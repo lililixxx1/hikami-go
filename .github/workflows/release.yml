@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要构建的 tag(需已存在,例如 v1.0.0)'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -13,6 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # workflow_dispatch 手动触发时 checkout 到指定 tag 的 commit,否则(tag push)用默认
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - uses: actions/setup-node@v4
         with:
@@ -22,7 +31,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25.0'
+          go-version: '1.25.5'
 
       - name: Install frontend dependencies
         run: npm ci
@@ -73,6 +82,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # workflow_dispatch 手动触发时 checkout 到指定 tag 的 commit,否则(tag push)用默认
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -80,7 +92,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25.0'
+          go-version: '1.25.5'
       - name: Install frontend dependencies
         run: npm ci
         working-directory: web
@@ -108,25 +120,28 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
         run: |
+          # 构建 build tag 列表与产物后缀。
+          # 命名约定：默认(无后缀)= 不内嵌 ffmpeg(最精简)；-ffmpeg = 内嵌 ffmpeg。
+          # desktop 在 ffmpeg 之前：形如 -desktop / -desktop-ffmpeg。
+          # tags 始终含 embedded_web；按需追加 embed_ffmpeg / systray。
+          TAGS="embedded_web"
           SUFFIX=""
           LDFLAGS="-s -w"
-          # 始终嵌入前端（embedded_web）；embed_ffmpeg 仅 Windows 完整版叠加
-          TAGS="-tags embedded_web"
-          if [ "${{ matrix.embed_ffmpeg }}" = "true" ]; then
-            TAGS="-tags embed_ffmpeg,embedded_web"
-          elif [ "${{ matrix.embed_ffmpeg }}" = "false" ]; then
-            SUFFIX="-lite"
-          fi
-          # desktop 变体：加 systray tag（系统托盘）+ -H windowsgui（隐藏终端窗口）
+          # desktop 变体：systray tag（系统托盘）+ -H windowsgui（隐藏终端窗口）
           if [ "${{ matrix.desktop }}" = "true" ]; then
-            SUFFIX="${SUFFIX}-desktop"
             TAGS="${TAGS},systray"
+            SUFFIX="-desktop"
             LDFLAGS="${LDFLAGS} -H windowsgui"
+          fi
+          # embed_ffmpeg：把裁剪版 ffmpeg 打进 exe
+          if [ "${{ matrix.embed_ffmpeg }}" = "true" ]; then
+            TAGS="embed_ffmpeg,${TAGS}"
+            SUFFIX="${SUFFIX}-ffmpeg"
           fi
           BINARY=hikami-${{ matrix.goos }}-${{ matrix.goarch }}${SUFFIX}
           if [ "${{ matrix.goos }}" = "windows" ]; then BINARY="${BINARY}.exe"; fi
           mkdir -p dist
-          go build ${TAGS} -ldflags="${LDFLAGS}" -o dist/${BINARY} ./cmd/hikami
+          go build -tags "${TAGS}" -ldflags="${LDFLAGS}" -o dist/${BINARY} ./cmd/hikami
           echo "ARTIFACT_NAME=hikami-${{ matrix.goos }}-${{ matrix.goarch }}${SUFFIX}" >> $GITHUB_ENV
       - uses: actions/upload-artifact@v4
         with:
@@ -150,3 +165,7 @@ jobs:
         with:
           files: dist/hikami-*
           generate_release_notes: true
+          # tag 名含 - (如 v1.0.0-rc1 / v1.0.0-beta) 自动标为预发布
+          prerelease: ${{ contains(github.ref_name, '-') || contains(inputs.tag, '-') }}
+          # workflow_dispatch 手动触发时用 inputs.tag,push tag 时用 github.ref_name
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}

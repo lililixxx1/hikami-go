@@ -50,25 +50,26 @@ build-darwin-arm64:
 # demuxer/muxer(flv/concat/mov/mp3) + mp3/aac encoder（约 8-12MB），由
 # build-ffmpeg-minimal 产出。需先 make build-ffmpeg-minimal 生成 assets/ffmpeg.zip。
 build-windows-amd64:
-	GOOS=windows GOARCH=amd64 go build -tags embed_ffmpeg,embedded_web -o hikami-windows-amd64.exe ./cmd/hikami
-	@ls -lh hikami-windows-amd64.exe | awk '{print "  产物体积:", $5}'
+	GOOS=windows GOARCH=amd64 go build -tags embedded_web -o hikami-windows-amd64.exe ./cmd/hikami
+
+# Windows 版(内嵌 ffmpeg)：嵌入前端 + 裁剪版 ffmpeg，开箱即用无需另装 ffmpeg
+# 命名约定：默认(无后缀)= 不内嵌 ffmpeg(最精简)；-ffmpeg = 内嵌了 ffmpeg
+build-windows-amd64-ffmpeg:
+	GOOS=windows GOARCH=amd64 go build -tags embed_ffmpeg,embedded_web -o hikami-windows-amd64-ffmpeg.exe ./cmd/hikami
+	@ls -lh hikami-windows-amd64-ffmpeg.exe | awk '{print "  产物体积:", $5}'
 	@echo "  注：嵌入的是裁剪版 ffmpeg，若 assets/ffmpeg.zip 缺失会编译失败，先跑 make build-ffmpeg-minimal"
 
-# 轻量 Windows 版：嵌入前端，依赖系统 ffmpeg（不嵌 ffmpeg，体积最小）
-build-windows-amd64-lite:
-	GOOS=windows GOARCH=amd64 go build -tags embedded_web -o hikami-windows-amd64-lite.exe ./cmd/hikami
-
-# Windows 桌面版：嵌入裁剪版 ffmpeg + 前端 + 系统托盘（隐藏终端窗口）
-# 加 -H windowsgui 让 exe 不弹控制台，加 systray tag 编译托盘代码
+# Windows 桌面版：嵌入前端 + 系统托盘（隐藏终端窗口），依赖系统 ffmpeg
 build-windows-desktop:
-	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -tags 'embed_ffmpeg,embedded_web,systray' \
-		-ldflags='-H windowsgui -s -w' -o hikami-windows-desktop.exe ./cmd/hikami
-	@ls -lh hikami-windows-desktop.exe | awk '{print "  产物体积:", $5}'
-
-# Windows 桌面轻量版：嵌入前端 + 系统托盘，依赖系统 ffmpeg
-build-windows-desktop-lite:
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -tags 'embedded_web,systray' \
-		-ldflags='-H windowsgui -s -w' -o hikami-windows-desktop-lite.exe ./cmd/hikami
+		-ldflags='-H windowsgui -s -w' -o hikami-windows-desktop.exe ./cmd/hikami
+
+# Windows 桌面版(内嵌 ffmpeg)：嵌入裁剪版 ffmpeg + 前端 + 系统托盘（隐藏终端窗口）
+# 加 -H windowsgui 让 exe 不弹控制台，加 systray tag 编译托盘代码
+build-windows-desktop-ffmpeg:
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -tags 'embed_ffmpeg,embedded_web,systray' \
+		-ldflags='-H windowsgui -s -w' -o hikami-windows-desktop-ffmpeg.exe ./cmd/hikami
+	@ls -lh hikami-windows-desktop-ffmpeg.exe | awk '{print "  产物体积:", $5}'
 
 # 构建裁剪版 ffmpeg/ffprobe（Windows x64 静态），产出 internal/runtime/assets/ffmpeg.zip。
 # 仅在更新嵌入的 ffmpeg 时运行（Docker 交叉编译，约 5-10 分钟）。详见 scripts/README-ffmpeg-build.md。
