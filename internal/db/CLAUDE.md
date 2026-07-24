@@ -25,7 +25,7 @@
 
 ## 数据模型
 
-**十张核心表 + 33 个迁移版本：**
+**十张核心表 + 37 个迁移版本：**
 
 1. **channels** -- 主播配置
    - `id TEXT PK`, `name`, `uid`, `live_room_id`, `replay_source_url`, `space_url`, `title_prefix`, `cookie_file`, `enabled`, `created_at`, `updated_at`
@@ -60,16 +60,16 @@
    - 用于全局账号池，`channels.download_account_id`/`channels.publish_account_id` 保存主播级账号覆盖
 
 9. **glossary_candidates** -- AI 术语发现候选（v28 新增）
-   - `id INTEGER PK AUTO`, `channel_id`, `term`, `canonical`, `category`, `status` (pending/approved/rejected, CHECK 约束), `confidence` (0-1), `score` (0-1), `occurrence_count`, `session_count`, `first_session_id`, `last_session_id`, `reason`, `normalized_key` (NOT NULL), `created_at`, `updated_at`, `reviewed_at`
+   - `id INTEGER PK AUTO`, `channel_id`, `term`, `canonical`, `category`, `status` (pending/approved/rejected, CHECK 约束), `confidence` (0-1), `score` (0-1), `occurrence_count`, `session_count`, `first_session_id`, `last_session_id`, `reason`, `normalized_key` (NOT NULL), `created_at`, `updated_at`, `reviewed_at`, `ai_review` (v37 新增,默认 NULL,AI 批量复核写回的核实结论文本)
    - 唯一索引: `(channel_id, normalized_key)`
    - 索引: `(channel_id, status, score DESC, updated_at DESC)`, `(last_session_id)`
 
-10. **runtime_settings** -- 全局运行时配置覆盖（v33 新增,v35 CHECK 白名单扩展 +tools 段）
+10. **runtime_settings** -- 全局运行时配置覆盖（v33 新增,v35 CHECK 白名单扩展 +tools 段,v36 再扩展 +mcp 段）
    - `section TEXT PK`, `data TEXT NOT NULL DEFAULT '{}'`, `updated_at TEXT NOT NULL DEFAULT (datetime('now'))`
-   - `CHECK(section IN ('publish','asr_s3','dashscope','recap_ai','webdav','archive','tools'))` 白名单限定 7 个全局段（v35 加 tools）
+   - `CHECK(section IN ('publish','asr_s3','dashscope','recap_ai','webdav','archive','tools','mcp'))` 白名单限定 8 个全局段（v35 加 tools、v36 加 mcp）
    - `CHECK(json_valid(data))` 保证 JSON 完整性
    - config.yaml 降级为只读基线，UI 改动按段存此表；启动时 `config.ApplyOverrides` 用本表覆盖 viper 基线（详见 `internal/runtimeconfig/CLAUDE.md`）
-   - **v35 迁移**:SQLite 不支持直接改 CHECK,用标准表重建模式（建 runtime_settings_v35 → INSERT 复制 → DROP 旧表 → RENAME）。旧库 6 段数据全量回灌无损升级。
+   - **v35/v36 迁移**:SQLite 不支持直接改 CHECK,用标准表重建模式（建 runtime_settings_v3X → INSERT 复制 → DROP 旧表 → RENAME）。旧库数据全量回灌无损升级（v35 回灌 6 段、v36 回灌 7 段）。
 
 **迁移版本：**
 
@@ -109,6 +109,9 @@
 | 32 | `channels` 追加 `auto_recap`（DEFAULT 1 保留;2026-07-06 反转默认值时未改迁移 DEFAULT,因 ADD COLUMN 用 DEFAULT 回填已有行——改 0 会静默关闭旧库升级时已有主播的自动回顾。新建主播默认值由应用层 `resolveAutoRecap(nil, false)` 决定,应用层总显式插值） |
 | 34 | `tasks.bypass_fail_state` 列（任务实例级 bypass fail state，配合重新生成回顾） |
 | 33 | `runtime_settings` 表（全局运行时配置覆盖，per-section JSON；`CHECK(section)` 白名单 6 段 + `CHECK(json_valid(data))`） |
+| 35 | `runtime_settings` CHECK 白名单扩展 `+tools`（第 7 段，yt-dlp/rclone 路径 web 可编辑）——表重建模式 |
+| 36 | `runtime_settings` CHECK 白名单扩展 `+mcp`（第 8 段，MCP 搜索工具配置）——表重建模式（同 v35 范式） |
+| 37 | `glossary_candidates.ai_review TEXT` 列（AI 批量复核写回的核实结论文本，Phase 5 批量复核功能） |
 
 ## 测试与质量
 
@@ -137,13 +140,14 @@ A: `recap_templates` 表中的 `system_prompt` 和 `user_format` 字段使用 `_
 ## 相关文件清单
 
 - `db.go` -- 数据库打开
-- `migrate.go` -- 迁移定义与执行（35 个版本）
+- `migrate.go` -- 迁移定义与执行（37 个版本）
 - `migrate_test.go` -- 迁移测试（9 个用例）
 
 ## 变更记录 (Changelog)
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-07-22 | 重大更新 | 迁移增至 v37：v36 扩展 `runtime_settings` CHECK 白名单 `+mcp`（第 8 段，MCP 搜索工具配置段，`MCPSectionDTO`）；v37 新增 `glossary_candidates.ai_review TEXT`（默认 NULL，AI 批量复核 Phase 5 写回的核实结论文本）。两者均不涉及核心表结构变更：v36 同 v35 表重建模式（建 `runtime_settings_v36`→INSERT 复制→DROP→RENAME，旧库 7 段数据全量回灌）；v37 是简单 `ALTER TABLE ADD COLUMN`。总版本数 35→37，表数不变（10，含 `schema_migrations` 账本表）。配合 MCP 搜索工具集成 6 phase（详见 `AGENTS.md` 2026-07-22 changelog）。 |
 | 2026-07-08 | 重大更新 | 迁移增至 v35：v33 新增 `runtime_settings` 表（全局运行时配置覆盖，per-section JSON，CHECK 白名单 6 段：publish/asr_s3/dashscope/recap_ai/webdav/archive）；v34 新增 `tasks.bypass_fail_state INTEGER NOT NULL DEFAULT 0`（任务实例级状态旁路，重新生成回顾等非推进型任务失败不降级主状态）；v35 扩展 `runtime_settings` CHECK 白名单 `+tools`（第 7 段，yt-dlp/rclone 路径 web 可编辑）——SQLite 不支持直接改 CHECK，用标准表重建模式（建 `runtime_settings_v35`→INSERT 复制→DROP 旧表→RENAME），旧库 6 段数据全量回灌无损升级。总版本数 32→35，表数 10（含 `schema_migrations` 账本表）。`TestMigrateCreatesAllTables` 的 `expected` 清单已纳入 `runtime_settings`。 |
 | 2026-06-23 | 重大更新 | 迁移增至 v32：v31 新增 `sessions.archived_at TEXT`（发布成功后自动归档到 WebDAV 的时间戳，不推进会话主状态，由 `internal/archive` 写入）；v32 新增 `channels.auto_recap INTEGER NOT NULL DEFAULT 1`（per-channel 自动回顾开关，三态经 `resolveAutoRecap` 兜底为 true）。总版本数 30→32 |
 | 2026-06-01 | 测试扩充 | migrate_test.go 从 2 扩充至 8 个用例：新增 TestMigrateCreatesAllTables（9 张表）、TestMigrateCreatesIndexes（7 个索引）、TestMigrateDefaultRecapTemplate（内置模板）、TestOpen_EnablesForeignKeys（外键）、TestMigrate_VersionSequence（版本连续性）、TestMigrate_ChannelsColumns（10 个追加列） |

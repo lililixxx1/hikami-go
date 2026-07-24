@@ -42,15 +42,15 @@
 
 ## 数据模型
 
-**`runtime_settings` 表** (DB schema v33,定义见 `internal/db/migrate.go:188-196`):
+**`runtime_settings` 表** (DB schema v36,定义见 `internal/db/migrate.go`):
 
 | 列 | 类型 | 约束 | 说明 |
 |----|------|------|------|
-| `section` | TEXT | `NOT NULL`, `CHECK(section IN ('publish','asr_s3','dashscope','recap_ai','webdav','archive'))`, `PRIMARY KEY` | 配置段名(白名单 6 个全局段) |
+| `section` | TEXT | `NOT NULL`, `CHECK(section IN ('publish','asr_s3','dashscope','recap_ai','webdav','archive','tools','mcp'))`, `PRIMARY KEY` | 配置段名(白名单 8 个全局段) |
 | `data` | TEXT | `NOT NULL DEFAULT '{}'`, `CHECK(json_valid(data))` | 该段 DTO 的 JSON(`presence-aware`,指针字段,不含隐藏字段/密钥) |
 | `updated_at` | TEXT | `NOT NULL DEFAULT (datetime('now'))` | 最后更新时间 |
 
-**Section 白名单(6 个全局段)**,与 `internal/config` 的 `*SectionDTO` 一一对应:
+**Section 白名单(8 个全局段)**,与 `internal/config` 的 `*SectionDTO` 一一对应:
 
 | section | 对应 DTO | 管理 handler | 走 secrets 的密钥字段 |
 |---------|----------|--------------|----------------------|
@@ -60,20 +60,24 @@
 | `recap_ai` | `RecapAISectionDTO` | `updateRecapConfig` | `api_key` |
 | `webdav` | `WebDAVSectionDTO` | `updateWebDAVConfig` | `password` |
 | `archive` | `ArchiveSectionDTO` | `updateArchiveConfig` | — |
+| `tools` | `ToolsSectionDTO` | `updateToolsConfig` | — (yt-dlp/rclone 路径,非密钥;2026-07-08 v35 新增) |
+| `mcp` | `MCPSectionDTO` | `updateMCPConfig` | Builtin.BraveAPIKey/TavilyAPIKey + Servers Headers Authorization(经 config_export bundle 走 secrets;2026-07-22 v36 新增) |
 
 > 每个 `SectionDTO` 只含对应 handler 实际管理的字段(指针、`presence-aware`),**不含**完整 config struct 的隐藏字段(如 `RecapAIConfig.CLIPath`/`GlossaryFile`),避免冻结手工改 yaml 的字段。密钥字段不进 DTO(走 secrets 表),WebDAV/ASRS3 通过 `*_managed` tombstone 标记接管状态。
 
 ## 测试与质量
 
-- `store_test.go`: **9 个测试用例**(基于 `:memory:` SQLite + `db.Migrate`):
+- `store_test.go`: **10 个测试用例**(基于 `:memory:` SQLite + `db.Migrate`):
   - `TestLoadEmpty`: 空表返回空 map
   - `TestSaveAndLoad`: 基本存取往返
   - `TestSaveReplace`: 同 section 二次 Save 覆盖(`ON CONFLICT DO UPDATE`)
   - `TestSaveRejectsInvalidJSON`: DB `CHECK(json_valid)` 拒绝非 JSON
   - `TestSaveRejectsUnknownSection`: DB `CHECK(section IN (...))` 拒绝未知段
+  - `TestSaveAcceptsMCPSection`: **2026-07-22 新增**——`mcp` section 写入成功(DB v36 白名单 `+mcp` 生效)
   - `TestWithTxCommits`: `fn` 成功 → 提交、可见
   - `TestWithTxRollsBackOnFnError`: `fn` 失败 → 整段回滚
   - `TestWithTxAtomicTwoSections`: 两次 `SaveTx` 在同一事务,第二写触发约束 → 第一写也被回滚(原子性)
+  - `TestSaveWritesLocalTimezoneUpdatedAt`: `updated_at` 写本地时区 RFC3339(与 sessions/tasks 时间字段统一,2026-07-04 规范)
 
 ## 常见问题 (FAQ)
 
@@ -89,10 +93,12 @@ A: `ApplyOverrides` 逐段 unmarshal,损坏段 `slog.Error` + 跳过(不致命),
 ## 相关文件清单
 
 - `store.go` — `Store` 实现、`SaveTx`、`WithTx`、`SavePayload`(103 行)
-- `store_test.go` — 单元测试(9 个用例)
+- `store_test.go` — 单元测试(10 个用例)
 
 ## 变更记录 (Changelog)
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-07-22 | 功能 | **`mcp` section 纳入白名单(MCP 集成 Phase 2)**(commit `5b84b63`)。**DB v36 迁移**:runtime_settings 表 CHECK 约束白名单 `+mcp`(SQLite 不支持改 CHECK,走标准表重建范式:建 v36 临时表→INSERT 复制→DROP 旧表→RENAME,7 段旧数据无损回灌)。配套 `MCPSectionDTO`(presence-aware)在 `internal/config`,ApplyOverrides mcp case 落盘。新增 `TestSaveAcceptsMCPSection` 验证白名单生效,store_test 9→10。注:`tools` section 早在 2026-07-08 v35 已加(本轮文档一并补登表格)。 |
+| 2026-07-08 | 功能 | **`tools` section 纳入白名单**(commit `dfe7d23`)。DB v35 迁移:CHECK 白名单 `+tools`(yt-dlp/rclone 路径 web 可编辑,非密钥)。新增 `ToolsSectionDTO`。此前文档表格漏登,本轮一并补齐。 |
 | 2026-07-01 | 初始化 | 首次生成模块文档(配合 `feat(config): 全局运行时配置持久化到 SQLite`,DB v33)。 |

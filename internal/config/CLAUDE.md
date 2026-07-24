@@ -163,7 +163,7 @@
 
 ## 测试与质量
 
-- `config_test.go`: 35 个测试用例，覆盖：
+- `config_test.go`: 39 个测试用例，覆盖：
   - 默认值: TestLoad_DefaultValues（Web/Worker/DashScope/RecapAI 全部默认值验证）
   - 校验: TestValidate_MissingOutputRoot、TestValidate_MissingDbPath、TestValidate_Success、TestValidate_WorkerNumZero、TestValidate_PublishModeInvalid、TestValidate_DownloaderBackend、**TestValidate_ArchiveCleanupPolicy**（archive.cleanup_policy 合法值校验）
   - 日志级别: TestLogLevel_Default、TestLogLevel_Explicit（6 种输入映射）
@@ -172,7 +172,7 @@
   - 覆盖: TestLoad_ExplicitOverrides（Web.Listen / RecapAI.Model / RecapAI.MaxTokens）
   - 下载后端 helper: TestDownloaderConfigHelpers、TestNativeConfigured_RequiresPassword
   - **Effective\* 默认值**：TestRecapAIEffectiveDefaults、TestDashScopeEffectiveAPIKeyEnv、TestASRS3EffectiveAccessKeyEnv、TestEffectivePasswordEnv_DefaultFallback、TestEffectivePassword_Managed*（true 不回退 / false 回退 Yaml）、TestEffectiveAccessKey_ManagedDoesNotFallBack、**TestDashScopeEffectiveURLs（2026-07-21 新增：`DefaultDashScopeASRURL`/`DefaultDashScopeTasksURL` 常量 + `EffectiveASRURL()`/`EffectiveTasksURL()` 空串兜底，修复 ASR 配置丢失 BUG）**
-  - **ApplyOverrides（runtimeconfig 持久化覆盖）**：TestApplyOverrides_OverridesPublishFields、_MissingSectionRetainsBaseline、_EmptyObjectRetainsBaseline、_CorruptJSONSkippedNotFatal、_DoesNotFreezeHiddenRecapFields、_InjectsWebDAVTombstone、**_OverridesToolsFields / _ToolsPresenceAware / _ToolsEmptyStringClears（2026-07-08 新增 tools 段：全覆盖 / nil 保留基线 / 空串清空）**
+  - **ApplyOverrides（runtimeconfig 持久化覆盖）**：TestApplyOverrides_OverridesPublishFields、_MissingSectionRetainsBaseline、_EmptyObjectRetainsBaseline、_CorruptJSONSkippedNotFatal、_DoesNotFreezeHiddenRecapFields、_InjectsWebDAVTombstone、**_OverridesToolsFields / _ToolsPresenceAware / _ToolsEmptyStringClears（2026-07-08 新增 tools 段：全覆盖 / nil 保留基线 / 空串清空）**、**_OverridesMCPFields / _MCPPresenceAware / _MCPClearServers（2026-07-22 新增 mcp 段：servers 全覆盖 / nil 保留基线 / 显式空数组清空 server 列表）+ TestMCPConfig_EffectiveMaxToolRounds（`EffectiveMaxToolRounds()` 兜底：<=0 返回默认 3、超过上限截断到 10）**
   - **向后兼容**：TestLoadConfigBackcompatLiveRecordNumRemoved（旧配置含已删的 `worker.live_record_num` 字段，viper 静默忽略不报错）
 
 ## 常见问题 (FAQ)
@@ -195,12 +195,13 @@ A: `web.listen` 默认值为 `:6334`（从 `:8080` 变更），可在 YAML 中�
 ## 相关文件清单
 
 - `config.go` -- 唯一源文件
-- `config_test.go` -- 配置加载与验证测试（35 个用例）
+- `config_test.go` -- 配置加载与验证测试（39 个用例）
 
 ## 变更记录 (Changelog)
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-07-22 | 功能 | **新增 `mcp` 配置段(MCP 搜索工具集成 Phase 2)**(commit `5b84b63`)。第 8 个 runtimeconfig 段——`MCPConfig`(Enabled + `Servers []MCPServerConfig` + `Builtin MCPBuiltinConfig` + `MaxToolRounds int`)+ `MCPServerConfig`(Name/URL/Transport stdio\|http\|sse/Command/Args/Env/Headers/TimeoutSec;2026-07-22 后 Headers 支持自定义请求头)+ `MCPBuiltinConfig`(BraveAPIKey/BraveAPIKeyEnv/TavilyAPIKey/TavilyAPIKeyEnv)+ `MCPSectionDTO`(presence-aware,Servers/Builtin 指针化,密钥只写 `*_set` bool)+ `EffectiveMaxToolRounds()` 方法(<=0 兜底默认 3、超过 10 截断,供 mcp Manager 与 glossary Discoverer 注入)+ ApplyOverrides mcp case。**DB v36 迁移**:runtime_settings 表 CHECK 白名单 `+mcp`(标准表重建范式)。配套 handler `GET/PUT /api/config/mcp`(密钥只写,PUT 后 mcpManager.Reload 热重载)。新增 4 测试(_OverridesMCPFields/_MCPPresenceAware/_MCPClearServers + EffectiveMaxToolRounds),config 35→39。详见 `AGENTS.md` 2026-07-22 changelog。 |
 | 2026-07-21 | BUG 修复 | **DashScope `asr_url`/`tasks_url` Effective 默认值兜底**(branch `fix/bug-fix-2026-07-20`,commit `61f3989` v6 + `add3b51` v7)。**触发**:实测发现 `runtime_settings` 表把 DashScope `asr_url`/`tasks_url` 持久化为空字符串,覆盖 viper SetDefault 默认值(`config.go:781-782`),导致 ASR POST 到空 URL 失败(`Post "": unsupported protocol scheme ""`)。**根因**:`dashscopeConfigToDTO` 用 `&c.ASRURL` 总是取地址,ApplyOverrides 的 nil 检查无法区分「空串指针」与「非空串指针」。**修复**(参照现有 `EffectiveBaseURL`/`EffectiveAPIKeyEnv` 模式):新增 `DefaultDashScopeASRURL`/`DefaultDashScopeTasksURL` 常量 + `EffectiveASRURL()`/`EffectiveTasksURL()` 方法(空串兜底),SetDefault 改引用常量。新增 `TestDashScopeEffectiveURLs`,config 34→35。 |
 | 2026-07-19 | 配置变更 | **`cron.discovery` 默认值 `@every 20m` → `""`(禁用)**(branch `fix/decouple-recap-replay-2026-07-18`,主播管理 ↔ 回顾管理·回放解耦)。原因:回顾管理·回放页的「发现回放」改为独立 URL 入口,不再依赖 scheduler 自动遍历主播表下载。默认禁用后,scheduler.go:85 的 `if discoverySpec != ""` 跳过 cron 注册。**向后兼容**:viper 用户配置优先级 > SetDefault,旧 config.yaml 显式写了 `cron.discovery: "@every 20m"` 的用户维持原行为不变;仅未显式配置的(默认 config.example.yaml)变为不自动发现——这正是用户诉求。无新增测试(默认值变更,scheduler 包测试已覆盖空串跳过)。测试计数不变(34)。 |
 | 2026-07-13 | 配置变更 | **`EnsureDirs()` 不再创建 `logs/` 空目录**（`f39c44d`）：程序只把 slog 日志写到 stdout（`main.go` 的 slog handler 绑 `os.Stdout`），从不落盘文件，`logs/` 空目录是历史遗留。`EnsureDirs()` 删掉 `MkdirAll(c.Logs.Dir)` 那段（保留 `OutputRoot` + DB 目录创建）；`LogsConfig.Dir` 字段和 `logs.dir` 配置项保留仅为向后兼容（老 config.yaml 里有这个 key 不会报错），当前无任何代码读取它。Linux 生产环境经 systemd `StandardOutput=journal` 进 journald，Windows 手动运行需 `> run.log 2>&1` 重定向。无新增测试（`EnsureDirs` 无断言 `Logs.Dir`）。测试计数不变（34）。 |

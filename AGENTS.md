@@ -167,14 +167,15 @@ graph LR
 - `features/` — 按业务域组织(V10 重写核心):
   - `features/recaps/sessionActions.ts` — 两个回顾页入口(行 vs 抽屉)的显式动作矩阵(`UIActionName` 8 个动作,区别于生命周期的 `SessionActionName`);`isReplaySource` 对回放类(download/import)隐藏 publish/edit/remove(归档 upload 保留);覆盖测试 `sessionActions.test.ts`(48 用例)。
   - `features/recaps/components/`、`features/settings/components-v10/`、`features/channel/`、`features/onboarding/`、`features/streamers/`、`features/home/` — 拆分后的子组件与自管理 hooks。设置页由 `SettingsView.vue` 编排为 sidebar + content + 多卡(V10 重写,Phase 5)。
-- `components/ui/` — **V10 自建组件库**(Phase 6):19 个 H* 组件(HInput/HSelect/**HCombobox**/HButton/HCheckbox/HSwitch/HDialog/HDrawer/HTable/HCard/HPill/HProgress/HEmpty/HDescriptions/HCollapse/HTextarea/HToast + ConfirmHost;2026-07-15 新增 HCombobox)+ HMessage/HConfirm/HToast 命令式基础设施,`design-tokens.css` 锁定 token。已移除 Element Plus。15 个组件有单测保护。
+- `components/ui/` — **V10 自建组件库**(Phase 6):19 个 H* 组件(HInput/HSelect/**HCombobox**/HButton/HCheckbox/HSwitch/HDialog/HDrawer/HTable/HCard/HPill/HProgress/HEmpty/HDescriptions/HCollapse/HTextarea/HToast + ConfirmHost;2026-07-15 新增 HCombobox)+ HMessage/HConfirm/HToast 命令式基础设施。已移除 Element Plus。15 个组件有单测保护。
 - `components/` — 其他共享/展示组件;`components/shared/` **不得**自取 store。
 - `views/` — 薄路由壳:数据加载分发、store 编排、动作处理;业务 UI 委托给 `features/`。
+- `styles/` — 全局样式入口(**v2 视觉统一 2026-07-24**):`design-tokens.css`(全局 token 源,accent #0066cc/圆角 10/14/18/`--font-display`/`--font-mono`/`--live`/`--recording` 语义色,**改 token = 所有 `var()` 消费者自动统一,禁止在组件内硬编码颜色/圆角,全走 token**)+ `base.css`(`.stagger` 入场动画 + `@media (prefers-reduced-motion)` 无障碍守卫)+ `fonts.css`(**Sora 本地嵌入**,OFL 1.1,可变字体 woff2 25K,随 exe `//go:embed webdist` 分发,`main.ts` 引入顺序 design-tokens → fonts → base/ui)。字体**本地嵌入不连 CDN**(单文件/内网部署友好)。
 
 ## 编码规范
 
 - **Go**:包名小写,文件可用 snake_case,导出标识符用 PascalCase,测试 `*_test.go`。提交前 `gofmt`。偏好聚焦的小包,仅在降低耦合处用接口。
-- **前端**:Vue 组件 PascalCase,清晰 TS 模块名,沿用既有 Element Plus + Pinia 模式。
+- **前端**:Vue 组件 PascalCase,清晰 TS 模块名,沿用自建 H* 组件库 + Pinia 模式(已移除 Element Plus,不重引入)。**样式走 `design-tokens.css` 的 `var()` token,禁止在组件 `<style>` 内硬编码颜色/圆角/阴影**(v2 视觉统一 2026-07-24 确立)。
 - **提交**:遵循 Conventional Commits,如 `feat(recap): ...`、`fix(runtime): ...`、`style: ...`,scope 对应包或区域(`ui`、`recap`、`scheduler`)。
 
 ## 测试约定
@@ -227,6 +228,18 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
 | 各模块深度说明 | 根 `CLAUDE.md` + 各 `internal/<模块>/CLAUDE.md` |
 
 ## 变更记录
+
+- 2026-07-24(四):**`/init-project` 增量同步 — MCP 集成文档回填 + v2 视觉文档补登**(无代码改动,纯文档漂移修复)。HEAD `83d78a9`(07-24 README 截图)已是 AGENTS.md changelog 顶部条目,但机械统计发现 **2026-07-22 MCP 搜索工具集成**(6 phase,commit `5b84b63`,AGENTS.md 已有详尽 changelog)与 07-24 v2 视觉改动的文档**未同步到根 CLAUDE.md 模块索引与多个模块 CLAUDE.md**——典型「AGENTS.md changelog 写了但索引/模块文档忘了同步」型漂移(与 07-18/07-20/07-21 同款)。
+
+  **全量逐包核对**(27 internal 包 + web + cmd `^func Test` 机械统计 vs 根 CLAUDE.md 精简模块索引声称值):**22/28 包零偏差**,6 处漂移 + 1 个缺失模块,全部对应 07-22 MCP 集成与 07-24 视觉改动。
+
+  **根 `CLAUDE.md` 精简模块索引 7 处**:① **新增 `internal/mcp` 行**(19 测试,07-22 新包此前索引完全缺失);② `config` 35→**39**(+4:ApplyOverrides mcp 段 3 个 + MCPConfig EffectiveMaxToolRounds 1 个);③ `glossary` 68→**77**(+9:review.go 批量复核 8 + discovery MCP 感知相关 1);④ `recap` 105→**115**(+10:`anthropic_tools_test.go` 5 + `provider_tools_test.go` 5,Phase 1 tool-calling);⑤ `runtimeconfig` 9→**10**(+1 `TestSaveAcceptsMCPSection`);⑥ `aiprovider` 行补 `ToolCapableProvider` 接口说明(测试数不变 5);⑦ `web` 行补 07-22 MCPCardV10 + 07-24 v2 视觉/Sora。同步在 changelog 补 **07-22 MCP 集成独立条目**(此前根 CLAUDE.md 只有 07-23,缺 07-22)与 **07-24 综合条目**(v2 视觉 + 本轮 /init 回填)。
+
+  **模块 CLAUDE.md 正文段 4 处**:① `config/CLAUDE.md` 补 07-22 mcp 配置段(MCPConfig/MCPServerConfig/MCPBuiltinConfig + MCPSectionDTO + EffectiveMaxToolRounds + ApplyOverrides mcp case + DB v36)+ 测试 35→39 + changelog;② `glossary/CLAUDE.md` 补 07-22 discovery.go MCP 工具感知(SetMaxToolRounds 注入)+ 新增 `review.go`(Review 分批复核 + parseReviewResult + UpdateCandidateReview RowsAffected 守卫 + DB v37 glossary_candidates.ai_review)+ 新增 `review_test.go` 8 用例 + glossary_test 41→42(补 TestStoreWritesLocalTimezoneTimestamps)+ changelog;③ `recap/CLAUDE.md` 补 07-22 `generateRecap` MCP 工具感知(有工具 + ToolCapableProvider→RunWithTools,否则 Generate 零回归;包级变量 RunToolsAwareGenerate 注入规避反向导入)+ 新增 `provider_tools_test.go`/`anthropic_tools_test.go` 各 5(Phase 1 tool-calling,空 tools 等价 Generate 契约)+ 测试 105→115 + changelog;④ `runtimeconfig/CLAUDE.md` 补 07-22 mcp section 白名单(DB v36 表重建)+ 顺带补登 07-08 tools section(此前表格漏登)+ Section 白名单 6→8 段 + schema v33→v36 + 测试 9→10 + changelog。
+
+  **核实通过(无需改)**:handler/CLAUDE.md(07-22 MCP 端点 + 07-23 config_export MCP 段已完整记录,函数口径 94 ✓)、mcp/CLAUDE.md(07-22 新建已齐全,19 测试 ✓)、web/CLAUDE.md 测试段(200 ✓,MCPCardV10 已在 07-22 条目记录)、DB v37 migrations 数组确认(v35 tools / v36 mcp / v37 ai_review 三条对齐)、Go 1.25.5 声明(mcp-go 依赖要求,已验证 Windows 交叉编译兼容)。**验证**:全项目 `go test ./...` 27 包全绿、前端 `vitest run` 27 文件 **200 测试全过**。**回归**:零(纯文档,无代码改动)。文档:本条 + 根 CLAUDE.md changelog + config/glossary/recap/runtimeconfig CLAUDE.md。
+
+- 2026-07-24(四):**前端视觉统一 v2 + Sora 字体本地嵌入 + README 界面截图**(3 commits:`a9f040f` v1 轻微优化 + `45c4c61` v2 全局 token 升级 + `de239d4` Sora 本地嵌入 + `83d78a9` README 截图;qoderclicn/Qwen3.8-Max-Preview 计划+执行审核多轮)。**触发**:用户反馈首页风格不统一、想要轻微优化。v1(`a9f040f`)只做局部微调(首页 6 子组件 `.section-title` 去掉对中文无效的 `text-transform:uppercase`/`letter-spacing`、卡片 hover 加 `translateY` 微浮起、`--accent-glow` token、grid gap 调整),用户反馈"看不出变化"——**根因**:v1 只在 token 之上做局部微调、没动全局 token 体系。**v2(`45c4c61`)改为「全局 token 先行」**:`design-tokens.css` 升级对齐 `hikami-full-redesign.html` 原型——accent #0075de→#0066cc(加深加饱和)、圆角 8/12/14→10/14/18、新增 `--font-display`(Sora)/`--font-mono`/`--live`/`--recording` 语义色、success 改暖绿、阴影更柔和;`ui.css` 的 HPill 4 个状态色硬编码 rgba/十六进制**全部 tokenize**(qoder 计划审核 Important#1);`base.css` 加 `fadeUp`/`.stagger` 入场动画 + `prefers-reduced-motion` 无障碍守卫;LiveSection 直播卡渐变底色替代左侧色条、AppLayout brand-icon 纯色→渐变。**Sora 本地嵌入(`de239d4`)**:v2 原用 google fonts CDN 加载 Sora,不适合单文件自托管/内网离线部署(qoder 执行审核 Important#2);改为**只嵌 1 个 woff2(25K,可变字体 latin 主块)**而非计划的 3 个(36K),`fonts.css` 单 `@font-face` + `font-weight:500 700` 范围声明;`public/fonts/LICENSE.txt`(OFL 1.1 全文)随 exe `//go:embed webdist` 分发满足 OFL §2;exe +29K(可忽略),中文不受影响(Sora 不覆盖中文走系统字体)。**README 截图(`83d78a9`)**:首页/主播管理/回顾列表/AI 回顾 Markdown 源码/设置 5 张界面图(灰泽满数据,实际运行渲染),「界面与操作」section 加截图网格(两列 HTML table 布局)。**测试计数不变**(200/27,纯 CSS + 字体嵌入 + README,零逻辑改动)。**验证**:type-check 0 error / vitest 27 文件 200 测试全过 / build 成功 / dist/fonts 含 woff2+LICENSE。**确立规范**:`styles/` 为全局样式唯一入口,改 token = 所有 `var()` 消费者自动统一,**禁止组件内硬编码颜色/圆角/阴影**。计划文档:`plans/plan-visual-unify-v2-2026-07-24.md`、`plans/plan-sora-embed-2026-07-24.md`、`plans/plan-homepage-style-unify-2026-07-23.md`。
 
 - 2026-07-23(三):**MCP 配置纳入配置备份导入导出**(bug fix,qoderclicn 计划审核 Ready with fixes + 执行后复审)。**触发**:用户实测「配置备份」(导出/导入)发现导出 JSON 不含 `mcp` 字段,换机器后 MCP 配置(servers/Brave/Tavily key/enabled/max_tool_rounds)需全部手动重建(详见 `docs/MCP配置导入导出缺失问题分析.md`、`docs/KNOWN_ISSUES.md` ISSUE-005)。**根因**:`ConfigExportBundle`(`internal/handler/config_export.go`)只有 6 个全局段,MCP 段是 2026-07-22 新增(6 phase 集成,commit `5b84b63`),引入时漏更新 `config_export.go`——典型「新功能上线、周边设施未同步」型遗漏。导入侧有保护性副作用(只处理 bundle 携带的段),所以 merge/overwrite 都不碰 MCP,现有配置不损坏但也恢复不了。**方案决策**:用户在 plan 阶段选定**投影 DTO + 密钥走 Secrets**(仿 WebDAV/ASRS3 范式 `config_export.go:50-91`),非直接嵌 `config.MCPConfig`——明文密钥(Servers 鉴权头、Brave/Tavily key)进 `bundle.Secrets`,配置段只投影非密钥字段。
 

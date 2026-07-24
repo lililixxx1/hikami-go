@@ -196,7 +196,7 @@
 
 ## 测试与质量
 
-- `glossary_test.go`: 41 个测试用例，覆盖：
+- `glossary_test.go`: 42 个测试用例，覆盖：
   - CRUD: Upsert、UpsertIdempotent、Delete、DeleteNotFound、Toggle
   - 合并逻辑: ListByChannelMerge、ListByChannelOverride、ListByChannelBlock
   - Prompt 导出: ExportForPromptEmpty、ExportForPromptWithEntries、ExportForPromptSkipsDisabled、ExportForPromptWithNote
@@ -206,6 +206,7 @@
   - JSON 导入/导出: ExportImportJSON（往返测试）、ImportJSONInvalid、ImportJSONMissingFields、ImportJSONArrayInput（裸数组格式,2026-07-08）、ImportJSONSingleObjectNoEntries、ImportJSONInvalidReturnsSentinel（400 哨兵）
   - 批量删除: DeleteByIDs、DeleteByIDsEmpty、DeleteByIDsChannelScope
   - 批量切换: ToggleByIDs、ToggleByIDsEmpty、ToggleByIDsChannelScope
+  - 时间戳: TestStoreWritesLocalTimezoneTimestamps（本地时区 RFC3339）
 
 - `candidate_store_test.go`: 13 个测试用例，覆盖：
   - Upsert: 新建候选、合并候选（累加计数/更新置信度/分类/原因）、normalized_key 去重
@@ -222,6 +223,13 @@
   - Prompt 构建: BuildDiscoveryPrompt（含/空术语表）
   - 解析: ParseDiscoveryResult（6 种 JSON 输入场景）
   - 时间戳: formatDiscoveryTimestamp（5 种时间格式）
+
+> **2026-07-22 MCP 工具感知**:`discovery.go` 的 `Discoverer` 加 `maxToolRounds` 字段 + `SetMaxToolRounds` setter(`main.go` 装配时从 `cfg.MCP.EffectiveMaxToolRounds()` 注入);`generateChunk` 内部检测:有 MCP 工具 + provider 实现 `ToolCapableProvider`→走 `mcp.RunWithTools` 让 AI 主动联网核实人名/游戏名写法,否则普通 `Generate` 零回归(有 empty-tools 等价测试保护)。
+
+- `review_test.go`: 8 个测试用例（**2026-07-22 新增**），覆盖：
+  - 复核解析: ParseReviewResult_ValidJSON、_CodeBlockWrapped（AI 返回 \`\`\`json 包裹）、_Empty、_InvalidJSON（4 种 AI 输出鲁棒性）
+  - 候选更新: UpdateCandidateReview（写 ai_review+confidence+canonical,status 保持 pending）、_NotFound（RowsAffected=0 返回 ErrCandidateNotFound）
+  - 复核 prompt: BuildReviewUserPrompt、BatchContainsID（分批辅助）
 
 ## 常见问题 (FAQ)
 
@@ -240,16 +248,19 @@ A: 通过审批（ApproveCandidate）自动写入 glossary_entries 表。支持�
 ## 相关文件清单
 
 - `glossary.go` -- Store 实现、CRUD、合并、导入/导出、Prompt 生成、ClearAll 全量清除、CopyFromChannel 跨主播复制
-- `candidate_store.go` -- 候选 CRUD、审批/拒绝、批量操作、评分算法、去重合并
-- `discovery.go` -- Discoverer AI 术语发现、分块、prompt 构建、结果解析
-- `glossary_test.go` -- 单元+集成测试（41 个用例）
+- `candidate_store.go` -- 候选 CRUD、审批/拒绝、批量操作、评分算法、去重合并、UpdateCandidateReview（2026-07-22 ai_review 字段更新 + RowsAffected 守卫）
+- `discovery.go` -- Discoverer AI 术语发现、分块、prompt 构建、结果解析、MCP 工具感知（2026-07-22 SetMaxToolRounds 注入）
+- `review.go` -- **2026-07-22 新增**：`Review` 分批（10条）AI+搜索复核 pending 候选、`parseReviewResult`（4 种 JSON 鲁棒解析）、`buildReviewUserPrompt`、`batchContainsID`
+- `glossary_test.go` -- 单元+集成测试（42 个用例）
 - `candidate_store_test.go` -- 候选 CRUD 和评分测试（13 个用例）
 - `discovery_test.go` -- AI 术语发现测试（14 个用例）
+- `review_test.go` -- AI 批量复核测试（8 个用例，2026-07-22 新增）
 
 ## 变更记录 (Changelog)
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-07-22 | 功能 | **MCP 搜索工具集成 Phase 4/5**(commit `5b84b63`)。① **discovery.go MCP 工具感知**:`Discoverer` 加 `maxToolRounds` 字段 + `SetMaxToolRounds` setter(`main.go` 装配从 `cfg.MCP.EffectiveMaxToolRounds()` 注入);`generateChunk` 有工具 + provider 实现 `ToolCapableProvider`→`mcp.RunWithTools` 让 AI 联网核实候选写法,否则普通 `Generate` 零回归(空 tools 等价契约保护)。② **新增 `review.go` `Review` 方法**:分批(10条/批)AI+搜索复核 pending 候选,更新 `ai_review`+`confidence`+`canonical`(**status 保持 pending 保留人工把关**);`parseReviewResult` 4 种 JSON 鲁棒解析(含 ```json 包裹);`UpdateCandidateReview` 加 RowsAffected 守卫(0 行返回 ErrCandidateNotFound,qoder Minor#4)。③ **DB v37**:`glossary_candidates` ADD COLUMN `ai_review`(独立于 v36)。④ handler `POST /api/glossary/candidates/review` 异步触发(后台 goroutine + 5min 超时)。新增 `review_test.go` 8 用例,glossary 68→77。详见 `AGENTS.md` 2026-07-22 changelog。 |
 | 2026-06-03 | 增量扫描 | 新增 `ClearAll(ctx)` 方法（DELETE FROM glossary_entries + glossary_meta），用于配置导入 overwrite 策略的全量清除 |
 | 2026-06-01 | 测试补充 | 新增 `candidate_store_test.go`（12 用例：Upsert 新建/合并/normalized_key 去重、评分算法验证、状态过滤/channel 隔离/审批/拒绝/批量操作/幂等/GetCandidateByID）和 `discovery_test.go`（12 用例：分块策略、发现流程完整路径、Prompt 构建、JSON 解析、时间戳格式化），填补了上次扫描识别的测试缺口 |
 | 2026-05-23 | 重大更新 | 新增 AI 术语发现系统：`candidate_store.go`（Candidate CRUD/审批/拒绝/批量操作/评分算法 calculateCandidateScore/去重合并 UpsertCandidate）、`discovery.go`（Discoverer/分块策略/DiscoveryProvider 接口/discoverySystemPrompt/AI 候选提取/parseDiscoveryResult）；新增 glossary_candidates 表（v28 迁移）；新增 7 个 API 端点（candidates 列表/审批/拒绝/批量审批/批量拒绝/会话发现） |

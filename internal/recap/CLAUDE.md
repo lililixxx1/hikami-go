@@ -170,7 +170,9 @@ type Provider interface {
 
 ## 测试与质量
 
-- **测试总数**: 105（`grep -c "^func Test"` 函数口径：recap_test.go 76 + template_test.go 27 + 2 个真实 API 端到端；运行时表驱动展开为 138 用例）
+- **测试总数**: 115（`grep -c "^func Test"` 函数口径：recap_test.go 76 + template_test.go 27 + 2 个真实 API 端到端 + anthropic_tools_test.go 5 + provider_tools_test.go 5；运行时表驱动展开更多）
+
+> **2026-07-22 MCP 工具感知(Phase 1/4)**:`handler.go` 的 `generateRecap` 是回顾生成的 AI 调用入口,根据是否配置 MCP 工具选择路径——有 MCP 工具 + provider 实现 `aiprovider.ToolCapableProvider`→走 `runToolsAwareGenerate`(默认调 `mcp.RunWithTools` agent loop,模型可主动联网查证术语/人名/游戏名),否则普通 `provider.Generate` 零回归(空 tools 等价于 Generate,有契约测试保护)。包级函数变量 `RunToolsAwareGenerate` 由 `main.go` 注入,规避 recap→mcp 反向导入。tool-calling 基础设施(OpenAI/Anthropic provider 的 `GenerateWithTools` 实现与请求体 tools/tool_choice 解析)虽属 `aiprovider`,但其测试文件置于本包(recap 是首要消费方)。
 
 - `recap_test.go`: 76 个测试用例，覆盖：
   - CreateTask: 成功、状态错误、文件缺失、活跃冲突、场次不存在
@@ -198,9 +200,13 @@ type Provider interface {
 
 - `test_recap_0329_test.go`: 1 个端到端集成测试（TestGenerateRecap_0329，使用真实 DeepSeek API 和 03.29 场次数据）
 
+- `provider_tools_test.go`: 5 个测试用例（**2026-07-22 新增**,Phase 1 tool-calling）——OpenAI provider 的 `GenerateWithTools`：请求体构造（tools/tool_choice 字段）、`parseChatCompletionResult` 读 tool_calls（含 finish_reason 缺失回填）、**空 tools 等价于 Generate 零回归契约测试**
+
+- `anthropic_tools_test.go`: 5 个测试用例（**2026-07-22 新增**,Phase 1 tool-calling）——Anthropic provider 的 `GenerateWithTools`：请求体构造、tool_use 响应解析、纯文本响应向后兼容、**空 tools 等价于 Generate 零回归契约测试**
+
 ## 相关文件清单
 
-- `handler.go` -- Handler、CreateTask、CreateTaskWithRange、Register、HandleTask 主流程
+- `handler.go` -- Handler、CreateTask、CreateTaskWithRange、Register、HandleTask 主流程、`generateRecap`（2026-07-22 MCP 工具感知入口：有工具 + ToolCapableProvider→RunWithTools，否则普通 Generate 零回归）、`runToolsAwareGenerate`（默认调 mcp.RunWithTools，可由 main.go 包级变量注入覆盖）
 - `provider_util.go` -- Provider 接口、LocalProvider、NewConfiguredProvider
 - `provider_openai.go` -- OpenAICompatibleProvider 实现
 - `anthropic.go` -- AnthropicProvider 实现
@@ -220,9 +226,13 @@ type Provider interface {
 - `recap_test.go` -- 单元+集成测试（76 个用例）
 - `template_test.go` -- 模板测试（27 个用例）
 - `test_recap_main_test.go` -- 端到端集成测试（1 个用例）
-- `test_recap_0329_test.go` -- 端到端集成测试（1 个用例，03.29 场次）
+- `test_recap_0329_test.go` -- 端到端集成测试（1 个用例，03.29 场段）
+- `provider_tools_test.go` -- OpenAI provider tool-calling 测试（5 个用例，2026-07-22 新增）
+- `anthropic_tools_test.go` -- Anthropic provider tool-calling 测试（5 个用例，2026-07-22 新增）
 
 ## 变更记录 (Changelog)
+
+- 2026-07-22(二):**MCP 搜索工具集成 Phase 1/4**(commit `5b84b63`)。① **`generateRecap` MCP 工具感知**(`handler.go`):回顾生成的 AI 调用入口根据是否配置 MCP 工具选择路径——有 MCP 工具 + provider 实现 `aiprovider.ToolCapableProvider`→走 `runToolsAwareGenerate`(默认调 `mcp.RunWithTools` agent loop,模型可主动联网查证术语/人名/游戏名),否则普通 `provider.Generate` 零回归。包级函数变量 `RunToolsAwareGenerate` 由 `main.go` 注入,规避 recap→mcp 反向导入。② **Phase 1 tool-calling 测试**(虽属 `aiprovider` 但测试文件置于本包):新增 `provider_tools_test.go`(5:OpenAI GenerateWithTools 请求体构造 + parseChatCompletionResult tool_calls 解析含 finish_reason 缺失回填 + **空 tools 等价 Generate 零回归契约**)+ `anthropic_tools_test.go`(5:Anthropic GenerateWithTools + tool_use 解析 + 纯文本向后兼容 + **空 tools 等价契约**)。recap 测试 105→115。降级保证:未配置/CLI provider(claude_cli/codex_cli 不实现 ToolCapableProvider)/工具失败→静默降级普通 Generate,行为与无 MCP 完全一致。详见 `AGENTS.md` 2026-07-22 changelog。
 
 - 2026-07-16(三):**术语校正词边界感知替换 + ResolvedTemplate 补 json tag**(调查文档修复批次,codex 审核 APPROVED)。① **术语词边界**(`glossary_correction.go`/`transcript_correction.go`):原两处调用点用 `strings.ReplaceAll` 做纯子串匹配,含 ASCII 字母数字的 term(`AI`/`277`/`Nike`)嵌在更长字符串(`MAIL`/`123277456`/`Nikerussia`)里时被误替换,静默损坏转写文本(位置B)和回顾正文(位置A)。新增 `replaceTermBoundaryAware`/`hasAlphanumeric`/`isASCIIAlphanumeric` 3 函数——对含 `[A-Za-z0-9]` 的 term 强制左右边界非 ASCII 字母数字,纯 CJK term 回落 `strings.ReplaceAll` 保持零回归;`term==""` 提前返回避免 `ReplaceAll` 在每字符间插入 canonical(调查文档 §5.6 边界 bug)。手写 rune 扫描(不用正则:Go RE2 不支持 lookbehind + 150 条规则各自 Compile 性能差)。位置B 顺带修正:只在 `replaced != output` 时才记 applied,correction report 更准。**关键**:纯 CJK 零回归有专门测试验证。新增 4 测试(`TestReplaceTermBoundaryAware` 16 用例/`TestHasAlphanumeric` 9 用例/`TestApplyGlossaryCorrectionsAlphanumericBoundary`/`TestCorrectTextWithRulesBoundaryAwareAndAppliedAccuracy`),recap_test.go 72→76。② **ResolvedTemplate 补 json tag**(`template.go:57-63`):该结构体缺 `json:` tag,Go 默认 PascalCase 序列化,前端按 snake_case 访问得 undefined → 主播级模板「跟随全局」预览全空、切换自定义不回填。补 4 字段 `json:"snake_case"` tag(与同文件 `Template` 风格一致),同步 OpenAPI spec(`templates.yaml`/`openapi.yaml`/`README.md`/`api-gap-analysis.md` 从 PascalCase 改回 snake_case)、重新生成 `web/src/api/generated.ts`、清理 `types-derived.ts` 误导注释。新增 `TestResolvedTemplateJSONKeys`(断言 snake_case 键名 + 不再有 PascalCase),template_test.go 26→27。后端 27 包全过、gofmt/vet 通过、redocly 7 warnings 同基线。
 
