@@ -10,7 +10,7 @@
 
 /* ── Sidebar ── */
 .settings-v10 .sidebar {
-  width: 228px; min-width: 228px;
+  width: var(--sidebar-w); min-width: var(--sidebar-w);
   background: var(--surface);
   border-right: 1px solid var(--border);
   padding: 16px 12px;
@@ -57,7 +57,7 @@
   background: var(--surface-warm); color: var(--text-muted);
 }
 .settings-v10 .pipeline-dot.done { background: var(--accent-bg); color: var(--accent); }
-.settings-v10 .pipeline-dot.partial { background: rgba(221,91,0,0.1); color: var(--warning); }
+.settings-v10 .pipeline-dot.partial { background: var(--warning-bg); color: var(--warning); }
 .settings-v10 .pipeline-dot.pending { background: var(--surface-warm); color: var(--text-muted); }
 .settings-v10 .pipeline-info { display: flex; flex-direction: column; min-width: 0; }
 .settings-v10 .pipeline-name { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; }

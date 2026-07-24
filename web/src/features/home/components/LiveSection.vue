@@ -85,7 +85,7 @@ const emit = defineEmits<{
   background: var(--canvas);
   padding: 16px 18px;
   box-shadow: var(--shadow-sm);
-  transition: box-shadow 0.2s, transform 0.2s;
+  transition: all 0.22s cubic-bezier(0.22, 1, 0.36, 1);
   position: relative;
   overflow: hidden;
 }
@@ -95,16 +95,16 @@ const emit = defineEmits<{
   transform: translateY(-2px);
 }
 
-.live-card::before {
-  content: "";
-  position: absolute;
-  left: 0; top: 0; bottom: 0;
-  width: 3px;
-  border-radius: 0 2px 2px 0;
+/* v2 视觉统一:用渐变底色替代原左侧 3px 色条(原型 line 240-241),
+   识别度由 badge 文字 + pulse 点 + 渐变三重编码,删色条无 a11y 损失 */
+.live-card.recording {
+  border-color: rgba(208, 0, 0, 0.12);
+  background: linear-gradient(135deg, var(--canvas) 60%, var(--recording-bg) 100%);
 }
-
-.live-card.recording::before { background: var(--warning); }
-.live-card.streaming::before { background: var(--success); }
+.live-card.streaming {
+  border-color: rgba(232, 93, 4, 0.12);
+  background: linear-gradient(135deg, var(--canvas) 60%, var(--live-bg) 100%);
+}
 
 .live-card-header {
   display: flex;
@@ -129,8 +129,8 @@ const emit = defineEmits<{
   border-radius: var(--radius-full);
 }
 
-.live-card-badge.recording { background: rgba(221, 91, 0, 0.1); color: var(--warning); }
-.live-card-badge.streaming { background: rgba(26, 174, 57, 0.1); color: var(--success); }
+.live-card-badge.recording { background: var(--recording-bg); color: var(--recording); }
+.live-card-badge.streaming { background: var(--live-bg); color: var(--live); }
 
 .live-card-badge .pulse {
   width: 6px;
@@ -139,8 +139,8 @@ const emit = defineEmits<{
   animation: live-pulse 1.5s ease-in-out infinite;
 }
 
-.live-card-badge.recording .pulse { background: var(--warning); }
-.live-card-badge.streaming .pulse { background: var(--success); }
+.live-card-badge.recording .pulse { background: var(--recording); }
+.live-card-badge.streaming .pulse { background: var(--live); }
 
 @keyframes live-pulse {
   0%, 100% { opacity: 1; }

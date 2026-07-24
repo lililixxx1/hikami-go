@@ -161,7 +161,7 @@ onMounted(async () => {
 
 <template>
   <OnboardingWizard />
-  <div class="home-page">
+  <div class="home-page stagger">
     <QuickActions
       @add-streamer="handleAddStreamer"
       @discover="handleDiscoverReplay"
