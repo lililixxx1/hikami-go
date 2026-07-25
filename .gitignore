@@ -26,10 +26,16 @@ internal/runtime/assets/*
 !internal/runtime/assets/LICENSE.txt
 
 # 裁剪版 ffmpeg 构建中间产物（scripts/build-ffmpeg-minimal.sh）
-.tmp/ffmpeg-build/
+# .tmp/ 整个目录是 ad-hoc 调试/临时评审工作区(shot 脚本、read_cookie 实验、
+# 临时 review diff 等),全部不入库。注:第 10 行的 tmp/(无前导点)是另一条独立规则。
+.tmp/
 
 # Runtime data (recordings, transcriptions, cookies)
+# data/ 是文档约定的 output_root;hikami-go/ 是 config.go 的 output_root 默认值
+# (与 module 同名,git 不会自动忽略,历史上曾导致录播产物误入暂存区)。
+# 两者都忽略,覆盖用户用默认值或文档示例值的场景。
 data/
+hikami-go/
 
 # Config export snapshots
 *-config-*.json
