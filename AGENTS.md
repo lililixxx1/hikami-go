@@ -7,7 +7,7 @@
 
 ## 项目一句话
 
-Hikami-Go 是一个 Go 1.25 后端 + 内嵌 Vue 3 管理界面的 B 站直播回顾自动生成服务。入口 `cmd/hikami/`,后端包在 `internal/`,前端在 `web/`。
+Hikami-Go 是一个 Go 1.25.5 后端 + 内嵌 Vue 3 管理界面的 B 站直播回顾自动生成服务。入口 `cmd/hikami/`,后端包在 `internal/`,前端在 `web/`。
 
 ## 常用命令(Make 封装,优先使用)
 
@@ -229,6 +229,16 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
 
 ## 变更记录
 
+- 2026-07-24(四):**发布流水线修复 + Windows 产物命名约定反转 + `/init` 增量同步**(commit `959d0ff` + merge `10d0c3f`;无代码改动,纯 CI/构建/文档)。**触发**:07-24 v2 视觉改动后发 release 时发现 CI 与命名两处问题。**改动**:
+
+  ① **CI `.github/workflows/release.yml`**:`go-version` `1.25.0`→`1.25.5`(对齐 `go.mod`,消除 toolchain 自动下载 warning);加 `workflow_dispatch` 触发器(可手动重跑失败发布)+ checkout 加 `ref` 条件(手动触发时 checkout 到指定 tag 的 commit);Release 加 `prerelease` 自动判定(tag/inputs 含 `-` 标预发布,如 `v1.0.0-rc1`)。
+
+  ② **产物命名约定反转**(消除「lite=功能阉割」误解):旧「默认=有 ffmpeg,`-lite`=无 ffmpeg」→ 新「**默认=无 ffmpeg(最精简),`-ffmpeg`=内嵌 ffmpeg**」。4 产物:`hikami-windows-amd64.exe`(无 ffmpeg,控制台)/ `hikami-windows-amd64-ffmpeg.exe`(内嵌,控制台)/ `hikami-windows-amd64-desktop.exe`(无 ffmpeg,托盘)/ `hikami-windows-amd64-desktop-ffmpeg.exe`(内嵌,托盘,✨推荐)。**修复隐藏 bug**:原 ffmpeg 分支覆盖赋值会冲掉 desktop 的 systray tag,改为顺序追加(`embedded_web` → `systray` → `embed_ffmpeg`)。**Makefile** 4 个 Windows target 同步重命名:`build-windows-amd64-lite`→`build-windows-amd64-ffmpeg`、`build-windows-desktop-lite`→`build-windows-desktop-ffmpeg`;`build-windows-amd64`(原嵌 ffmpeg,现不嵌)与 `build-windows-desktop`(原嵌,现不嵌)语义反转。
+
+  ③ **README**:加「该下哪个版本」选择指引(4 产物场景对照表 + 命名约定说明)、双击运行/命令行运行/后台服务说明、无头服务器警告(desktop 版依赖桌面会话,Server Core 需用非 desktop);项目结构段补 internal/ 分层说明;技术栈 Go 1.25→1.25.5。同步更新 `CLAUDE-detail/development.md`(4 target 命名)+ `cmd/hikami/CLAUDE.md`(FAQ + 07-24 命名变更注)。
+
+  **`/init-project` 增量同步**(本轮,HEAD `84ef792`→`10d0c3f`,仅 2 commit 纯 CI/构建/文档,**无 .go / web 改动**):核对发现 3 处当前状态文档漂移(历史 changelog 条目内的 `-lite` 属于「当时的真实记录」不改写历史,仅加交叉引用):① 根 CLAUDE.md 技术栈 `Go 1.25.0`→`1.25.5`;② `docs/DESIGN.md` 依赖管理段 `Go 版本 1.25.0`→`1.25.5` + 补 mcp-go v0.56.0/systray v1.12.2 依赖说明;③ CLAUDE.md 2026-07-14 Windows 托盘 changelog 条目加「2026-07-24 命名约定反转」交叉引用。**核实通过(无需改)**:无代码改动 → 测试计数与模块索引无漂移(沿用 07-24 v2 条目的 **27 包/200 测试** 基线)、Makefile/release.yml/cmd CLAUDE.md/development.md/README 已在 `959d0ff` 同步更新、AGENTS.md「直接命令」段的 Go 版本指引(`Go 1.25 已正确配置`,`1.25` 语义准确)保留。**验证**:`go.mod` go 1.25.5 ✓、`grep` 确认无遗漏的当前状态 `1.25.0` 引用(历史 changelog 内的 `1.25.0→1.25.5` 迁移记录除外)。**回归**:零(纯文档 + CI/Makefile,无源码)。文档:本条 + 根 CLAUDE.md changelog + 上述 3 处修正。
+
 - 2026-07-24(四):**`/init-project` 增量同步 — MCP 集成文档回填 + v2 视觉文档补登**(无代码改动,纯文档漂移修复)。HEAD `83d78a9`(07-24 README 截图)已是 AGENTS.md changelog 顶部条目,但机械统计发现 **2026-07-22 MCP 搜索工具集成**(6 phase,commit `5b84b63`,AGENTS.md 已有详尽 changelog)与 07-24 v2 视觉改动的文档**未同步到根 CLAUDE.md 模块索引与多个模块 CLAUDE.md**——典型「AGENTS.md changelog 写了但索引/模块文档忘了同步」型漂移(与 07-18/07-20/07-21 同款)。
 
   **全量逐包核对**(27 internal 包 + web + cmd `^func Test` 机械统计 vs 根 CLAUDE.md 精简模块索引声称值):**22/28 包零偏差**,6 处漂移 + 1 个缺失模块,全部对应 07-22 MCP 集成与 07-24 视觉改动。
@@ -341,7 +351,7 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
 
 - 2026-07-14(一):**Windows 系统托盘 + 隐藏控制台 + 文件日志**(`ad34a15`)。为 Windows 桌面用户优化:双击 exe 后无控制台黑窗、托盘图标可打开管理界面/退出、日志自动落盘。**改动**:① `cmd/hikami/` 新增 `tray_windows.go`(`//go:build windows && systray`,基于 `fyne.io/systray` 实现托盘图标+菜单「打开管理界面/退出」)、`tray_other.go`(`//go:build !windows || !systray` 等价占位,两文件 build tag 互斥保证 `runTray`/`shutdownCoordinator`/`initLogFile` 在所有平台可编译)、`trayicon.go`+`trayicon.ico`(`//go:embed` 托盘图标字节);② **关闭流程重构为 `shutdownCoordinator`**(sync.Once 幂等):原 main.go 内联的 SIGINT/SIGTERM 监听 + HTTP Shutdown 抽到协调器,托盘「退出」/信号都走 `requestShutdown`,关 HTTP 后调 `systray.Quit()` 让 `systray.Run()` 返回、main 继续 defer 链(LIFO:sched.Stop→workerPool.Stop→database.Close→logCleanup),**不调 os.Exit** 保证 defer 执行;③ **桌面模式文件日志**:`initLogFile` 在 Windows+systray 下优先写 `%LOCALAPPDATA%/Hikami-Go/hikami.log`(用户可写目录),失败回退 exe 同目录便携模式,其他平台返回 stdout(main 启动时调 `initLogFile()` 拿 logWriter+logCleanup);④ Makefile 新增 `build-windows-desktop`/`-lite` target(`-tags 'embed_ffmpeg,embedded_web,systray'` + `-ldflags='-H windowsgui -s -w'`,`CGO_ENABLED=0`);⑤ CI `.github/workflows/release.yml` windows 矩阵新增 `desktop: true` 变体(产物名带 `-desktop` 后缀)。依赖:`go.mod` 新增 `fyne.io/systray v1.12.2`(transitive godbus/dbus/v5 等)。**验证**:27 包全过、go vet 通过。文档:cmd/hikami CLAUDE.md + 本文件 changelog。
 
-- 2026-07-16(三):**3 个调查文档问题修复**(用户提供的 `/home/lioi/文档/investigations/` 下 3 个调查,codex CLI + code-reviewer 子代理多轮审核)。**核实阶段发现**:问题 2(术语校正)的调查文档误标"已修复",实际本仓库代码未修复(改动停在另一台 Windows 机器 `C:\Users\Administrator\Desktop\ccc\hzm`),3 个问题全部待修复。**修复**:
+- 2026-07-16(三):**3 个调查文档问题修复**(用户提供的 `/home/<user>/文档/investigations/` 下 3 个调查,codex CLI + code-reviewer 子代理多轮审核)。**核实阶段发现**:问题 2(术语校正)的调查文档误标"已修复",实际本仓库代码未修复(改动停在另一台 Windows 机器 `C:\Users\<user>\...\hzm`),3 个问题全部待修复。**修复**:
   ① **术语校正词边界缺失**(后端,严重度中):`glossary_correction.go`/`transcript_correction.go` 两处 `strings.ReplaceAll` 纯子串匹配,含 ASCII 字母数字的 term 嵌在更长单词里时被误替换(AI 嵌 MAIL/277 嵌 123277456),静默损坏转写文本+回顾正文。新增 `replaceTermBoundaryAware`/`hasAlphanumeric`/`isASCIIAlphanumeric`(对含 `[A-Za-z0-9]` 的 term 强制词边界,纯 CJK 回落 ReplaceAll 零回归;`term==""` 提前返回防文本损坏),位置B 顺带修正 applied 记录准确性。+4 测试(recap_test.go 72→76)。
   ② **ResolvedTemplate 缺 json tag**(后端,严重度中):`template.go:57-63` 4 字段无 tag → Go 用 PascalCase 序列化 → 前端按 snake_case 访问得 undefined,主播级模板「跟随全局」预览全空。补 `json:"snake_case"` tag,同步 OpenAPI spec 4 文件(从 PascalCase 改回 snake_case)、重新生成 `generated.ts`、清理误导注释。+1 测试(template_test.go 26→27)。
   ③ **TemplateCardV10「添加变量」无效**(前端,严重度中):`kvRows` writable computed 读写环 + setter 过早丢弃空 key,点「+ 添加变量」后新行立即被销毁。改为独立 ref + 保存时 flush;`:key` 从数组索引改稳定 id。codex 3 轮审核收敛出额外 BLOCKING:成功/失败协议(composable 的 loadData/save/importTemplateFile 返回 `Promise<boolean>`,组件仅在成功时 sync/关对话框/emit;写入成功但重拉失败也视为失败)、导入同步(import handler 后 sync 避免覆盖)、预设不 sync(applyPreset 不动 extraVars)。+8 测试(web 161→180、24→26 文件)。

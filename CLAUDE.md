@@ -40,7 +40,7 @@ discovered --> downloading/recording/importing --> media_ready
 
 | 组件 | 选型 |
 |------|------|
-| 语言 | Go 1.25.0 |
+| 语言 | Go 1.25.5 |
 | HTTP 框架 | Gin |
 | WebSocket | gorilla/websocket |
 | 数据库 | SQLite (modernc.org/sqlite, 纯 Go 无 CGO) |
@@ -249,6 +249,18 @@ systemctl status hikami      # 状态
 
 ## 变更记录 (Changelog)
 
+### 2026-07-24 · 发布流水线修复 + Windows 产物命名约定反转 + `/init` 增量同步
+
+**`ci(release): 修复 Go 版本号 + 产物重命名(-lite→-ffmpeg) + README 版本指引`**(commit `959d0ff` + merge `10d0c3f`,无代码改动,纯 CI/构建/文档)。**触发**:07-24 v2 视觉改动后发 release 时发现 CI 与命名两处问题。**改动**:
+
+① **CI release.yml**:`go-version` `1.25.0`→`1.25.5`(对齐 `go.mod`,消除 toolchain 自动下载 warning);加 `workflow_dispatch` 触发器(可手动重跑失败发布)+ checkout 加 `ref` 条件(手动触发时 checkout 到指定 tag 的 commit);Release 加 `prerelease` 自动判定(tag/inputs 含 `-` 标预发布,如 `v1.0.0-rc1`)。
+
+② **产物命名约定反转**(消除「lite=功能阉割」误解):旧「默认=有 ffmpeg,`-lite`=无 ffmpeg」→ 新「**默认=无 ffmpeg(最精简),`-ffmpeg`=内嵌 ffmpeg**」。4 产物:`hikami-windows-amd64.exe`(无 ffmpeg,控制台)、`hikami-windows-amd64-ffmpeg.exe`(内嵌,控制台)、`hikami-windows-amd64-desktop.exe`(无 ffmpeg,托盘)、`hikami-windows-amd64-desktop-ffmpeg.exe`(内嵌,托盘,✨推荐)。**修复隐藏 bug**:原 ffmpeg 分支覆盖赋值会冲掉 desktop 的 systray tag,改为顺序追加(`embedded_web` → `systray` → `embed_ffmpeg`)。Makefile 4 个 Windows target 同步重命名(`build-windows-amd64-lite`→`build-windows-amd64-ffmpeg` 等)。
+
+③ **README**:加「该下哪个版本」选择指引(4 产物场景对照表 + 命名约定说明)、双击运行/命令行运行/后台服务说明、无头服务器警告(desktop 版依赖桌面会话,Server Core 需用非 desktop)。项目结构段补 internal/ 分层说明 + 技术栈 Go 1.25→1.25.5。
+
+**`/init-project` 增量同步**(本轮,HEAD `84ef792`→`10d0c3f`,仅 2 commit 纯 CI/构建/文档,**无 .go / web 改动**):核对发现 3 处当前状态文档漂移(历史 changelog 条目内的 `-lite` 属于「当时的真实记录」不改写历史,仅加交叉引用):① 根 CLAUDE.md 技术栈 `Go 1.25.0`→`1.25.5`;② `docs/DESIGN.md` 依赖管理段 `Go 版本 1.25.0`→`1.25.5` + 补 mcp-go/systray 依赖说明;③ 2026-07-14 Windows 托盘 changelog 条目加「2026-07-24 命名约定反转」交叉引用。**核实通过**:无代码改动 → 测试计数与模块索引无漂移(沿用 07-24 v2 条目的 27 包/200 测试基线)、Makefile/release.yml/cmd CLAUDE.md/development.md/README 已在 `959d0ff` 同步更新。**验证**:`go.mod` go 1.25.5 ✓。**回归**:零(纯文档 + CI/Makefile,无源码)。文档:本条 + AGENTS.md changelog + 上述 3 处修正。
+
 ### 2026-07-24 · 前端视觉统一 v2 + Sora 字体本地嵌入 + README 截图 + `/init` MCP 集成文档回填
 
 **4 commits**(`a9f040f` v1 轻微优化 + `45c4c61` v2 全局 token + `de239d4` Sora 嵌入 + `83d78a9` README 截图;qoderclicn/Qwen3.8-Max-Preview 计划+执行审核多轮)。**触发**:用户反馈首页风格不统一、想要轻微优化。v1(`a9f040f`)只做局部微调(首页 6 子组件 `.section-title` 去掉对中文无效的 `text-transform:uppercase`/`letter-spacing`、卡片 hover 加 `translateY` 微浮起、`--accent-glow` token、grid gap 调整),用户反馈"看不出变化"——**根因**:v1 只在 token 之上做局部微调、没动全局 token 体系。**v2(`45c4c61`)改为「全局 token 先行」**:`design-tokens.css` 升级对齐 `hikami-full-redesign.html` 原型——accent #0075de→#0066cc(加深加饱和)、圆角 8/12/14→10/14/18、新增 `--font-display`(Sora)/`--font-mono`/`--live`/`--recording` 语义色、success 改暖绿、阴影更柔和;`ui.css` 的 HPill 4 个状态色硬编码 rgba/十六进制**全部 tokenize**;`base.css` 加 `fadeUp`/`.stagger` 入场动画 + `prefers-reduced-motion` 无障碍守卫。**Sora 本地嵌入(`de239d4`)**:v2 原用 google fonts CDN 加载 Sora,不适合单文件自托管/内网离线部署;改为只嵌 1 个 woff2(25K,可变字体 latin 主块),`fonts.css` 单 `@font-face` + `font-weight:500 700` 范围声明;`public/fonts/LICENSE.txt`(OFL 1.1 全文)随 exe `//go:embed webdist` 分发满足 OFL §2;exe +29K(可忽略),中文不受影响(Sora 不覆盖中文走系统字体)。**README 截图(`83d78a9`)**:首页/主播管理/回顾列表/AI 回顾 Markdown 源码/设置 5 张界面图。**测试计数不变**(200/27,纯 CSS + 字体嵌入 + README,零逻辑改动)。**确立规范**:`styles/` 为全局样式唯一入口,改 token = 所有 `var()` 消费者自动统一,**禁止组件内硬编码颜色/圆角/阴影**。
@@ -316,7 +328,7 @@ systemctl status hikami      # 状态
 
 ### 2026-07-14 · Windows 系统托盘 + 隐藏控制台 + 文件日志
 
-- **Windows 系统托盘**（`ad34a15`）：为 Windows 桌面用户优化，双击 exe 无控制台黑窗、托盘图标可打开管理界面/退出、日志自动落盘。① 新增 `cmd/hikami/tray_windows.go`（`//go:build windows && systray`，基于 `fyne.io/systray`）+ `tray_other.go`（等价占位，build tag 互斥保证全平台可编译）+ `trayicon.go`/`trayicon.ico`（`//go:embed` 图标字节）；② **关闭流程重构为 `shutdownCoordinator`**（sync.Once 幂等）：托盘「退出」/信号都走 `requestShutdown`，关 HTTP 后调 `systray.Quit()` 让 `systray.Run()` 返回、main 继续 defer 链（LIFO），**不调 os.Exit** 保证 defer 执行；③ **桌面模式文件日志**：`initLogFile` 在 Windows+systray 下优先写 `%LOCALAPPDATA%/Hikami-Go/hikami.log`（失败回退 exe 同目录便携模式），其他平台返回 stdout；④ Makefile 新增 `build-windows-desktop`/`-lite` target（`-tags 'embed_ffmpeg,embedded_web,systray'` + `-ldflags='-H windowsgui -s -w'`）；⑤ CI release.yml windows 矩阵新增 `desktop: true` 变体。依赖：`go.mod` 新增 `fyne.io/systray v1.12.2`。
+- **Windows 系统托盘**（`ad34a15`）：为 Windows 桌面用户优化，双击 exe 无控制台黑窗、托盘图标可打开管理界面/退出、日志自动落盘。① 新增 `cmd/hikami/tray_windows.go`（`//go:build windows && systray`，基于 `fyne.io/systray`）+ `tray_other.go`（等价占位，build tag 互斥保证全平台可编译）+ `trayicon.go`/`trayicon.ico`（`//go:embed` 图标字节）；② **关闭流程重构为 `shutdownCoordinator`**（sync.Once 幂等）：托盘「退出」/信号都走 `requestShutdown`，关 HTTP 后调 `systray.Quit()` 让 `systray.Run()` 返回、main 继续 defer 链（LIFO），**不调 os.Exit** 保证 defer 执行；③ **桌面模式文件日志**：`initLogFile` 在 Windows+systray 下优先写 `%LOCALAPPDATA%/Hikami-Go/hikami.log`（失败回退 exe 同目录便携模式），其他平台返回 stdout；④ Makefile 新增 `build-windows-desktop`/`-lite` target（`-tags 'embed_ffmpeg,embedded_web,systray'` + `-ldflags='-H windowsgui -s -w'`）；⑤ CI release.yml windows 矩阵新增 `desktop: true` 变体。依赖：`go.mod` 新增 `fyne.io/systray v1.12.2`。（2026-07-24 命名约定反转：`-lite` → `-ffmpeg`，见下方 2026-07-24 条目。）
 
 ### 2026-07-13 · 嵌入裁剪版 ffmpeg + Windows exe 闪退修复 + 不再创建空 logs/
 

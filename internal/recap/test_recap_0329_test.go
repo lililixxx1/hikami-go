@@ -17,8 +17,8 @@ import (
 )
 
 func TestGenerateRecap_0329(t *testing.T) {
-	packageDir := "/home/cc/codex/huizeman/sessions/26.03.29/package"
-	outputDir := "/home/cc/hikami-go/test-recap"
+	packageDir := "/home/<user>/codex/huizeman/sessions/26.03.29/package"
+	outputDir := "/home/<user>/hikami-go/test-recap"
 
 	// API key 仅从环境变量读取，缺失则跳过测试，避免硬编码凭证。
 	apiKey := os.Getenv("DEEPSEEK_API_KEY")

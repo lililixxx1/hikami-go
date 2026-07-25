@@ -11,7 +11,8 @@ tmp/
 .env
 config.yaml
 cmd/hikami/webdist/
-.claude/plans/
+# .claude/ 整个目录是 Claude Code 的工作缓存(index.json 扫描缓存 + plans/ 会话产物),不应入库
+.claude/
 .spec-workflow/
 cover.out
 cover_final.out
@@ -94,8 +95,8 @@ config.yaml.bak*
 # Codex task workspace
 .cgpt/
 
-# Codex review reports (codex-review skill 产物,开发过程文件)
-/reviews/
+# Codex review reports (codex-review skill 产物,开发过程文件)。
+# reviews/ 规则已在上方忽略(任意深度),此处历史上重复一条,2026-07-25 清理时删除。
 
 # ZCode agent 工作目录(会话计划/缓存,不应入库)
 .zcode/

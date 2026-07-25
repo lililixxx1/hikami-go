@@ -51,7 +51,7 @@ func createInMemoryDB(t *testing.T) (*sql.DB, error) {
 // TestGenerateRecapFromRealData generates a recap using the actual recap module
 // with DeepSeek API. Run with: go test -run TestGenerateRecapFromRealData -v -timeout 10m
 func TestGenerateRecapFromRealData(t *testing.T) {
-	packageDir := "/home/lioi/下载/codex/huizeman/sessions/26.04.22/package"
+	packageDir := "/home/<user>/下载/codex/huizeman/sessions/26.04.22/package"
 	outputDir := "/tmp/test-recap-26.04.22"
 	deepseekAPIKey := os.Getenv("AI_API_KEY")
 	if deepseekAPIKey == "" {

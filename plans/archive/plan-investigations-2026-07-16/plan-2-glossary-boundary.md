@@ -1,13 +1,13 @@
 # 修复计划 2 — 术语校正词边界缺失(replaceTermBoundaryAware)
 
-> **来源调查**:`/home/lioi/文档/investigations/术语校正误匹配子串-词边界缺失-replaceTermBoundaryAware.md`
+> **来源调查**:`/home/<user>/文档/investigations/术语校正误匹配子串-词边界缺失-replaceTermBoundaryAware.md`
 > **代码核实结果**:⚠️ **调查文档声称"已修复",但本仓库代码实际未修复!**
 > - `internal/recap/glossary_correction.go:66` 仍是 `strings.ReplaceAll`
 > - `internal/recap/transcript_correction.go:61` 仍是 `strings.ReplaceAll`
 > - `replaceTermBoundaryAware`/`hasAlphanumeric`/`isASCIIAlphanumeric` 3 函数不存在
 > - `glossary_correction_test.go` 测试文件不存在
 > - git log 无相关 commit
-> - 文档里的路径是 `C:\Users\Administrator\Desktop\ccc\hzm`(另一台 Windows 机器),改动未同步到本仓库
+> - 文档里的路径是 `C:\Users\<user>\...\hzm`(另一台 Windows 机器),改动未同步到本仓库
 >
 > **严重度**:中(静默文本损坏)
 > **状态**:计划待 codex 审核

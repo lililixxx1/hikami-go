@@ -1,6 +1,6 @@
 # 修复计划 1 — TemplateCardV10「添加变量」无效(kvRows setter 丢弃空 key 行)
 
-> **来源调查**:`/home/lioi/文档/investigations/回顾模板添加变量无反应-kvRows空key被setter丢弃.md`
+> **来源调查**:`/home/<user>/文档/investigations/回顾模板添加变量无反应-kvRows空key被setter丢弃.md`
 > **代码核实结果**:✅ 与实际代码完全吻合(`TemplateCardV10.vue:35-52` writable computed、`44-51` setter `if(k)` 过滤、`62-64` addKvRow、`151 :key="i"`)
 > **严重度**:中(全局模板「额外变量」无法新增)
 > **状态**:计划待 codex 审核

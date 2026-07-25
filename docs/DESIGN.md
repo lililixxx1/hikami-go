@@ -1330,8 +1330,8 @@ make tidy
 
 ### 依赖管理
 
-- Go module：`hikami-go`，Go 版本 1.25.0。
-- 主要 Go 依赖：Gin、gorilla/websocket、Viper、modernc.org/sqlite、robfig/cron。
+- Go module：`hikami-go`，Go 版本 1.25.5（mcp-go v0.56.0 依赖要求 1.25.5，2026-07-22 MCP 集成起由 1.25.0 升级）。
+- 主要 Go 依赖：Gin、gorilla/websocket、Viper、modernc.org/sqlite、robfig/cron、mark3labs/mcp-go v0.56.0（MCP 搜索工具，2026-07-22 起）、fyne.io/systray v1.12.2（Windows 托盘，2026-07-14 起）。
 - 前端依赖：Vue、Vue Router、Pinia、Axios、marked、mitt、dompurify、qrcode（devDependencies：Vite、TypeScript、vue-tsc、vitest、`@vue/test-utils`、happy-dom）；UI 组件为自建 H\* 组件库，不使用任何第三方 UI 框架。
 - 硬依赖外部工具：`ffmpeg`、`ffprobe`，启动时不可用会导致 `StartupError`。
 - 可选外部工具：`yt-dlp`、`rclone`、`claude`、`codex`；不可用会降低对应 capability。

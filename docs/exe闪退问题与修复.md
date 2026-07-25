@@ -167,7 +167,7 @@ func finalizeInstall(tmpDir, versionDir string, asset FFmpegAsset) error {
 **改法 B（最省事）：手动放裁剪版 zip，跳过下载步骤**
 
 把本地已验证 PASS=7 的那个裁剪版 `ffmpeg.zip`
-（`C:\Users\Administrator\Desktop\ccc\hzm\ffmpeg-verify-bundle\ffmpeg.zip`）上传到
+（`C:\Users\<user>\...\hzm\ffmpeg-verify-bundle\ffmpeg.zip`）上传到
 仓库的 `internal/runtime/assets/ffmpeg.zip`，然后改 workflow：
 
 ```diff

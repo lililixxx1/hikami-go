@@ -14,7 +14,7 @@
 
 ## 目标
 
-修复 `/home/lioi/文档/investigations/` 下记录的 4 个问题。经代码核实 + codex 只读确认，4 个问题诊断总体成立，其中 **Issue 3 的根因需修正**（调查文档归因为 `flush:'pre'` 竞态，codex + 代码核验确认真实根因是 `watch` 缺 `immediate:true`）。
+修复 `/home/<user>/文档/investigations/` 下记录的 4 个问题。经代码核实 + codex 只读确认，4 个问题诊断总体成立，其中 **Issue 3 的根因需修正**（调查文档归因为 `flush:'pre'` 竞态，codex + 代码核验确认真实根因是 `watch` 缺 `immediate:true`）。
 
 ## 核实结论总览
 

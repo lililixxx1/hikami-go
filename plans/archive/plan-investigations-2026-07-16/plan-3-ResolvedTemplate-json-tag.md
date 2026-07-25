@@ -1,6 +1,6 @@
 # 修复计划 3 — ResolvedTemplate 缺 JSON tag(序列化 PascalCase)
 
-> **来源调查**:`/home/lioi/文档/investigations/主播详情使用自定义模板报错-ResolvedTemplate缺JSONtag.md`
+> **来源调查**:`/home/<user>/文档/investigations/主播详情使用自定义模板报错-ResolvedTemplate缺JSONtag.md`
 > **代码核实结果**:✅ 与实际代码完全吻合
 > - `internal/recap/template.go:57-63` `ResolvedTemplate` 4 字段无 `json:` tag
 > - 对比同文件 `template.go:37-49` `Template` 有完整 snake_case tag
