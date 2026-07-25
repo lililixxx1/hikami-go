@@ -974,7 +974,7 @@ flowchart TB
 
 ### 默认值与校验
 
-- 默认输出目录为 `hikami-go`，默认数据库为 `hikami.db`。
+- 默认输出目录为 `./data`（2026-07-25 起,原 `hikami-go`），默认数据库为 `hikami.db`。
 - 默认命令：`ffmpeg`、`ffprobe`、`yt-dlp`、`rclone`。
 - 默认监听 `127.0.0.1:6334`（仅绑定回环；若绑非回环地址则强制要求 `web.admin_token`），worker 数为 3。
 - 默认定时：回放发现 `@every 20m`，直播检查 `@every 30s`。

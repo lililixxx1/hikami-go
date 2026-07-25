@@ -1,4 +1,4 @@
-output_root: "hikami-go"
+output_root: "./data"
 db_path: "hikami.db"
 
 # Cookie 文件加密密钥（64 位十六进制字符串 = 32 字节 AES-256）

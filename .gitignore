@@ -31,9 +31,9 @@ internal/runtime/assets/*
 .tmp/
 
 # Runtime data (recordings, transcriptions, cookies)
-# data/ 是文档约定的 output_root;hikami-go/ 是 config.go 的 output_root 默认值
-# (与 module 同名,git 不会自动忽略,历史上曾导致录播产物误入暂存区)。
-# 两者都忽略,覆盖用户用默认值或文档示例值的场景。
+# 两个 output_root 历史值都忽略:./data 是当前默认与文档约定(2026-07-25 起),
+# hikami-go 是 2026-07-08~07-25 的旧默认(保留忽略以兼容历史目录残留 +
+# 显式配置该值的用户)。huizeman 是更早的旧名(见 .gitignore:7)。
 data/
 hikami-go/
 

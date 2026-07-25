@@ -31,7 +31,7 @@
 
 配置结构体对应 `config.example.yaml` 的所有字段。主要分组：
 
-- **全局**: `output_root`(默认 `hikami-go`,2026-07-08 从 `huizeman` 改名), `db_path`, `log_format`, `ffmpeg`, `ffprobe`, `yt_dlp`, `rclone`(后两者 2026-07-08 起可通过 web `/api/config/tools` 修改,持久化到 runtime_settings tools 段), `cookie_encryption_key`
+- **全局**: `output_root`(默认 `./data`,2026-07-25 由 `hikami-go` 改名以对齐文档约定;`hikami-go` 本身是 2026-07-08 从 `huizeman` 改的), `db_path`, `log_format`, `ffmpeg`, `ffprobe`, `yt_dlp`, `rclone`(后两者 2026-07-08 起可通过 web `/api/config/tools` 修改,持久化到 runtime_settings tools 段), `cookie_encryption_key`
 - **Web**: `web.enabled`（默认 true）, `web.listen`（默认 `:6334`）
 - **Worker**: `worker.num`（唯一并发旋钮；原 `worker.live_record_num` 已删除——调度器从不读它，现走共享 `worker.num` 池）
 - **Cron**: `cron.discovery`, `cron.live_check`

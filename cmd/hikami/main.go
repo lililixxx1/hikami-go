@@ -90,6 +90,14 @@ func main() {
 		logger.Info("cookie encryption enabled (AES-256-GCM)")
 	}
 
+	// 旧默认目录 hikami-go/ 仍存在且当前 output_root 不指向它时,提示迁移(Clean 归一化比较,不列内容)。
+	if filepath.Clean(cfg.OutputRoot) != "hikami-go" {
+		if _, statErr := os.Stat("hikami-go"); statErr == nil {
+			logger.Warn("检测到旧输出目录 hikami-go/(2026-07-25 前的默认值),如需迁移旧数据请将旧目录内容移动到当前 output_root(可选;旧 session 仍可通过 /api/sessions/:sid/fetch 从 WebDAV 取回)",
+				"output_root", cfg.OutputRoot)
+		}
+	}
+
 	if err := cfg.EnsureDirs(); err != nil {
 		logger.Error("prepare directories failed", "error", err)
 		os.Exit(1)

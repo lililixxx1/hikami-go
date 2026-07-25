@@ -871,7 +871,8 @@ func Load(path string) (*Config, error) {
 }
 
 func setDefaults(v *viper.Viper) {
-	v.SetDefault("output_root", "hikami-go")
+	// 默认 ./data 与 config.example.yaml / 文档约定对齐,避免与 module 同名导致 git 不忽略。
+	v.SetDefault("output_root", "./data")
 	v.SetDefault("db_path", "hikami.db")
 	v.SetDefault("ffmpeg", defaultCommandPath("ffmpeg"))
 	v.SetDefault("ffprobe", defaultCommandPath("ffprobe"))

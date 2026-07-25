@@ -154,6 +154,20 @@ func TestSetDefaults_DashScope(t *testing.T) {
 	}
 }
 
+func TestSetDefaults_OutputRoot(t *testing.T) {
+	// config.yaml 不写 output_root → 应落到代码默认值(与 config.example.yaml 对齐)。
+	// 回归防线:2026-07-25 发现默认值 hikami-go 与 module 同名导致录播产物误入暂存区,
+	// 改为 ./data 后用此测试钉死,防止未来再次漂移。
+	path := writeTestConfig(t, "db_path: x.db\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.OutputRoot != "./data" {
+		t.Errorf("OutputRoot 默认值 = %q, 期望 %q(与 config.example.yaml 对齐)", cfg.OutputRoot, "./data")
+	}
+}
+
 func TestLogFormat(t *testing.T) {
 	// 默认 json
 	path := writeTestConfig(t, "output_root: /tmp/test\ndb_path: test.db\n")
