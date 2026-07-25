@@ -1057,7 +1057,7 @@ func (s *Server) discoverPreviewAll(ctx *gin.Context) {
 func (s *Server) discoverPreviewByURL(ctx *gin.Context) {
 	var input struct {
 		URL         string `json:"url"`
-		CookieFile  string `json:"cookie_file"`
+		AccountID   *int64 `json:"account_id"`
 		TitlePrefix string `json:"title_prefix"`
 	}
 	if err := ctx.ShouldBindJSON(&input); err != nil {
@@ -1070,7 +1070,7 @@ func (s *Server) discoverPreviewByURL(ctx *gin.Context) {
 	}
 	results, err := s.discoveries.Preview(ctx.Request.Context(), discover.PreviewInput{
 		SourceURL:   input.URL,
-		CookieFile:  input.CookieFile,
+		AccountID:   input.AccountID,
 		TitlePrefix: input.TitlePrefix,
 		// ChannelID 留空,Preview 内部填占位 _unassigned(与下载/导入抽屉不选主播的语义一致)。
 	})

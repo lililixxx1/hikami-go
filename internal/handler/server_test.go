@@ -2430,14 +2430,17 @@ func TestImportSessionStillRejectsEmptyTitle(t *testing.T) {
 }
 
 // TestDiscoverPreviewByURL:
-// 新端点 POST /api/sessions/discover/preview-by-url 接受 JSON body {url, cookie_file?, title_prefix?},
-// 返回 200 + {items: [DiscoverResult]},ChannelID 默认占位 _unassigned。
+// 端点 POST /api/sessions/discover/preview-by-url 接受 JSON body {url, account_id?, title_prefix?}
+// (2026-07-25 改造:cookie_file 字段改为 account_id),返回 200 + {items: [DiscoverResult]},
+// ChannelID 默认占位 _unassigned。
+// 注意:newTestServer 的 discoveries Manager 未注入 cookieAccounts,account_id 传了也走空串降级
+// (unauth 模式);真实解密路径由 discover 包测试覆盖(见 TestPreview_ExplicitAccountID_*)。
 func TestDiscoverPreviewByURL(t *testing.T) {
 	server := newTestServer(t)
 
 	// 1. 缺 url → 400
 	req := httptest.NewRequest(http.MethodPost, "/api/sessions/discover/preview-by-url",
-		strings.NewReader(`{"cookie_file":""}`))
+		strings.NewReader(`{"account_id":1}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	server.Router().ServeHTTP(rec, req)
@@ -2445,7 +2448,7 @@ func TestDiscoverPreviewByURL(t *testing.T) {
 		t.Fatalf("[empty url] status = %d, want 400, body = %s", rec.Code, rec.Body.String())
 	}
 
-	// 2. 正常请求 → 200 + items(fakeLister 返回 BV1)
+	// 2. 正常请求(无 account_id)→ 200 + items(fakeLister 返回 BV1)
 	req = httptest.NewRequest(http.MethodPost, "/api/sessions/discover/preview-by-url",
 		strings.NewReader(`{"url":"https://space.bilibili.com/1/lists/1","title_prefix":"【直播回放】"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -2466,6 +2469,16 @@ func TestDiscoverPreviewByURL(t *testing.T) {
 	}
 	if resp.Items[0].ChannelID != channel.UnassignedID {
 		t.Errorf("items[0].ChannelID = %q, want %q (默认占位)", resp.Items[0].ChannelID, channel.UnassignedID)
+	}
+
+	// 3. 带 account_id 的请求 → 200(body 解析 + 路由验证;unauth 模式 account_id 传了走空串降级)
+	req = httptest.NewRequest(http.MethodPost, "/api/sessions/discover/preview-by-url",
+		strings.NewReader(`{"url":"https://space.bilibili.com/1/lists/1","account_id":123}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	server.Router().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("[with account_id] status = %d, want 200, body = %s", rec.Code, rec.Body.String())
 	}
 }
 

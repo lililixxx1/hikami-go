@@ -1,17 +1,20 @@
 <!-- web/src/features/recaps/components/DiscoverPreviewDrawer.vue -->
 <!--
-  按 URL 发现回放预览抽屉(2026-07-19 解耦重写)。
+  按 URL 发现回放预览抽屉(2026-07-19 解耦重写,2026-07-25 改 Cookie 选择为账号下拉)。
   纯展示型:壳(RecapsView)负责 preview-by-url/execute API 调用,本组件接收预览结果 items +
   执行态,本地维护勾选索引集合,提交时把勾选项映射成 DiscoverPickItem 回传。
-  - 顶部 URL 输入区:用户粘贴 B 站收藏夹/合集/UP 主主页 URL + 可选 cookie 路径 + 可选 title_prefix,
-    点「发现」emit('preview-submit', input) 让壳调 preview-by-url。
+  - 顶部 URL 输入区:用户粘贴 B 站收藏夹/合集/UP 主主页 URL + 选 B 站账号(默认=默认下载账号)+
+    可选 title_prefix,点「发现」emit('preview-submit', input) 让壳调 preview-by-url。
   - exists=true 的项灰显 + 标「已存在」+ 禁止勾选(幂等,已建过 download 场次)。
   - footer:「执行勾选」(空选禁用)。原「全部下载」按钮已删除(URL 模式下用「全选新回放」+「执行勾选」替代)。
+  - 2026-07-25 改造:Cooke 选择从手填「Cookie 文件路径」HInput 改为「选择已登录 B 站账号」HSelect,
+    后端自动解密 HIKAMI_V1 加密格式 + 写明文临时文件给 yt-dlp。
 -->
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { HDrawer, HButton, HCheckbox, HPill, HInput } from '@/components/ui'
-import type { DiscoverResult, DiscoverPickItem } from '@/api/types-derived'
+import { HDrawer, HButton, HCheckbox, HPill, HInput, HSelect } from '@/components/ui'
+import type { DiscoverResult, DiscoverPickItem, BiliCookieAccount } from '@/api/types-derived'
+import { listBiliAccounts } from '@/api/bili'
 
 const props = defineProps<{
   visible: boolean
@@ -22,14 +25,54 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'update:visible': [value: boolean]
-  'preview-submit': [input: { url: string; cookie_file?: string; title_prefix?: string }]
+  'preview-submit': [input: { url: string; account_id?: number; title_prefix?: string }]
   execute: [picked: DiscoverPickItem[]]
 }>()
 
 // URL 输入区状态(2026-07-19 新增,替代旧「打开即自动遍历主播表」行为)
 const previewUrl = ref('')
-const previewCookieFile = ref('')
+const previewAccountId = ref<number | null>(null) // 2026-07-25:替代 previewCookieFile,null = 默认账号
 const previewTitlePrefix = ref('')
+
+// 账号列表加载(2026-07-25 新增,复用 ChannelPublishConfig.vue 范式)
+const accounts = ref<BiliCookieAccount[]>([])
+const accountsLoading = ref(false)
+const accountsError = ref('')
+async function loadAccounts() {
+  if (accounts.value.length > 0 || accountsLoading.value) return // 幂等
+  accountsLoading.value = true
+  accountsError.value = ''
+  try {
+    accounts.value = await listBiliAccounts()
+  } catch (err) {
+    accountsError.value = err instanceof Error ? err.message : '加载账号列表失败'
+    accounts.value = []
+  } finally {
+    accountsLoading.value = false
+  }
+}
+loadAccounts() // setup 顶层同步触发
+
+// accountIdProxy:HSelect emit string,需转 number|null(复用 ChannelPublishConfig accountIdProxy 范式)
+const accountIdProxy = computed({
+  get: () => (previewAccountId.value == null ? '' : String(previewAccountId.value)),
+  set: (v: string) => {
+    previewAccountId.value = v === '' ? null : Number(v)
+  },
+})
+
+// 下拉选项:默认项 + 已登录账号(cookie_file !== '' 才算已登录)
+const accountOptions = computed(() => {
+  const opts: { label: string; value: string }[] = [
+    { label: '(默认) 使用默认登录账号', value: '' },
+  ]
+  for (const a of accounts.value) {
+    if (!a.cookie_file) continue // 仅已登录账号
+    const label = a.nickname ? `${a.nickname}(UID ${a.uid})` : `UID ${a.uid}`
+    opts.push({ label, value: String(a.id) })
+  }
+  return opts
+})
 
 // 勾选索引集合(以 items 数组下标为 key;Set 不响应式,变更时整体替换)
 const picked = ref<Set<number>>(new Set())
@@ -86,11 +129,12 @@ function toggleAll(checked: boolean): void {
 }
 
 // 「发现」按钮:把输入区状态打包 emit 给壳,壳调 previewDiscoverSessionsByURL。
+// 2026-07-25:emit account_id(替代 cookie_file),null → undefined(不传字段,后端走默认账号)。
 function handlePreviewSubmit(): void {
   if (!canSubmit.value) return
   emit('preview-submit', {
     url: previewUrl.value.trim(),
-    cookie_file: previewCookieFile.value.trim() || undefined,
+    account_id: previewAccountId.value ?? undefined,
     title_prefix: previewTitlePrefix.value.trim() || undefined,
   })
 }
@@ -139,13 +183,21 @@ watch(
           />
           <div v-if="urlError" class="form-error">{{ urlError }}</div>
         </div>
+        <!-- 2026-07-25:B 站账号选择(主表单,默认可见;qoder M-4 移出 details)。
+             替代原「Cookie 文件路径」HInput —— 改为选已登录账号,后端自动解密加密 cookie。 -->
+        <div class="form-row">
+          <label class="form-label">B 站账号</label>
+          <HSelect
+            :model-value="accountIdProxy"
+            :options="accountOptions"
+            :disabled="accountsLoading"
+            @update:model-value="accountIdProxy = $event"
+          />
+          <div v-if="accountsError" class="form-error">{{ accountsError }}</div>
+          <div v-else class="form-hint">默认 = 设置中的默认下载账号;指定账号 = 用该账号 cookie 发现(支持私密收藏夹)</div>
+        </div>
         <details class="advanced">
           <summary>高级(可选)</summary>
-          <div class="form-row">
-            <label class="form-label">Cookie 文件路径</label>
-            <HInput v-model="previewCookieFile" placeholder="可选,留空时使用默认登录账号" />
-            <div class="form-hint">留空时自动使用设置中的默认登录账号;填了则覆盖默认账号。</div>
-          </div>
           <div class="form-row">
             <label class="form-label">标题前缀过滤</label>
             <HInput v-model="previewTitlePrefix" placeholder="可选,逗号分隔,如 【直播回放】" />

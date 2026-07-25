@@ -16,9 +16,10 @@ export function previewDiscoverSessions(): Promise<ListResponse<DiscoverResult>>
 // previewDiscoverSessionsByURL 是 2026-07-19 解耦改动新增的「按 URL 发现」入口。
 // 用户直接粘贴一个 B 站 URL（收藏夹/合集/UP 主主页），后端调 yt-dlp 列出该 URL 下所有回放，
 // 不依赖主播管理页的 channel 配置。返回的每条带 exists 标记；不选主播时 channel_id = '_unassigned'。
+// 2026-07-25 改造:Cookie 选择从手填 `cookie_file:string` 改为「选已登录账号」`account_id:number`。
 export function previewDiscoverSessionsByURL(input: {
   url: string
-  cookie_file?: string
+  account_id?: number
   title_prefix?: string
 }): Promise<ListResponse<DiscoverResult>> {
   return post('/api/sessions/discover/preview-by-url', input)

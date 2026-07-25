@@ -433,17 +433,20 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * 按 URL 预览回放(URL 驱动独立入口,2026-07-19 解耦新增)
+         * 按 URL 预览回放(URL 驱动独立入口,2026-07-19 解耦新增,2026-07-25 改 account_id)
          * @description 不绑定主播表,用户直接粘贴 B 站收藏夹/合集/UP 主主页 URL,后端调 yt-dlp flat-playlist 列出回放。
          *     所有结果归到系统占位频道 `_unassigned`(前端显示为「未分类」)。
          *     每条 Result 带 `exists` 标记(是否已建过 download 场次)。
          *     返回 200 + `{items: [DiscoverResult]}`。
          *
-         *     **cookie 优先级**(2026-07-19 v3 重构):
-         *     1. 用户显式传 `cookie_file`(非空)→ 直接用该文件路径
-         *     2. 全局默认下载账号(`bili_cookie_accounts.is_default_download=1`)→
+         *     **cookie 优先级**(2026-07-25 改造,字段从 `cookie_file` 改为 `account_id`):
+         *     1. 用户显式传 `account_id`(具体账号 ID)→ 走 ResolveCookie case 1(指定账号),
          *        自动用该账号的 cookie(账号池落盘可能是加密的 HIKAMI_V1 格式,
-         *        后端会 LoadCookie 解密 + 写明文临时文件供 yt-dlp 使用)
+         *        后端 LoadCookie 解密 + 写明文临时文件供 yt-dlp 使用);
+         *        指定账号被删(不存在)时 case 1 GetByID 失败会 fall through 到 case 2(默认账号),
+         *        后端打 WARN 让 fallthrough 可观测(qoder I-2);
+         *        账号存在但 cookie 文件解密失败时不降级(返回错误,避免用错账号 cookie 静默发布)。
+         *     2. `account_id` 留空(null/缺省)→ 全局默认下载账号(`bili_cookie_accounts.is_default_download=1`)
          *     3. 都没有 → 不带 cookie(公开回放仍能发现)
          */
         post: operations["discoverPreviewByURL"];
@@ -3566,6 +3569,10 @@ export interface components {
             enabled?: boolean;
             /** @description 单次工具调用超时(秒),<=0 用默认30 */
             timeout_sec?: number;
+            /** @description 自定义 HTTP 请求头(http/sse transport,如 Authorization 鉴权) */
+            headers?: {
+                [key: string]: string;
+            };
         };
         /** @description 内置搜索工具密钥状态(只读是否已设置) */
         MCPBuiltinConfigResponse: {
@@ -4879,11 +4886,14 @@ export interface operations {
                      */
                     url: string;
                     /**
-                     * @description 可选,显式覆盖 cookie 文件路径。
-                     *     **留空**(默认)时自动使用设置中的默认登录账号;
-                     *     填了则覆盖默认账号(适合多账号场景)。
+                     * Format: int64
+                     * @description 可选,选择已登录的 B 站账号 ID。
+                     *     - null/缺省(默认)→ 使用设置中的默认下载账号
+                     *     - 指定账号 ID → 用该账号的 cookie(自动解密 HIKAMI_V1 加密格式);
+                     *       账号被删(不存在)时降级到默认账号;账号存在但 cookie 文件解密失败时
+                     *       不降级(返回错误,避免用错账号 cookie 静默发布)
                      */
-                    cookie_file?: string;
+                    account_id?: number | null;
                     /** @description 可选,逗号分隔的标题前缀过滤(如 `【直播回放】`) */
                     title_prefix?: string;
                 };

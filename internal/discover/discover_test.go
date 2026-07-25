@@ -919,9 +919,12 @@ func TestPreview_NoCookieStore_UnauthMode(t *testing.T) {
 	}
 }
 
-// TestPreview_ExplicitCookieFileWins:用户填 CookieFile → lister 收到原路径,无临时文件
-func TestPreview_ExplicitCookieFileWins(t *testing.T) {
-	database, store := newDiscoverTestDBWithCookieStore(t, t.TempDir())
+// TestPreview_ExplicitAccountID_WritesTempCookie:用户选了具体账号 → 走 ResolveCookie case 1,
+// lister 收到临时文件路径(≠ account.CookieFile),内容含 SESSDATA(明文,已解密)。
+// 2026-07-25 改造:原 TestPreview_ExplicitCookieFileWins 改写(字段 CookieFile→AccountID)。
+func TestPreview_ExplicitAccountID_WritesTempCookie(t *testing.T) {
+	cookieDir := t.TempDir()
+	database, store := newDiscoverTestDBWithCookieStore(t, cookieDir)
 	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
 	rl := &recordingLister{entries: []Entry{{ID: "BV1"}}}
 	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, rl,
@@ -929,12 +932,12 @@ func TestPreview_ExplicitCookieFileWins(t *testing.T) {
 		WithOutputRoot(t.TempDir()),
 	)
 
-	// 用 t.TempDir() 下的路径(不创建文件),避免本机 /tmp 巧合存在同名文件导致非确定性
-	// codex r16 SUGGESTION
-	explicit := filepath.Join(t.TempDir(), "explicit.txt")
+	accountPath := writeTestCookieFile(t, cookieDir, 42, false)
+	accountID := insertBiliAccount(t, database, 42, "test", accountPath, false) // 非默认账号
+
 	_, err := manager.Preview(context.Background(), PreviewInput{
-		SourceURL:  "https://example.com",
-		CookieFile: explicit,
+		SourceURL: "https://example.com",
+		AccountID: &accountID,
 	})
 	if err != nil {
 		t.Fatalf("preview: %v", err)
@@ -943,11 +946,130 @@ func TestPreview_ExplicitCookieFileWins(t *testing.T) {
 	if !ok {
 		t.Fatal("lister not called")
 	}
-	if rec.cookiePath != explicit {
-		t.Errorf("cookiePath = %q, want %q (用户显式应原值返回)", rec.cookiePath, explicit)
+	if rec.cookiePath == "" {
+		t.Fatal("应写临时 cookie 文件,lister 收到空串")
 	}
-	if rec.content != nil {
-		t.Errorf("不应读取临时文件(用户路径,我们不读)")
+	if rec.cookiePath == accountPath {
+		t.Errorf("cookiePath = accountPath %q (应写临时文件,不能直传加密账号路径)", accountPath)
+	}
+	if !bytes.Contains(rec.content, []byte("SESSDATA")) {
+		t.Errorf("临时文件应含 SESSDATA(已解密),实际: %q", string(rec.content))
+	}
+}
+
+// TestPreview_ExplicitAccountID_Encrypted:选加密账号 → 临时文件不含 HIKAMI_V1 魔数(已解密),含 SESSDATA。
+func TestPreview_ExplicitAccountID_Encrypted(t *testing.T) {
+	biliutil.SetCookieEncryptionKey("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	t.Cleanup(func() { biliutil.SetCookieEncryptionKey("") })
+
+	cookieDir := t.TempDir()
+	database, store := newDiscoverTestDBWithCookieStore(t, cookieDir)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	rl := &recordingLister{entries: []Entry{{ID: "BV1"}}}
+	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, rl,
+		WithCookieAccountStore(store),
+		WithOutputRoot(t.TempDir()),
+	)
+
+	accountPath := writeTestCookieFile(t, cookieDir, 42, true) // encrypt=true
+	accountID := insertBiliAccount(t, database, 42, "enc-test", accountPath, false)
+
+	_, err := manager.Preview(context.Background(), PreviewInput{
+		SourceURL: "https://example.com",
+		AccountID: &accountID,
+	})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	rec, ok := rl.lastRecord()
+	if !ok {
+		t.Fatal("lister not called")
+	}
+	if rec.cookiePath == "" {
+		t.Fatal("应写临时 cookie 文件(加密账号解密后)")
+	}
+	if bytes.Contains(rec.content, []byte("HIKAMI_V1")) {
+		t.Errorf("临时文件不应含 HIKAMI_V1 魔数(应已解密),实际: %q", string(rec.content))
+	}
+	if !bytes.Contains(rec.content, []byte("SESSDATA")) {
+		t.Errorf("临时文件应含 SESSDATA(解密后明文),实际: %q", string(rec.content))
+	}
+}
+
+// TestPreview_ExplicitAccountID_NotFound_FallsBackToDefault(qoder I-1 修订):
+// account_id 指向不存在的账号 + 有默认账号 → ResolveCookie case 1 GetByID 失败 fall through 到 case 2(默认账号),
+// lister 收到默认账号的临时 cookie(不是空串!)。ResolveCookie 不返回 nil,而是降级到默认。
+func TestPreview_ExplicitAccountID_NotFound_FallsBackToDefault(t *testing.T) {
+	cookieDir := t.TempDir()
+	database, store := newDiscoverTestDBWithCookieStore(t, cookieDir)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	rl := &recordingLister{entries: []Entry{{ID: "BV1"}}}
+	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, rl,
+		WithCookieAccountStore(store),
+		WithOutputRoot(t.TempDir()),
+	)
+
+	// 默认账号存在(让 fall through 到 case 2 成功)
+	accountPath := writeTestCookieFile(t, cookieDir, 42, false)
+	insertBiliAccount(t, database, 42, "default", accountPath, true) // is_default_download=true
+
+	// account_id 指向不存在的账号(9999 不在表里)
+	notExistID := int64(9999)
+	_, err := manager.Preview(context.Background(), PreviewInput{
+		SourceURL: "https://example.com",
+		AccountID: &notExistID,
+	})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	rec, ok := rl.lastRecord()
+	if !ok {
+		t.Fatal("lister not called")
+	}
+	// qoder I-1 关键断言:fall through 到默认账号 → 临时文件非空 + 含 SESSDATA(不是空串!)
+	if rec.cookiePath == "" {
+		t.Fatal("account 不存在应 fall through 到默认账号 → 临时文件非空,但 lister 收到空串")
+	}
+	if rec.cookiePath == accountPath {
+		t.Errorf("cookiePath = 默认账号原路径(应写临时文件)")
+	}
+	if !bytes.Contains(rec.content, []byte("SESSDATA")) {
+		t.Errorf("临时文件应含默认账号的 SESSDATA,实际: %q", string(rec.content))
+	}
+}
+
+// TestPreview_AccountID_Zero_TreatedAsDefault:AccountID=0 → 视为「默认」,走默认账号分支。
+// 2026-07-25 改造:原 TestPreview_BlankCookieFile_FallsBack 改写(纯空白 → 0/null 语义)。
+func TestPreview_AccountID_Zero_TreatedAsDefault(t *testing.T) {
+	cookieDir := t.TempDir()
+	database, store := newDiscoverTestDBWithCookieStore(t, cookieDir)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	rl := &recordingLister{entries: []Entry{{ID: "BV1"}}}
+	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, rl,
+		WithCookieAccountStore(store),
+		WithOutputRoot(t.TempDir()),
+	)
+
+	accountPath := writeTestCookieFile(t, cookieDir, 42, false)
+	insertBiliAccount(t, database, 42, "test", accountPath, true)
+
+	zero := int64(0)
+	_, err := manager.Preview(context.Background(), PreviewInput{
+		SourceURL: "https://example.com",
+		AccountID: &zero, // 0 = 视为默认
+	})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	rec, ok := rl.lastRecord()
+	if !ok {
+		t.Fatal("lister not called")
+	}
+	if rec.cookiePath == "" {
+		t.Fatal("AccountID=0 应走默认账号 → 临时文件非空,但 lister 收到空串")
+	}
+	if !bytes.Contains(rec.content, []byte("SESSDATA")) {
+		t.Errorf("临时文件应含 SESSDATA,实际: %q", string(rec.content))
 	}
 }
 
@@ -1024,42 +1146,6 @@ func TestPreview_DefaultAccount_Encrypted(t *testing.T) {
 	}
 	if !bytes.Contains(rec.content, []byte("SESSDATA")) {
 		t.Errorf("临时文件内容应含 SESSDATA(明文 Netscape),实际: %q", string(rec.content))
-	}
-}
-
-// TestPreview_BlankCookieFile_FallsBack:CookieFile 为纯空白 → 回退默认账号(codex r15 MEDIUM #3)
-func TestPreview_BlankCookieFile_FallsBack(t *testing.T) {
-	cookieDir := t.TempDir()
-	database, store := newDiscoverTestDBWithCookieStore(t, cookieDir)
-	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
-	rl := &recordingLister{entries: []Entry{{ID: "BV1"}}}
-	manager := NewManager(channel.NewStore(database), session.NewStore(database), pool, rl,
-		WithCookieAccountStore(store),
-		WithOutputRoot(t.TempDir()),
-	)
-
-	accountPath := writeTestCookieFile(t, cookieDir, 42, false)
-	insertBiliAccount(t, database, 42, "test", accountPath, true)
-
-	_, err := manager.Preview(context.Background(), PreviewInput{
-		SourceURL:  "https://example.com",
-		CookieFile: "   ", // 纯空白
-	})
-	if err != nil {
-		t.Fatalf("preview: %v", err)
-	}
-	rec, ok := rl.lastRecord()
-	if !ok {
-		t.Fatal("lister not called")
-	}
-	if rec.cookiePath == "" {
-		t.Fatal("纯空白 CookieFile 应回退默认账号,但 lister 收到空串")
-	}
-	if rec.cookiePath == accountPath {
-		t.Errorf("cookiePath = accountPath(应写临时文件)")
-	}
-	if !bytes.Contains(rec.content, []byte("SESSDATA")) {
-		t.Errorf("临时文件应含 SESSDATA,实际: %q", string(rec.content))
 	}
 }
 

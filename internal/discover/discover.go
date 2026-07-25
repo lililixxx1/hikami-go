@@ -461,19 +461,19 @@ func (m *Manager) DiscoverChannel(ctx context.Context, item channel.Channel) ([]
 }
 
 // PreviewChannel lists discovered replays for a channel without creating sessions.
-// PreviewInput 是不绑定主播表的预览入参(2026-07-19 解耦改动)。
+// PreviewInput 是不绑定主播表的预览入参(2026-07-19 解耦改动,2026-07-25 改 cookie 字段)。
 // 用于回顾管理·回放页「发现回放」的独立 URL 入口——用户直接粘贴 B 站收藏夹/合集/UP 主主页 URL,
 // 不再依赖主播管理页的 channel 配置。
 type PreviewInput struct {
 	SourceURL   string // yt-dlp 输入 URL(B 站收藏夹/合集/UP 主主页)
-	CookieFile  string // 可选,URL 模式显式覆盖 cookie 文件路径(优先级最高,详 cookie.go);空串/纯空白时回退默认账号
+	AccountID   *int64 // 可选,URL 模式显式选账号(nil/0 → 默认账号,详 cookie.go);与 channel.DownloadAccountID 语义一致(2026-07-25 替代 CookieFile)
 	TitlePrefix string // 可选标题前缀过滤(逗号分隔,语义同 channel.TitlePrefix)
 	ChannelID   string // 可选;空串时填 channel.UnassignedID。用于 annotateExists 去重键与 Result.ChannelID
 }
 
 // Preview 不绑定 channel 表的预览(2026-07-19)。
 //
-// 与 PreviewChannel 的区别:无需频道实体,SourceURL/CookieFile/TitlePrefix 直接由调用方提供;
+// 与 PreviewChannel 的区别:无需频道实体,SourceURL/AccountID/TitlePrefix 直接由调用方提供;
 // ChannelID 为空时填 channel.UnassignedID。
 // 内部:**自动调 annotateExists 标注 Exists 字段**(handler 不需要单独调),便于前端区分「新」「已处理」。
 func (m *Manager) Preview(ctx context.Context, in PreviewInput) ([]Result, error) {
@@ -495,10 +495,11 @@ func (m *Manager) Preview(ctx context.Context, in PreviewInput) ([]Result, error
 // previewCore 是 URL 模式(Preview/preview-by-url)的核心预览逻辑(不标注 exists)。
 // 调用方负责后续的 annotateExists(Preview 内部标注一次)。
 //
-// Cookie 解析走 resolveURLCookie(用户显式优先,详见 cookie.go);
-// 与频道路径(previewCoreForChannel)隔离——两条路径优先级方向相反(codex r15b HIGH #1/#2)。
+// Cookie 解析走 resolveURLCookie(显式 account_id 优先,详见 cookie.go);
+// 与频道路径(previewCoreForChannel)隔离——2026-07-25 起 URL 模式也走 ResolveCookie(case 1
+// 指定账号 / fallthrough 默认),但无 legacy fallback;频道模式有 legacy fallback。
 func (m *Manager) previewCore(ctx context.Context, in PreviewInput) ([]Result, error) {
-	cookieFile, cleanup := m.resolveURLCookie(ctx, in.CookieFile)
+	cookieFile, cleanup := m.resolveURLCookie(ctx, in.AccountID)
 	if cleanup != nil {
 		defer cleanup()
 	}

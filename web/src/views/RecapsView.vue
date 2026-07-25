@@ -435,7 +435,8 @@ function openDiscover() {
 }
 
 // 用户在抽屉里点「发现」:调 previewDiscoverSessionsByURL(后端 POST /api/sessions/discover/preview-by-url)。
-async function handleDiscoverSubmit(input: { url: string; cookie_file?: string; title_prefix?: string }) {
+// 2026-07-25 改造:emit 契约从 cookie_file?:string 改为 account_id?:number(选已登录账号)。
+async function handleDiscoverSubmit(input: { url: string; account_id?: number; title_prefix?: string }) {
   discoverLoading.value = true
   discoverItems.value = []
   try {
