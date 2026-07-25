@@ -229,6 +229,19 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
 
 ## 变更记录
 
+- 2026-07-25(五):**media_ready 状态与音频文件一致性修复**(branch `fix/media-ready-consistency-2026-07-25`,qoderclicn/Qwen3.8-Max-Preview 计划审核 Ready with fixes + 代码审核 Ready,reasoning high 全程,「写计划→审计划→执行→审代码」四阶段闭环)。**触发**:用户反馈"软件回放界面有好多音频已就绪",DB + 本地文件交叉核查发现 64 个 `media_ready` session 中仅 1 个本地真有 `audio.asr.mp3`,其余 63 个连 session 目录都不存在(2026-07-16 批量脏数据:64 个 download+normalize 任务 1 分钟跑完,部分 normalize finished-started=0~1s)。
+
+  **qoder 根因独立审核**(对首轮分析的裁决 Ready with fixes,补全两处遗漏):① **I-1(真凶)**`FFmpegConverter.Convert` 只检查退出码,ffmpeg 输入截断/损坏时可 exit 0 + 空输出 → `convertAtomic` Rename 成功 → session 误进 media_ready 但音频为空;② **I-2(分析完整性)**`state.go:205-206` 的 `failed+EventNormalizeSucceeded→media_ready` 是状态机内第四条入边(经 retry 触发),行为正确无需改;③ **I-3**`ResetFailedSession` 的 `local_available` 标志位不等于文件存在;④ **I-4** 无运行时一致性校验。
+
+  **3 Phase 实施**(I-2/I-4 列后续):
+  - **Phase 1(I-1 根因堵漏)**:`internal/normalize/normalize.go` `convertAtomic` 在 Convert 返回后、Rename 前 `os.Stat(tempPath)`,size==0 删 tmp 返回 error(任务进 failed,不进 media_ready)。新增 `TestConvertAtomicEmptyOutput`,normalize 测试 68→**69**。**为什么 Size==0 够**:tmp→rename 原子性已防中途崩溃;mp3 帧格式「exit 0+部分帧」几乎不可能;加 ffprobe 时长校验属过度工程。
+  - **Phase 2(I-3 reset 加固)**:① `session.Store` 加 `outputRoot` 字段 + **variadic `NewStore(db, outputRoot...)`**(全项目约 50 处测试调用零改动,仅 `main.go` 生产调用传 `cfg.OutputRoot`,符合现有 `asr.Handler` 用 `cfg.OutputRoot` 范式);② 新哨兵 `ErrAudioFileMissing`;③ `ResetFailedSession` 守卫③.5(local_available 之后、task type 之前)`os.Stat(<outputRoot>/<channel>/<slug>/asr/audio.asr.mp3)`,缺失返回 `ErrAudioFileMissing`;④ `main.go:226` 注入 `cfg.OutputRoot`;⑤ `handler/server.go` writeError 加 `ErrAudioFileMissing`→409 case(同组 ErrLocalFilesRemoved 一致);⑥ 6 个越过守卫③的现有 reset 测试通过新 `touchResetAudio(t, root)` helper 创建音频文件 + `NewStore(db, t.TempDir())`;⑦ 新增 `TestResetFailedSession_AudioFileMissing`,session 测试 49→**50**。**顺手修正文档**:07-21 changelog 把 5 个哨兵误写成 4 个且名字过时(`ErrResettableConditionFailed`/`ErrInvalidResetState` 实际不存在,真名 `ErrSessionNotFailed`/`ErrLocalFilesRemoved`/`ErrResetOnlyForASRFailure`/`ErrActiveTaskExists`),本轮订正。
+  - **Phase 3(历史数据清理脚本)**:`scripts/cleanup-media-ready-stale.go`(--output-root 必填、dry-run 默认、--apply 才写、busy_timeout=5000、rows.Err 检查、事务化 UPDATE)。**未执行 --apply**(运维操作,留用户决定时机;运行命令 `go run ./scripts/cleanup-media-ready-stale.go --db hikami.db --output-root ./hikami-go --apply`)。dry-run 验证 64 个 media_ready 全部缺文件(符合预期,真正有文件的 `bv1zcaqzbedm` 已是 recap_done 不在范围)。
+
+  **qoder 计划审核**(Ready with fixes,2 Important 全采纳):① NewStore 影响面从「若干处」修正为「~50 处跨 12 文件」→ 改 variadic option 让 50 处零改动(qoder 建议);② 9 个 reset 测试 fixture 细化 → 明确 6 个越过守卫③的需 `t.TempDir()` + touchResetAudio。**qoder 代码审核**(Ready,0 Critical/0 Important/4 Minor):采纳 3 个(`rows.Err()` 检查、空 if 分支重构为 `if s.outputRoot != ""`、DSN 特殊字符注释),1 个(handler 测试)评估 risk very low 接受。
+
+  **验证**:改动包测试全绿(normalize/session/handler/state/asr)、go vet 通过、gofmt 改动文件合规、embedded_web 编译成功(28MB)。live_record/worker 失败是 Windows 进程检测预存 flake(`git diff --stat` 证实零改动,AGENTS.md 07-21 changelog 已记载)。**回归**:零(variadic 向后兼容 + 新守卫仅文件缺失时拦截)。文档:本条 + 根 CLAUDE.md changelog + normalize/session/handler CLAUDE.md + `plans/plan-media-ready-consistency-2026-07-25.md`(含计划审核记录与 qoder 裁决)。
+
 - 2026-07-24(四):**发布流水线修复 + Windows 产物命名约定反转 + `/init` 增量同步**(commit `959d0ff` + merge `10d0c3f`;无代码改动,纯 CI/构建/文档)。**触发**:07-24 v2 视觉改动后发 release 时发现 CI 与命名两处问题。**改动**:
 
   ① **CI `.github/workflows/release.yml`**:`go-version` `1.25.0`→`1.25.5`(对齐 `go.mod`,消除 toolchain 自动下载 warning);加 `workflow_dispatch` 触发器(可手动重跑失败发布)+ checkout 加 `ref` 条件(手动触发时 checkout 到指定 tag 的 commit);Release 加 `prerelease` 自动判定(tag/inputs 含 `-` 标预发布,如 `v1.0.0-rc1`)。
