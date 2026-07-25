@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -22,6 +24,9 @@ var (
 	ErrLocalFilesRemoved      = errors.New("session local files have been removed; use fetch or delete instead")
 	ErrResetOnlyForASRFailure = errors.New("reset is only supported for ASR task failures; for other failure types use retry or recreate the session")
 	ErrActiveTaskExists       = errors.New("session has active tasks; wait for them to complete or cancel before reset")
+	// ErrAudioFileMissing:reset 前校验 audio.asr.mp3 真实存在(qoder I-3,2026-07-25)。
+	// local_available 标志位不保证文件未被外部删除/磁盘损坏,需 os.Stat 兜底。
+	ErrAudioFileMissing = errors.New("session audio file missing on disk; reset would leave session in media_ready without audio")
 )
 
 // isConstraintViolation 判断 SQLite 是否抛出约束冲突（UNIQUE / PRIMARY KEY / FOREIGN KEY 等）。
@@ -82,11 +87,20 @@ type CreateImportInput struct {
 }
 
 type Store struct {
-	db *sql.DB
+	db         *sql.DB
+	outputRoot string
 }
 
-func NewStore(db *sql.DB) *Store {
-	return &Store{db: db}
+// NewStore 创建 session Store。
+// outputRoot 用 variadic option 签名(qoder I-1,2026-07-25):不传时字段为空串,
+// 让全项目约 50 处 NewStore(db) 测试调用零改动。仅 main.go 生产调用传 cfg.OutputRoot,
+// reset 相关测试传 t.TempDir()。outputRoot 仅用于 ResetFailedSession 的音频文件存在性校验。
+func NewStore(db *sql.DB, outputRoot ...string) *Store {
+	s := &Store{db: db}
+	if len(outputRoot) > 0 {
+		s.outputRoot = outputRoot[0]
+	}
+	return s
 }
 
 func (s *Store) DB() *sql.DB {
@@ -405,6 +419,7 @@ func (s *Store) SetArchivedAt(ctx context.Context, sessionID string, archivedAt 
 //  1. session 必须存在(返回 ErrNotFound)
 //  2. status 必须为 'failed'(返回 ErrSessionNotFailed)
 //  3. local_available 必须为 1(返回 ErrLocalFilesRemoved)
+//     3.5 audio.asr.mp3 必须真实存在(返回 ErrAudioFileMissing)—— qoder I-3,2026-07-25
 //  4. current_task_id 对应的 task 类型必须为 'asr'(返回 ErrResetOnlyForASRFailure)
 //  5. 该 session 不能有 pending/running task(返回 ErrActiveTaskExists)
 //
@@ -424,6 +439,21 @@ func (s *Store) ResetFailedSession(ctx context.Context, sessionID string) error 
 	}
 	if !sess.LocalAvailable {
 		return ErrLocalFilesRemoved
+	}
+
+	// ③.5 audio.asr.mp3 必须真实存在(qoder I-3,2026-07-25)。
+	// local_available 标志位(守卫③)不保证文件未被外部删除/磁盘损坏/output_root 迁移,
+	// reset 前必须 os.Stat 兜底,否则会把 session 拉回 media_ready 但音频缺失,UI 误导用户。
+	// outputRoot 未注入(老调用方/未接线测试)时保守放行,保持向后兼容;
+	// 生产环境 main.go 已注入 cfg.OutputRoot,不会走到放行分支。
+	if s.outputRoot != "" {
+		audioPath := filepath.Join(s.outputRoot, sess.ChannelID, sess.Slug, "asr", "audio.asr.mp3")
+		if _, err := os.Stat(audioPath); err != nil {
+			if os.IsNotExist(err) {
+				return ErrAudioFileMissing
+			}
+			return fmt.Errorf("%w: stat audio file: %v", ErrInvalid, err)
+		}
 	}
 
 	// ② current_task_id 对应的 task 类型必须为 'asr'(状态机约束)

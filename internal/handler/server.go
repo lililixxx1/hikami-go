@@ -1656,6 +1656,8 @@ func writeError(ctx *gin.Context, err error) {
 		ctx.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 	case errors.Is(err, session.ErrActiveTaskExists):
 		ctx.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+	case errors.Is(err, session.ErrAudioFileMissing): // qoder I-3,2026-07-25
+		ctx.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 	case errors.Is(err, glossary.ErrInvalidJSON):
 		writeBadRequest(ctx, err.Error())
 	case errors.Is(err, asr.ErrSessionNotReady):

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1093,14 +1094,31 @@ func resetTestTask(t *testing.T, database *sql.DB, taskID, sessionID, taskType, 
 	}
 }
 
+// touchResetAudio 在 outputRoot 下创建 reset 测试 session 的 audio.asr.mp3 占位文件
+// (0 字节即可,ResetFailedSession 的 os.Stat 只校验存在不校验大小)。
+// 路径需与 ResetFailedSession 守卫③.5 一致:<root>/test_ch/reset_test/asr/audio.asr.mp3。
+// qoder I-3,2026-07-25。
+func touchResetAudio(t *testing.T, root string) {
+	t.Helper()
+	dir := filepath.Join(root, "test_ch", "reset_test", "asr")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir reset audio dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "audio.asr.mp3"), []byte{}, 0o644); err != nil {
+		t.Fatalf("touch reset audio: %v", err)
+	}
+}
+
 // TestResetFailedSession_Success 验证 ASR 失败 + local_available=1 + 无 active task 时 reset 成功。
 func TestResetFailedSession_Success(t *testing.T) {
 	database := setupDB(t)
 	insertChannel(t, database)
 	resetTestSession(t, database, "sess_reset_ok", "task_asr_1", 1)
 	resetTestTask(t, database, "task_asr_1", "sess_reset_ok", "asr", "failed")
+	root := t.TempDir()
+	touchResetAudio(t, root) // qoder I-3:越过守卫③的用例需创建音频文件
 
-	store := NewStore(database)
+	store := NewStore(database, root)
 	err := store.ResetFailedSession(context.Background(), "sess_reset_ok")
 	if err != nil {
 		t.Fatalf("ResetFailedSession: %v", err)
@@ -1174,8 +1192,10 @@ func TestResetFailedSession_NonASRFailure(t *testing.T) {
 	resetTestSession(t, database, "sess_recap_fail", "task_recap_1", 1)
 	// task 类型是 recap(不是 asr)
 	resetTestTask(t, database, "task_recap_1", "sess_recap_fail", "recap", "failed")
+	root := t.TempDir()
+	touchResetAudio(t, root) // 越过守卫③,需创建音频文件才能走到守卫④
 
-	store := NewStore(database)
+	store := NewStore(database, root)
 	err := store.ResetFailedSession(context.Background(), "sess_recap_fail")
 	if !errors.Is(err, ErrResetOnlyForASRFailure) {
 		t.Fatalf("error = %v, want ErrResetOnlyForASRFailure", err)
@@ -1190,8 +1210,10 @@ func TestResetFailedSession_ActiveTaskExists(t *testing.T) {
 	resetTestTask(t, database, "task_asr_active", "sess_active", "asr", "failed")
 	// 插入一个 pending task(另一个任务在排队)
 	resetTestTask(t, database, "task_pending_1", "sess_active", "recap", "pending")
+	root := t.TempDir()
+	touchResetAudio(t, root) // 越过守卫③,需创建音频文件
 
-	store := NewStore(database)
+	store := NewStore(database, root)
 	err := store.ResetFailedSession(context.Background(), "sess_active")
 	if !errors.Is(err, ErrActiveTaskExists) {
 		t.Fatalf("error = %v, want ErrActiveTaskExists", err)
@@ -1216,8 +1238,10 @@ func TestResetFailedSession_EmptyTaskID(t *testing.T) {
 	database := setupDB(t)
 	insertChannel(t, database)
 	resetTestSession(t, database, "sess_empty_taskid", "", 1)
+	root := t.TempDir()
+	touchResetAudio(t, root) // 越过守卫③,需创建音频文件才能走到守卫④
 
-	store := NewStore(database)
+	store := NewStore(database, root)
 	err := store.ResetFailedSession(context.Background(), "sess_empty_taskid")
 	if !errors.Is(err, ErrResetOnlyForASRFailure) {
 		t.Fatalf("error = %v, want ErrResetOnlyForASRFailure", err)
@@ -1230,8 +1254,10 @@ func TestResetFailedSession_TaskDeleted(t *testing.T) {
 	insertChannel(t, database)
 	// session.current_task_id 指向 task_ghost,但不插入该 task(模拟已被清理)
 	resetTestSession(t, database, "sess_ghost", "task_ghost", 1)
+	root := t.TempDir()
+	touchResetAudio(t, root) // 越过守卫③,需创建音频文件才能走到守卫④
 
-	store := NewStore(database)
+	store := NewStore(database, root)
 	err := store.ResetFailedSession(context.Background(), "sess_ghost")
 	if !errors.Is(err, ErrResetOnlyForASRFailure) {
 		t.Fatalf("error = %v, want ErrResetOnlyForASRFailure", err)
@@ -1251,8 +1277,10 @@ func TestResetFailedSession_ActiveTaskAtomicGuard(t *testing.T) {
 	insertChannel(t, database)
 	resetTestSession(t, database, "sess_atomic", "task_asr_a", 1)
 	resetTestTask(t, database, "task_asr_a", "sess_atomic", "asr", "failed")
+	root := t.TempDir()
+	touchResetAudio(t, root) // 越过守卫③,需创建音频文件
 
-	store := NewStore(database)
+	store := NewStore(database, root)
 
 	// 模拟竞态:在 store.Get 之后、UPDATE 之前,另一个 task 变成 pending
 	// 这里直接在调用 ResetFailedSession 前插入 pending task
@@ -1278,5 +1306,33 @@ func TestResetFailedSession_ActiveTaskAtomicGuard(t *testing.T) {
 	}
 	if status != "failed" {
 		t.Errorf("status = %q, want failed (reset should be rejected)", status)
+	}
+}
+
+// TestResetFailedSession_AudioFileMissing 验证守卫③.5(qoder I-3,2026-07-25):
+// local_available=1 但 audio.asr.mp3 实际不存在(被外部删除/磁盘损坏)时,
+// reset 必须拒绝,不得把 session 拉回 media_ready 造成「DB 说就绪但文件没了」的不一致。
+func TestResetFailedSession_AudioFileMissing(t *testing.T) {
+	database := setupDB(t)
+	insertChannel(t, database)
+	resetTestSession(t, database, "sess_no_audio", "task_asr_na", 1)
+	resetTestTask(t, database, "task_asr_na", "sess_no_audio", "asr", "failed")
+
+	// 注入 outputRoot 但不创建音频文件(模拟文件丢失)
+	root := t.TempDir()
+	store := NewStore(database, root)
+	err := store.ResetFailedSession(context.Background(), "sess_no_audio")
+	if !errors.Is(err, ErrAudioFileMissing) {
+		t.Fatalf("error = %v, want ErrAudioFileMissing", err)
+	}
+
+	// 验证 session 状态未变(仍是 failed)
+	var status string
+	err = database.QueryRow(`SELECT status FROM sessions WHERE id = 'sess_no_audio'`).Scan(&status)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if status != "failed" {
+		t.Errorf("status = %q, want failed (reset must be rejected when audio missing)", status)
 	}
 }

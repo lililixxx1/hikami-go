@@ -223,7 +223,7 @@ func main() {
 	taskHub := worker.NewHub()
 	workerPool := worker.NewPool(taskStore, taskHub, cfg.Worker.Num, cfg)
 	workerPool.SetNotifyManager(notifyMgr)
-	sessionStore := session.NewStore(database)
+	sessionStore := session.NewStore(database, cfg.OutputRoot) // 注入 outputRoot 供 ResetFailedSession 校验音频文件(qoder I-3,2026-07-25)
 	stateStore := state.NewStore(database)
 	normalizeHandler := normalize.NewHandler(
 		cfg,
@@ -287,8 +287,8 @@ func main() {
 	glossary.RunToolsAwareGenerate = func(ctx context.Context, tcp aiprovider.ToolCapableProvider, mgr glossary.MCPTermToolkit, req aiprovider.GenerateRequest, maxRounds int) (aiprovider.GenerateResult, error) {
 		return mcp.RunWithTools(ctx, tcp, mcpManager, req, maxRounds)
 	}
-	recapHandler.SetMCPManager(mcpManager)       // Phase 4: handler 用它走 tool-calling
-	glossaryDiscoverer.SetMCPManager(mcpManager) // Phase 4: glossary 同理
+	recapHandler.SetMCPManager(mcpManager)                                // Phase 4: handler 用它走 tool-calling
+	glossaryDiscoverer.SetMCPManager(mcpManager)                          // Phase 4: glossary 同理
 	glossaryDiscoverer.SetMaxToolRounds(cfg.MCP.EffectiveMaxToolRounds()) // 审核code-review Important#3
 	if mcpManager.HasTools() {
 		slog.Info("mcp tools available", "tools", len(mcpManager.ListTools(context.Background())))
