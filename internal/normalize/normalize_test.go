@@ -1968,3 +1968,42 @@ func TestConvertAtomicError(t *testing.T) {
 		t.Errorf("expected output to not exist after error")
 	}
 }
+
+// TestConvertAtomicEmptyOutput 验证 ffmpeg exit 0 但产出 0 字节文件时,
+// convertAtomic 不得 Rename,应返回 error 并清理 tmp。
+// 这是 2026-07-16 批量脏数据的最可能根因(见 plan-media-ready-consistency I-1)。
+func TestConvertAtomicEmptyOutput(t *testing.T) {
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "input.mp3")
+	outputPath := filepath.Join(dir, "output.mp3")
+
+	if err := os.WriteFile(inputPath, []byte("input"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	converter := &mockConverter{
+		convertFn: func(ctx context.Context, in string, out string) error {
+			// ffmpeg exit 0 但产出 0 字节(模拟输入截断/损坏)
+			return os.WriteFile(out, []byte{}, 0644)
+		},
+	}
+
+	h := NewHandler(nil, nil, nil, converter)
+	err := h.convertAtomic(context.Background(), inputPath, outputPath)
+	if err == nil {
+		t.Fatal("expected error for empty output, got nil")
+	}
+	if !strings.Contains(err.Error(), "empty output") {
+		t.Errorf("expected 'empty output' in error, got: %v", err)
+	}
+
+	// 关键:output 不得存在(没有 Rename)
+	if _, err := os.Stat(outputPath); !os.IsNotExist(err) {
+		t.Errorf("expected output to not exist (Rename must not happen for empty output)")
+	}
+	// tmp 应已清理
+	tmpPath := outputPath + ".tmp"
+	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
+		t.Errorf("expected .tmp to be cleaned up after empty output error")
+	}
+}

@@ -155,6 +155,18 @@ func (h *Handler) convertAtomic(ctx context.Context, inputPath string, outputPat
 		_ = os.Remove(tempPath)
 		return err
 	}
+	// post-condition:ffmpeg 可能 exit 0 但产出空文件(输入截断/损坏时),
+	// 此时不得 Rename,否则下游拿到空 mp3 却把 session 推进到 media_ready。
+	// 见 plans/plan-media-ready-consistency-2026-07-25.md Phase 1(I-1 根因堵漏)。
+	info, err := os.Stat(tempPath)
+	if err != nil {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("normalize output stat failed: %w", err)
+	}
+	if info.Size() == 0 {
+		_ = os.Remove(tempPath)
+		return fmt.Errorf("normalize produced empty output (ffmpeg exit 0 but 0 bytes): %s", tempPath)
+	}
 	return os.Rename(tempPath, outputPath)
 }
 
