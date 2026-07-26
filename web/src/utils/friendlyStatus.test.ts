@@ -8,13 +8,22 @@ function makeSession(status: string): Session {
     channel_id: 'ch1',
     slug: 'test-slug',
     source_id: 'BV1test',
-    source_type: 'replay_download',
+    source_type: 'download',
     status,
     title: 'Test',
     started_at: '2026-06-04T00:00:00Z',
+    ended_at: '',
+    source_url: '',
+    current_task_id: '',
+    last_error: '',
+    local_available: true,
+    uploaded_at: '',
+    published_at: '',
+    archived_at: '',
+    publish_target: '',
     created_at: '2026-06-04T00:00:00Z',
     updated_at: '2026-06-04T00:00:00Z',
-  } as Session
+  }
 }
 
 describe('getFriendlySessionStatus', () => {

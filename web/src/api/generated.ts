@@ -344,7 +344,7 @@ export interface paths {
         put?: never;
         /**
          * 按 URL 创建下载场次
-         * @description 接收视频链接(B 站 BV 号等)+ 主播 ID,创建 download 场次并入队。
+         * @description 接收视频链接(B 站 BV 号等),创建 download 场次并入队。channel_id 可选(空时挂到 _unassigned)。
          *     **前置能力守卫**:Capabilities.ReplayDownload 不可用 → 409 + reason。
          *     返回 202 + Task。
          */
@@ -368,8 +368,8 @@ export interface paths {
          * 导入本地媒体文件
          * @description **multipart/form-data**(非 JSON)。
          *     创建 import 场次并入队 normalize 任务。
-         *     media_file 必填;channel_id + title 必填;started_at/ended_at 可选(RFC3339);
-         *     danmaku_file 可选;source_url 可选。
+         *     media_file + title 必填;channel_id 可选(空时挂到 _unassigned 占位 channel);
+         *     started_at/ended_at 可选(RFC3339);danmaku_file 可选;source_url 可选。
          */
         post: operations["importSession"];
         delete?: never;
@@ -1063,6 +1063,27 @@ export interface paths {
          * @description 停止指定频道录制。**返回 202 Accepted,无响应体**(`ctx.Status(202)`)。
          */
         post: operations["stopLiveRecord"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/notify/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 发送测试通知
+         * @description 触发一次测试通知发送(用于设置页"通知测试"按钮验证 notify 配置)。
+         *     notify 未配置(notifyMgr == nil)时返回 409。
+         */
+        post: operations["testNotify"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2413,6 +2434,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/bili/topics/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 搜索 B 站话题(用于发布时选 topic)
+         * @description 调用 B 站创作端话题搜索接口(app.bilibili.com/x/topic/pub/search),
+         *     返回匹配的话题列表。前端发布流程的 topic 选择调用。
+         *     上游(B 站)请求失败返回 502。
+         */
+        get: operations["searchBiliTopics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/bili/accounts/{id}": {
         parameters: {
             query?: never;
@@ -2886,10 +2929,10 @@ export interface components {
             slug: string;
             channel_id: string;
             /**
-             * @description 场次来源类型
+             * @description 场次来源类型(live_record=直播录制,download=回放下载,import=手动导入)
              * @enum {string}
              */
-            source_type: "live" | "download" | "import";
+            source_type: "live_record" | "download" | "import";
             /** @description 源标识(live 用 room-time;download 用 BV 号;import 自定义) */
             source_id: string;
             title: string;
@@ -3000,8 +3043,8 @@ export interface components {
             channel_name?: string;
         };
         DownloadByURLRequest: {
-            /** @description 归属主播 ID */
-            channel_id: string;
+            /** @description 归属主播 ID(可选,空时挂到 _unassigned 占位 channel) */
+            channel_id?: string;
             /** @description 视频 URL(如 B 站 BV 号) */
             url: string;
         };
@@ -3678,6 +3721,34 @@ export interface components {
             auto_after_publish?: boolean;
             cleanup_policy?: string;
         } | null;
+        /** @description 单个外部 MCP server 导出投影(Headers 不含 Authorization,鉴权 token 进 Secrets)。 */
+        ExportMCPServer: {
+            name?: string;
+            /** @enum {string} */
+            transport?: "stdio" | "http" | "sse";
+            url?: string;
+            command?: string;
+            args?: string[];
+            env?: string[];
+            enabled?: boolean;
+            timeout_sec?: number;
+            /** @description 自定义请求头(不含 Authorization,仅 User-Agent 等配置项) */
+            headers?: {
+                [key: string]: string;
+            };
+        };
+        /** @description 内置搜索工具导出投影(只留 env 名,明文 key 进 Secrets)。 */
+        ExportMCPBuiltin: {
+            brave_api_key_env?: string;
+            tavily_api_key_env?: string;
+        };
+        /** @description MCP 配置段导出投影(指针,缺席=备份不含)。鉴权头/内置 key 明文不投影,值随 Secrets 段。 */
+        ExportMCP: {
+            enabled?: boolean;
+            servers?: components["schemas"]["ExportMCPServer"][];
+            builtin?: components["schemas"]["ExportMCPBuiltin"];
+            max_tool_rounds?: number;
+        } | null;
         GlossaryExportSection: {
             /** @description 全局术语导出(GlossaryExport 结构,见 glossary.yaml) */
             global?: Record<string, never> | null;
@@ -3716,6 +3787,8 @@ export interface components {
             asr_s3?: components["schemas"]["ExportASRS3"];
             dashscope?: components["schemas"]["ExportDashScope"];
             archive?: components["schemas"]["ExportArchive"];
+            /** @description MCP 配置段导出投影(指针,缺席=备份不含该段;密钥走 secrets 段) */
+            mcp?: components["schemas"]["ExportMCP"];
             /**
              * @description 明文密钥 map(env名 → 值)。
              *     ⚠️ 导出**包含明文密钥**,仅用于备份/迁移,不要外传。
@@ -3799,7 +3872,7 @@ export interface components {
         };
         /**
          * @description 术语候选词(场次发现后待审批)。
-         *     reviewed_at 是唯一带 omitempty 的字段(未审批时缺席)。
+         *     reviewed_at 与 ai_review 带 omitempty(未审批 / 未复核时缺席)。
          */
         GlossaryCandidate: {
             /** Format: int64 */
@@ -3827,6 +3900,12 @@ export interface components {
             updated_at: string;
             /** @description 审批时间(omitempty,未审批时缺席) */
             reviewed_at?: string;
+            /**
+             * @description AI 批量复核理由(含核实结论 + 置信度说明)。
+             *     omitempty:未复核(POST /api/glossary/candidates/review 未触发或该候选未被处理)时缺席。
+             *     由 glossary.Review 写入(见 candidate_store.UpdateCandidateReview)。
+             */
+            ai_review?: string;
         };
         GlossaryCandidatesResponse: {
             items: components["schemas"]["GlossaryCandidate"][];
@@ -4756,7 +4835,7 @@ export interface operations {
                     "application/json": components["schemas"]["Task"];
                 };
             };
-            /** @description channel_id 或 url 缺失 */
+            /** @description url 缺失 */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -4784,8 +4863,8 @@ export interface operations {
                      * @description 媒体文件(必填)
                      */
                     media_file: string;
-                    /** @description 归属主播 ID(必填) */
-                    channel_id: string;
+                    /** @description 归属主播 ID(可选,空时挂到 _unassigned 占位 channel) */
+                    channel_id?: string;
                     /** @description 场次标题(必填) */
                     title: string;
                     /** @description 开播时间(可选,RFC3339) */
@@ -4812,7 +4891,7 @@ export interface operations {
                     "application/json": components["schemas"]["Task"];
                 };
             };
-            /** @description media_file 缺失,或 channel_id/title 缺失,或时间格式非法 */
+            /** @description media_file/title 缺失,或时间格式非法 */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -5922,6 +6001,48 @@ export interface operations {
             };
             /** @description 未在录制(ErrNotRecording) */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    testNotify: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 测试通知已触发 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @example 测试通知已发送 */
+                        message: string;
+                    };
+                };
+            };
+            401: paths["/api/health/runtime"]["get"]["responses"]["401"];
+            /** @description notify 未配置(notifyMgr == nil) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description 通知发送失败 */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8410,6 +8531,49 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    searchBiliTopics: {
+        parameters: {
+            query: {
+                /** @description 搜索关键词 */
+                keywords: string;
+                page_size?: number;
+                page_num?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 话题列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: {
+                            /** Format: int64 */
+                            id: number;
+                            name: string;
+                            /** @description 话题统计描述(如热度/阅读量) */
+                            stat_desc: string;
+                        }[];
+                    };
+                };
+            };
+            401: paths["/api/health/runtime"]["get"]["responses"]["401"];
+            /** @description B 站上游请求失败 */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
             };
         };
     };

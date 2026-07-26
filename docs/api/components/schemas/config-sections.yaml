@@ -596,6 +596,10 @@ ConfigExportBundle:
       $ref: 'config-sections.yaml#/ExportDashScope'
     archive:
       $ref: 'config-sections.yaml#/ExportArchive'
+    mcp:
+      allOf:
+        - $ref: 'config-sections.yaml#/ExportMCP'
+      description: MCP 配置段导出投影(指针,缺席=备份不含该段;密钥走 secrets 段)
     secrets:
       type: object
       additionalProperties:
@@ -817,3 +821,62 @@ ConfigImportResult:
           type: integer
         config_sections_count:
           type: integer
+
+# ───── MCP 段导出投影(剔密钥明文)─────
+# 字段对齐 internal/handler/config_export.go 的 MCPExportSection / mcpServerExport / mcpBuiltinExport。
+# 密钥(鉴权 Authorization 头、内置 Brave/Tavily key 明文)不投影,值随 Secrets 段走。
+ExportMCP:
+  type: object
+  description: MCP 配置段导出投影(指针,缺席=备份不含)。鉴权头/内置 key 明文不投影,值随 Secrets 段。
+  nullable: true
+  properties:
+    enabled:
+      type: boolean
+    servers:
+      type: array
+      items:
+        $ref: 'config-sections.yaml#/ExportMCPServer'
+    builtin:
+      $ref: 'config-sections.yaml#/ExportMCPBuiltin'
+    max_tool_rounds:
+      type: integer
+
+ExportMCPServer:
+  type: object
+  description: 单个外部 MCP server 导出投影(Headers 不含 Authorization,鉴权 token 进 Secrets)。
+  properties:
+    name:
+      type: string
+    transport:
+      type: string
+      enum: [stdio, http, sse]
+    url:
+      type: string
+    command:
+      type: string
+    args:
+      type: array
+      items:
+        type: string
+    env:
+      type: array
+      items:
+        type: string
+    enabled:
+      type: boolean
+    timeout_sec:
+      type: integer
+    headers:
+      type: object
+      additionalProperties:
+        type: string
+      description: 自定义请求头(不含 Authorization,仅 User-Agent 等配置项)
+
+ExportMCPBuiltin:
+  type: object
+  description: 内置搜索工具导出投影(只留 env 名,明文 key 进 Secrets)。
+  properties:
+    brave_api_key_env:
+      type: string
+    tavily_api_key_env:
+      type: string

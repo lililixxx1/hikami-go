@@ -229,6 +229,21 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
 
 ## 变更记录
 
+- 2026-07-26(日):**前后端 API 契约不一致对齐**(branch `fix/api-contract-2026-07-26`,qoderclicn/Qwen3.8-Max-Preview 计划审核 Ready with fixes + 代码审核 Ready,reasoning high 全程,「写计划→审计划→执行→审代码」四阶段闭环)。**触发**:用户要求"测试前后端对应",四项核查(测试套件 + API 契约 + 数据类型 + 测试覆盖)后发现 3 处 HIGH + 5 处 MEDIUM 的 spec/code/前端类型不一致。**性质**:**spec 与前端类型对齐型**,后端 Go 代码**零改动**(事实基准),核心是补 spec schema + 重生成 generated.ts + 清理前端失真补丁。12 文件 +393/-54。
+
+  **计划审核**(Ready with fixes,4 Important + 3 Minor 全采纳):qoder 逐字核实 S1/S2 补登 schema 时发现计划凭印象写错——S1 notify/test 响应写了不存在的 `ok` 字段(实际只有 `{message}`,另有 409 分支)、S2 topics/search 写成裸数组(实际是 `{items:[{id,name,stat_desc}]}` 包裹,且漏 `stat_desc`)。这正是本计划要修的"spec 与代码不一致"的反面,凸显独立审核价值。其它:I-3(MCPServerConfig generated 全 optional 但 MCPCardV10 无 `?.` 守卫,明确保留手写)、I-4(删 SettingsView glossary 清单整项会让 GlossaryCardV10 成孤儿,改为只删 `done` 属性)、M-1(H1 修后 source_type Omit 补丁变死代码,纳入清理)、M-2(M4 行号引用修正)、M-3(回归矩阵加基线比对步骤)。
+
+  **实施 3 Phase**:
+  - **Phase 1 spec 补全**:① **H1** `session.yaml` source_type enum `[live,download,import]`→`[live_record,download,import]`(对齐 session.go:143 字面量 `"live_record"`);② **H2** `glossary.yaml` GlossaryCandidate 加 `ai_review`(omitempty,对齐 candidate_store.go:45);③ **H3** `config-sections.yaml` ConfigExportBundle 加 `mcp` property + 新增 ExportMCP/ExportMCPServer/ExportMCPBuiltin schema(对齐 config_export.go:100-127,密钥不投影走 secrets);④ **S1** openapi.yaml 补 `POST /api/notify/test`(200 `{message}` + 409 未配置 + 500);⑤ **S2** 补 `GET /api/bili/topics/search`(200 `{items:[{id,name,stat_desc}]}` + 502,前端 settings.ts:145 实际在调)。
+  - **Phase 2 前端类型对齐**:① **M1** types-derived.ts 删 RecapContent `bilibili` 幽灵字段(getRecapContent 无此字段);② **M2** 删 ConfigStatus `glossary_configured/path` 幽灵字段(probe.go 无此字段,glossary 已迁 DB)+ SettingsView sidebar 项移除 `done`(参照 archive/template,保留导航);③ **M3** settings.ts `ToolsConfig`/`MCPConfig` 改 Schema<>派生,**MCPServerConfig/MCPBuiltinConfig/MCPConfigUpdate 保留手写**(generated 全 optional 会破坏 MCPCardV10.vue:244 `srv.args.join()` 无守卫访问);④ **M4** bili.ts 三函数路径 `/api/bili/accounts*`→`/api/cookie-accounts`(函数名/签名不变,调用方零改动);⑤ **H1 死代码清理** types-derived.ts 删 source_type Omit 放宽补丁(注释自称"enum 不完整",修后失效)。3 个测试 fixture 配合收紧修正(sessionActions `'replay'`→`'live_record'`、friendlyStatus 去 `as` 补全字段、RecapDrawerV10 删 `bilibili`)。
+  - **Phase 3 M5 spec 放宽**:`POST /api/sessions/import` 和 `DownloadByURLRequest` 的 `channel_id` 从 required 移除(后端空时回退 `_unassigned`,spec 比实现严)。
+
+  **执行中自查发现并修正的拼写错误**:settings.ts 曾手误把 `tavily` 写成 `tavaly`/`tavali`(两种错误变体),经 grep 后端 config.go + spec + generated.ts 三方确认为 `tavily`(全小写)后修正,代码审核独立确认无误。
+
+  **代码审核**(Ready,0 Critical / 0 Important / 3 Minor):8 审核点全过(spec↔Go 逐字对齐、MCPConfig Omit+重声明逻辑正确、删除字段无遗漏消费方、tavily 拼写正确、测试意图保留、未引入新不一致)。采纳 Minor#1(import 移文件顶部),#2(测试 fixture channel_name 不一致,都合法)/#3(spec MCPServerConfig 无 required,手写已补偿)为已知权衡不改。
+
+  **验证**:type-check 0 error、vitest 28 文件 207 测试全过、go test 21 ok + 7 Windows flake(**与基线完全一致,零回归**,7 个失败全是 cookie 0600/ffprobe 路径/进程检测环境性 flake)、build embedded_web exit 0(28MB)、api-lint 0 error + 7 warnings(= 基线)。**回归**:零(后端 Go 零改动 + spec 改动只增不删 + 前端改动以 type-check/vitest 兜底)。文档:本条 + 计划 `plans/plan-api-contract-fix-2026-07-26.md`(含两轮审核记录)。
+
 - 2026-07-25(五):**media_ready 状态与音频文件一致性修复**(branch `fix/media-ready-consistency-2026-07-25`,qoderclicn/Qwen3.8-Max-Preview 计划审核 Ready with fixes + 代码审核 Ready,reasoning high 全程,「写计划→审计划→执行→审代码」四阶段闭环)。**触发**:用户反馈"软件回放界面有好多音频已就绪",DB + 本地文件交叉核查发现 64 个 `media_ready` session 中仅 1 个本地真有 `audio.asr.mp3`,其余 63 个连 session 目录都不存在(2026-07-16 批量脏数据:64 个 download+normalize 任务 1 分钟跑完,部分 normalize finished-started=0~1s)。
 
   **qoder 根因独立审核**(对首轮分析的裁决 Ready with fixes,补全两处遗漏):① **I-1(真凶)**`FFmpegConverter.Convert` 只检查退出码,ffmpeg 输入截断/损坏时可 exit 0 + 空输出 → `convertAtomic` Rename 成功 → session 误进 media_ready 但音频为空;② **I-2(分析完整性)**`state.go:205-206` 的 `failed+EventNormalizeSucceeded→media_ready` 是状态机内第四条入边(经 retry 触发),行为正确无需改;③ **I-3**`ResetFailedSession` 的 `local_available` 标志位不等于文件存在;④ **I-4** 无运行时一致性校验。

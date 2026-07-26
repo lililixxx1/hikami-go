@@ -49,7 +49,7 @@ GlossaryCandidate:
   type: object
   description: |
     术语候选词(场次发现后待审批)。
-    reviewed_at 是唯一带 omitempty 的字段(未审批时缺席)。
+    reviewed_at 与 ai_review 带 omitempty(未审批 / 未复核时缺席)。
   required:
     - id
     - channel_id
@@ -110,6 +110,12 @@ GlossaryCandidate:
     reviewed_at:
       type: string
       description: 审批时间(omitempty,未审批时缺席)
+    ai_review:
+      type: string
+      description: |
+        AI 批量复核理由(含核实结论 + 置信度说明)。
+        omitempty:未复核(POST /api/glossary/candidates/review 未触发或该候选未被处理)时缺席。
+        由 glossary.Review 写入(见 candidate_store.UpdateCandidateReview)。
 
 # 请求 schemas
 UpsertGlossaryEntryRequest:

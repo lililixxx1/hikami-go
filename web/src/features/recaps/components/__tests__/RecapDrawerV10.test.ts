@@ -22,7 +22,7 @@ const session: Session = {
   archived_at: '', publish_target: '', created_at: '', updated_at: '',
 }
 const content: RecapContent = {
-  available: true, markdown: '# Title\n\nbody', bilibili: '', prompt: '', raw_response: '',
+  available: true, markdown: '# Title\n\nbody', prompt: '', raw_response: '',
   suggested_terms: ['术语A', '术语B'],
 }
 

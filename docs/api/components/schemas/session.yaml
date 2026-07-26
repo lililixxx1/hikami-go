@@ -30,8 +30,8 @@ Session:
       type: string
     source_type:
       type: string
-      enum: [live, download, import]
-      description: 场次来源类型
+      enum: [live_record, download, import]
+      description: 场次来源类型(live_record=直播录制,download=回放下载,import=手动导入)
     source_id:
       type: string
       description: 源标识(live 用 room-time;download 用 BV 号;import 自定义)
@@ -128,11 +128,11 @@ DownloadSessionRequest:
 
 DownloadByURLRequest:
   type: object
-  required: [channel_id, url]
+  required: [url]
   properties:
     channel_id:
       type: string
-      description: 归属主播 ID
+      description: 归属主播 ID(可选,空时挂到 _unassigned 占位 channel)
     url:
       type: string
       description: 视频 URL(如 B 站 BV 号)

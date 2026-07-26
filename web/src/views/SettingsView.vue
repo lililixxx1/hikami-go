@@ -70,7 +70,7 @@ const sections = computed<SidebarSection[]>(() => {
     { id: 'publish', label: 'B站发布', group: '流水线配置', done: !!cs?.publish_enabled },
     { id: 'archive', label: '归档', group: '流水线配置' },
     { id: 'template', label: '回顾模板', group: '流水线配置' },
-    { id: 'glossary', label: '全局术语表', group: '流水线配置', done: !!cs?.glossary_configured },
+    { id: 'glossary', label: '全局术语表', group: '流水线配置' },
     { id: 'accounts', label: 'B站账号', group: '账号与备份', done: accounts.value.length > 0 },
     { id: 'admin-token', label: '管理员令牌', group: '账号与备份' },
     { id: 'backup', label: '配置备份', group: '账号与备份' },

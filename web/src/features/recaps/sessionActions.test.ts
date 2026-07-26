@@ -31,7 +31,7 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     id: 's1',
     slug: 's1',
     channel_id: 'c1',
-    source_type: 'replay',
+    source_type: 'live_record',
     source_id: 'x',
     title: 't',
     started_at: '',

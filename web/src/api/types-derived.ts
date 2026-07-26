@@ -13,10 +13,7 @@ import type { components, paths } from './generated'
 type Schema<K extends keyof components['schemas']> = components['schemas'][K]
 
 // ---------- 实体 ----------
-// NOTE: source_type 在 generated schema 里被收窄为 "live"|"download"|"import",但后端实际还会发出
-// "live_record" 等值(枚举不完整)。这里放宽为 string,与旧手写 types.ts 一致,也使派生 Session
-// 与 sessionActions.ts 消费的 Session 在该字段上兼容。
-export type Session = Omit<Schema<'Session'>, 'source_type'> & { source_type: string }
+export type Session = Schema<'Session'>
 export type Task = Schema<'Task'>
 export type Channel = Schema<'Channel'>
 export type LiveStatus = Schema<'LiveStatus'>
@@ -25,12 +22,9 @@ export type LiveStatus = Schema<'LiveStatus'>
 export type Capabilities = Omit<NonNullable<Schema<'RuntimeStatus'>['capabilities']>, 'reason'> & {
   reason: string
 }
-// ConfigStatus: generated 缺 glossary_configured/glossary_path(后端实际返回,SettingsView 消费)。
-// 叠加这两个字段以匹配历史 types.ts 与真实响应。
-export type ConfigStatus = Schema<'ConfigStatus'> & {
-  glossary_configured?: boolean
-  glossary_path?: string
-}
+// ConfigStatus: 后端 probe.go ConfigStatus struct 无 glossary_* 字段(glossary 已迁 DB 按 channel 存储,
+// 无全局"已配置"语义)。历史手写 glossary_configured/path 是幽灵字段,SettingsView 清单项已改为无 done 属性。
+export type ConfigStatus = Schema<'ConfigStatus'>
 // RuntimeStatus: 用上面收窄后的 Capabilities / ConfigStatus 覆盖 generated 的嵌套字段,
 // 使 store.status.capabilities.reason 等访问类型正确。
 export type RuntimeStatus = Omit<Schema<'RuntimeStatus'>, 'capabilities' | 'config_status'> & {
@@ -73,9 +67,9 @@ export type DiscoverResult = Schema<'DiscoverResult'>
 // 前端从预览结果勾选后回传给 Execute 的单项。schema 中对应 DiscoverExecuteItem
 // (openapi 侧名为 DiscoverExecuteItem;前端历史命名为 DiscoverPickItem,保留别名兼容旧用法)。
 export type DiscoverPickItem = Schema<'DiscoverExecuteItem'>
-// RecapContent: generated schema 缺 bilibili 字段,但后端 GET /recap 实际返回 bilibili。
-// 以 schema 为基叠加可选 bilibili,兼容真实响应。
-export type RecapContent = Schema<'RecapContent'> & { bilibili?: string }
+// RecapContent: 后端 getRecapContent(server.go)只返回 available/markdown/prompt/raw_response/suggested_terms,
+// 无 bilibili 字段(历史手写补丁基于错误前提,已删除)。
+export type RecapContent = Schema<'RecapContent'>
 
 // 列表响应
 type ListSessionsResp = paths['/api/sessions']['get']['responses'][200]['content']['application/json']

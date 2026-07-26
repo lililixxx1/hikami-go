@@ -31,7 +31,8 @@ export function cancelQRCodeSession(sessionId: string): Promise<void> {
 }
 
 export function listBiliAccounts(): Promise<BiliCookieAccount[]> {
-  return get('/api/bili/accounts')
+  // 规范端点 /api/cookie-accounts;/api/bili/accounts 是 deprecated 别名(server.go 转发,保留向后兼容)。
+  return get('/api/cookie-accounts')
 }
 
 export function saveQRCodeToAccount(sessionId: string, nickname?: string): Promise<BiliCookieAccount> {
@@ -39,9 +40,9 @@ export function saveQRCodeToAccount(sessionId: string, nickname?: string): Promi
 }
 
 export function updateBiliAccount(id: number, data: Partial<Pick<BiliCookieAccount, 'nickname' | 'is_default_download' | 'is_default_publish'>>): Promise<BiliCookieAccount> {
-  return put(`/api/bili/accounts/${id}`, data)
+  return put(`/api/cookie-accounts/${id}`, data)
 }
 
 export function deleteBiliAccount(id: number): Promise<void> {
-  return del(`/api/bili/accounts/${id}`)
+  return del(`/api/cookie-accounts/${id}`)
 }

@@ -1,5 +1,9 @@
 import client, { get, post, put } from './client'
+import type { components } from './generated'
 import type { ASRS3Config, ArchiveConfig, BiliSeries, BiliTopic, ConfigImportResult, SecretEntry, DashScopeConfig, PublishConfig, RecapConfig, RecapModelOption, WebDAVConfig } from './types-derived'
+
+// Schema<K>:从 generated.ts 派生命名类型(与 types-derived.ts 同名 helper,此处局部用于 tools/mcp 段)。
+type Schema<K extends keyof components['schemas']> = components['schemas'][K]
 
 export interface SecretsResponse {
   items: SecretEntry[]
@@ -65,12 +69,9 @@ export function updateArchiveConfig(config: ArchiveConfig): Promise<ArchiveConfi
   return put('/api/config/archive', config)
 }
 
-// tools 段(yt_dlp/rclone 路径)。generated.ts 尚未含此端点(OpenAPI spec 待同步生成),
-// 过渡期手写内联类型;openapi-typescript 重新生成后改走 types-derived 派生类型。
-export interface ToolsConfig {
-  yt_dlp: string
-  rclone: string
-}
+// tools 段(yt_dlp/rclone 路径)。generated.ts 已生成 ToolsConfigResponse(2026-07-26 spec 补登后),
+// 字段与历史手写完全一致,改走 Schema 派生。
+export type ToolsConfig = Schema<'ToolsConfigResponse'>
 
 export function getToolsConfig(): Promise<ToolsConfig> {
   return get('/api/config/tools')
@@ -81,6 +82,14 @@ export function updateToolsConfig(config: Partial<ToolsConfig>): Promise<ToolsCo
 }
 
 // MCP 搜索工具配置段(MCP 搜索集成)。密钥字段只返回是否已设置(只写)。
+//
+// 类型策略(2026-07-26):
+//  - MCPServerConfig / MCPBuiltinConfig / MCPConfigUpdate **保留手写**:
+//    generated 的 MCPServerConfig 因 spec 里 request/response 共用 schema,所有字段标 optional(?),
+//    但 MCPCardV10.vue 直接访问 srv.name / srv.transport / srv.args.join() 无 undefined 守卫,
+//    改 optional 会破坏类型安全。手写保持 required 与运行时消费一致。
+//  - MCPConfig 顶层用 Schema<'MCPConfigResponse'> 派生,但 Omit servers/builtin 后重声明为手写类型,
+//    使 servers: MCPServerConfig[](手写 required 版)透传给 MCPCardV10。
 export interface MCPServerConfig {
   name: string
   transport: 'http' | 'sse' | 'stdio'
@@ -100,11 +109,9 @@ export interface MCPBuiltinConfig {
   tavily_api_key_env: string
 }
 
-export interface MCPConfig {
-  enabled: boolean
+export type MCPConfig = Omit<Schema<'MCPConfigResponse'>, 'servers' | 'builtin'> & {
   servers: MCPServerConfig[]
   builtin: MCPBuiltinConfig
-  max_tool_rounds: number
 }
 
 // MCPConfig 的 PUT 请求(partial,密钥字段在 builtin 内)。

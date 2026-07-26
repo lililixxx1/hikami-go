@@ -623,7 +623,7 @@ paths:
       operationId: downloadSessionByURL
       summary: 按 URL 创建下载场次
       description: |
-        接收视频链接(B 站 BV 号等)+ 主播 ID,创建 download 场次并入队。
+        接收视频链接(B 站 BV 号等),创建 download 场次并入队。channel_id 可选(空时挂到 _unassigned)。
         **前置能力守卫**:Capabilities.ReplayDownload 不可用 → 409 + reason。
         返回 202 + Task。
       requestBody:
@@ -640,7 +640,7 @@ paths:
               schema:
                 $ref: 'components/schemas/task.yaml#/Task'
         '400':
-          description: channel_id 或 url 缺失
+          description: url 缺失
           content:
             application/json:
               schema:
@@ -658,15 +658,15 @@ paths:
       description: |
         **multipart/form-data**(非 JSON)。
         创建 import 场次并入队 normalize 任务。
-        media_file 必填;channel_id + title 必填;started_at/ended_at 可选(RFC3339);
-        danmaku_file 可选;source_url 可选。
+        media_file + title 必填;channel_id 可选(空时挂到 _unassigned 占位 channel);
+        started_at/ended_at 可选(RFC3339);danmaku_file 可选;source_url 可选。
       requestBody:
         required: true
         content:
           multipart/form-data:
             schema:
               type: object
-              required: [media_file, channel_id, title]
+              required: [media_file, title]
               properties:
                 media_file:
                   type: string
@@ -674,7 +674,7 @@ paths:
                   description: 媒体文件(必填)
                 channel_id:
                   type: string
-                  description: 归属主播 ID(必填)
+                  description: 归属主播 ID(可选,空时挂到 _unassigned 占位 channel)
                 title:
                   type: string
                   description: 场次标题(必填)
@@ -699,7 +699,7 @@ paths:
               schema:
                 $ref: 'components/schemas/task.yaml#/Task'
         '400':
-          description: media_file 缺失,或 channel_id/title 缺失,或时间格式非法
+          description: media_file/title 缺失,或时间格式非法
           content:
             application/json:
               schema:
@@ -1634,6 +1634,41 @@ paths:
                 $ref: 'components/schemas/common.yaml#/Error'
         '409':
           description: 未在录制(ErrNotRecording)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+
+  /api/notify/test:
+    post:
+      tags: [运行时]
+      operationId: testNotify
+      summary: 发送测试通知
+      description: |
+        触发一次测试通知发送(用于设置页"通知测试"按钮验证 notify 配置)。
+        notify 未配置(notifyMgr == nil)时返回 409。
+      responses:
+        '200':
+          description: 测试通知已触发
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [message]
+                properties:
+                  message:
+                    type: string
+                    example: "测试通知已发送"
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '409':
+          description: notify 未配置(notifyMgr == nil)
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
+        '500':
+          description: 通知发送失败
           content:
             application/json:
               schema:
@@ -3685,6 +3720,67 @@ paths:
           $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
         '502':
           description: B站 API 请求失败
+
+  /api/bili/topics/search:
+    get:
+      tags: [B站]
+      operationId: searchBiliTopics
+      summary: 搜索 B 站话题(用于发布时选 topic)
+      description: |
+        调用 B 站创作端话题搜索接口(app.bilibili.com/x/topic/pub/search),
+        返回匹配的话题列表。前端发布流程的 topic 选择调用。
+        上游(B 站)请求失败返回 502。
+      security: [{ AdminToken: [] }]
+      parameters:
+        - in: query
+          name: keywords
+          required: true
+          schema:
+            type: string
+          description: 搜索关键词
+        - in: query
+          name: page_size
+          required: false
+          schema:
+            type: integer
+            default: 20
+        - in: query
+          name: page_num
+          required: false
+          schema:
+            type: integer
+            default: 1
+      responses:
+        '200':
+          description: 话题列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, name, stat_desc]
+                      properties:
+                        id:
+                          type: integer
+                          format: int64
+                        name:
+                          type: string
+                        stat_desc:
+                          type: string
+                          description: 话题统计描述(如热度/阅读量)
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+        '502':
+          description: B 站上游请求失败
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/common.yaml#/Error'
 
   /api/bili/accounts/{id}:
     parameters:
