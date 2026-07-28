@@ -1397,6 +1397,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/config/vad": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 获取 VAD 静音裁剪配置
+         * @description ASR 前置 VAD(Voice Activity Detection)静音裁剪配置。
+         *     启用后:上传 DashScope 前先用 ffmpeg 裁掉 >min_silence_sec 的静音段,减少计费时长。
+         *     失败/裁剪比过低自动回退原始音频(零回归)。详见 plans/plan-vad-2026-07-27.md。
+         */
+        get: operations["getVADConfig"];
+        /**
+         * 更新 VAD 静音裁剪配置
+         * @description 全字段可选(presence-aware)。非法值(如 threshold_db > 0)返回 400。
+         *     改参立即生效(下次 ASR 任务用新参数,无需重启)。
+         */
+        put: operations["updateVADConfig"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/config/export": {
         parameters: {
             query?: never;
@@ -3658,6 +3685,48 @@ export interface components {
             };
             max_tool_rounds?: number;
         };
+        /**
+         * @description GET /api/config/vad 响应。ASR 前置 VAD(Voice Activity Detection)静音裁剪配置。
+         *     启用后:asr.HandleTask 在调 DashScope 前先用 ffmpeg 裁掉 >min_silence_sec 的静音段,
+         *     产出 audio.asr.trimmed.mp3 + silence_map.json,ASR 返回后用 silence_map 反向映射回原始时间线。
+         *     失败/裁剪比过低/ffmpeg 缺 filter → 自动回退原始音频(零回归)。详见 plans/plan-vad-2026-07-27.md。
+         */
+        VADConfigResponse: {
+            /** @description VAD 总开关(默认 true,失败自动回退原始音频) */
+            enabled: boolean;
+            /** @description 静音判定阈值(默认 -40,值越小越严格) */
+            threshold_db: number;
+            /**
+             * Format: float
+             * @description 触发裁剪的最小静音时长(默认 2.0 秒)
+             */
+            min_silence_sec: number;
+            /**
+             * Format: float
+             * @description 说话段两端保留的静音缓冲(默认 0.2 秒,silence_map 层实现,不用 ffmpeg stop_silence)
+             */
+            padding_sec: number;
+            /**
+             * Format: float
+             * @description 裁剪后/原始低于此值视为异常,回退原始音频(默认 0.3,防 ffmpeg bug 裁过头)
+             */
+            min_output_ratio: number;
+        };
+        /**
+         * @description PUT /api/config/vad 请求。全字段可选(presence-aware)。
+         *     非法值(如 threshold_db > 0 或 min_silence_sec <= 0)返回 400。
+         *     改参立即生效(下次 ASR 任务用新参数,VADProcessor 持 *config.Config 指针)。
+         */
+        VADConfigRequest: {
+            enabled?: boolean;
+            threshold_db?: number;
+            /** Format: float */
+            min_silence_sec?: number;
+            /** Format: float */
+            padding_sec?: number;
+            /** Format: float */
+            min_output_ratio?: number;
+        };
         /** @description 回顾 AI 段导出(指针,缺席=备份不含) */
         ExportRecapAI: {
             enabled?: boolean;
@@ -3767,7 +3836,7 @@ export interface components {
         };
         /**
          * @description GET /api/config/export 响应 + POST /api/config/import 请求体。
-         *     全局配置 6 段(指针 + omitempty,缺席=备份不含该段)+ secrets + channels +
+         *     全局配置 9 段(指针 + omitempty,缺席=备份不含该段)+ secrets + channels +
          *     glossary + templates + bili_accounts。
          */
         ConfigExportBundle: {
@@ -3789,6 +3858,8 @@ export interface components {
             archive?: components["schemas"]["ExportArchive"];
             /** @description MCP 配置段导出投影(指针,缺席=备份不含该段;密钥走 secrets 段) */
             mcp?: components["schemas"]["ExportMCP"];
+            /** @description VAD 静音裁剪配置段(2026-07-27,指针,缺席=备份不含该段;无密钥,直接投影) */
+            vad?: components["schemas"]["VADConfigRequest"];
             /**
              * @description 明文密钥 map(env名 → 值)。
              *     ⚠️ 导出**包含明文密钥**,仅用于备份/迁移,不要外传。
@@ -6597,6 +6668,63 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MCPConfigResponse"];
+                };
+            };
+            401: paths["/api/health/runtime"]["get"]["responses"]["401"];
+        };
+    };
+    getVADConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description VAD 配置 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VADConfigResponse"];
+                };
+            };
+            401: paths["/api/health/runtime"]["get"]["responses"]["401"];
+        };
+    };
+    updateVADConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VADConfigRequest"];
+            };
+        };
+        responses: {
+            /** @description 更新后的 VAD 配置 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VADConfigResponse"];
+                };
+            };
+            /** @description 非法参数值 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error?: string;
+                    };
                 };
             };
             401: paths["/api/health/runtime"]["get"]["responses"]["401"];

@@ -1330,6 +1330,14 @@ func newTestServerWithDB(t *testing.T) (*Server, *sql.DB) {
 			FallbackExtractAudio: false,
 			RecordDanmaku:        false,
 		},
+		VAD: config.VADConfig{ // 默认 VAD 参数(2026-07-27 VAD 引入,与 config.setDefaults 对齐)
+			Enabled:        true,
+			ThresholdDB:    -40,
+			MinSilenceSec:  2.0,
+			PaddingSec:     0.2,
+			DetectionMode:  "peak",
+			MinOutputRatio: 0.3,
+		},
 	}
 	status := &runtime.Status{}
 	taskStore := worker.NewStore(database)
@@ -2827,5 +2835,71 @@ func TestResetSession_NonASRFailure(t *testing.T) {
 
 	if w.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409; body = %s", w.Code, w.Body.String())
+	}
+}
+
+// TestVADConfigRoundTrip 验证 VAD 配置 GET/PUT 往返 + 持久化 + presence-aware + 非法值拒绝。
+// 见 plans/plan-vad-2026-07-27.md Phase 5。
+func TestVADConfigRoundTrip(t *testing.T) {
+	server := newTestServer(t)
+
+	// 1. GET 初始值(viper 默认:enabled=true, threshold=-40, ...)
+	getRec := performRequest(server, http.MethodGet, "/api/config/vad", "")
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET vad status = %d, body=%s", getRec.Code, getRec.Body.String())
+	}
+	if !strings.Contains(getRec.Body.String(), `"enabled":true`) {
+		t.Fatalf("default vad should be enabled, got: %s", getRec.Body.String())
+	}
+	if !strings.Contains(getRec.Body.String(), `"threshold_db":-40`) {
+		t.Fatalf("default threshold_db should be -40, got: %s", getRec.Body.String())
+	}
+
+	// 2. PUT 完整覆盖 → 200 + 持久化
+	putBody := `{"enabled":false,"threshold_db":-50,"min_silence_sec":3.0,"padding_sec":0.5,"min_output_ratio":0.5}`
+	putRec := performRequest(server, http.MethodPut, "/api/config/vad", putBody)
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("PUT vad status = %d, body=%s", putRec.Code, putRec.Body.String())
+	}
+	if !strings.Contains(putRec.Body.String(), `"enabled":false`) {
+		t.Fatalf("PUT response should show enabled=false, got: %s", putRec.Body.String())
+	}
+	if !strings.Contains(putRec.Body.String(), `"threshold_db":-50`) {
+		t.Fatalf("PUT response should show threshold_db=-50, got: %s", putRec.Body.String())
+	}
+
+	// 3. GET 回读一致
+	getRec2 := performRequest(server, http.MethodGet, "/api/config/vad", "")
+	if getRec2.Code != http.StatusOK {
+		t.Fatalf("GET vad after PUT status = %d", getRec2.Code)
+	}
+	if !strings.Contains(getRec2.Body.String(), `"threshold_db":-50`) {
+		t.Fatalf("GET after PUT should reflect persisted threshold_db=-50, got: %s", getRec2.Body.String())
+	}
+
+	// 4. presence-aware:只传 enabled,其他字段保持
+	putPartial := `{"enabled":true}`
+	putRec3 := performRequest(server, http.MethodPut, "/api/config/vad", putPartial)
+	if putRec3.Code != http.StatusOK {
+		t.Fatalf("PUT vad partial status = %d, body=%s", putRec3.Code, putRec.Body.String())
+	}
+	if !strings.Contains(putRec3.Body.String(), `"threshold_db":-50`) {
+		t.Fatalf("partial PUT should retain threshold_db=-50, got: %s", putRec3.Body.String())
+	}
+	if !strings.Contains(putRec3.Body.String(), `"enabled":true`) {
+		t.Fatalf("partial PUT should set enabled=true, got: %s", putRec3.Body.String())
+	}
+
+	// 5. 非法值拒绝(threshold_db=10 超出 [-80, 0])
+	bad := performRequest(server, http.MethodPut, "/api/config/vad", `{"threshold_db":10}`)
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("PUT threshold_db=10 expected 400, got %d; body=%s", bad.Code, bad.Body.String())
+	}
+
+	// 6. runtime_settings 表持久化了 vad section
+	var section string
+	err := server.runtimeCfg.DB().QueryRow("SELECT section FROM runtime_settings WHERE section='vad'").Scan(&section)
+	if err != nil {
+		t.Fatalf("vad section not persisted in runtime_settings: %v", err)
 	}
 }

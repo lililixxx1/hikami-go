@@ -38,6 +38,7 @@ import AdminTokenCardV10 from '@/features/settings/components-v10/AdminTokenCard
 import BackupCardV10 from '@/features/settings/components-v10/BackupCardV10.vue'
 import ToolsCardV10 from '@/features/settings/components-v10/ToolsCardV10.vue'
 import MCPCardV10 from '@/features/settings/components-v10/MCPCardV10.vue'
+import VADCardV10 from '@/features/settings/components-v10/VADCardV10.vue'
 
 interface SidebarSection {
   id: string
@@ -76,6 +77,7 @@ const sections = computed<SidebarSection[]>(() => {
     { id: 'backup', label: '配置备份', group: '账号与备份' },
     { id: 'tools', label: '外部工具', group: '高级' },
     { id: 'mcp', label: 'AI 搜索(MCP)', group: '高级' },
+    { id: 'vad', label: 'VAD 静音裁剪', group: '高级' },
   ]
 })
 
@@ -294,6 +296,10 @@ watch(
 
       <section data-section="mcp">
         <MCPCardV10 :key="`mcp-${reloadKey}`" @saved="onSaved" />
+      </section>
+
+      <section data-section="vad">
+        <VADCardV10 :key="`vad-${reloadKey}`" @saved="onSaved" />
       </section>
     </main>
   </div>

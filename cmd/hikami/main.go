@@ -231,7 +231,7 @@ func main() {
 		stateStore,
 		normalize.FFmpegConverter{Command: cfg.FFmpeg},
 	)
-	asrHandler := asr.NewHandler(cfg, sessionStore, stateStore, asr.NewConfiguredTranscriber(cfg), glossaryStore)
+	asrHandler := asr.NewHandler(cfg, sessionStore, stateStore, asr.NewConfiguredTranscriber(cfg), glossaryStore, asr.NewVADProcessor(cfg))
 	normalizeHandler.SetOnSuccess(func(ctx context.Context, task worker.Task) {
 		ch, err := channelStore.Get(ctx, task.ChannelID)
 		if err != nil || !ch.AutoASR {

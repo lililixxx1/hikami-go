@@ -241,3 +241,37 @@ func TestOpen_SetsFilePermissions0600(t *testing.T) {
 		}
 	}
 }
+
+// TestMigrateRuntimeSettingsAcceptsVADSection 验证 v38 迁移后 runtime_settings 表
+// 的 CHECK 约束白名单包含 'vad' 段(2026-07-27 VAD 引入)。
+// 见 plans/plan-vad-2026-07-27.md Phase 5。
+func TestMigrateRuntimeSettingsAcceptsVADSection(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "hikami.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+	if err := Migrate(database); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	// 插入所有 9 个白名单段,都应成功
+	sections := []string{"publish", "asr_s3", "dashscope", "recap_ai", "webdav", "archive", "tools", "mcp", "vad"}
+	for _, section := range sections {
+		_, err := database.Exec(
+			"INSERT INTO runtime_settings (section, data) VALUES (?, '{}')",
+			section,
+		)
+		if err != nil {
+			t.Errorf("插入 section=%q 失败(CHECK 约束未放行): %v", section, err)
+		}
+	}
+
+	// 非白名单段应被 CHECK 拒绝
+	_, err = database.Exec(
+		"INSERT INTO runtime_settings (section, data) VALUES ('bogus_section', '{}')",
+	)
+	if err == nil {
+		t.Errorf("插入非白名单 section='bogus_section' 应被 CHECK 约束拒绝,实际成功")
+	}
+}

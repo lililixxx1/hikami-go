@@ -96,6 +96,7 @@ func TestValidate_Success(t *testing.T) {
 		Web:        WebConfig{Enabled: true, Listen: "127.0.0.1:6334"},
 		Worker:     WorkerConfig{Num: 3},
 		LiveRecord: LiveRecordConfig{AudioContainer: "m4a"},
+		VAD:        validVADDefaults(),
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("完整配置校验失败: %v", err)
@@ -260,6 +261,7 @@ func TestValidate_DownloaderBackend(t *testing.T) {
 				Worker:     WorkerConfig{Num: 1},
 				LiveRecord: LiveRecordConfig{AudioContainer: "m4a"},
 				Downloader: DownloaderConfig{Backend: tt.backend},
+				VAD:        validVADDefaults(),
 			}
 			err := cfg.Validate()
 			if tt.wantErr && err == nil {
@@ -293,6 +295,7 @@ func TestValidate_NonLoopbackRequiresAdminToken(t *testing.T) {
 		Web:        WebConfig{Enabled: true, Listen: "0.0.0.0:6334"},
 		Worker:     WorkerConfig{Num: 1},
 		LiveRecord: LiveRecordConfig{AudioContainer: "m4a"},
+		VAD:        validVADDefaults(),
 	}
 	if err := cfg.Validate(); err == nil {
 		t.Error("绑 0.0.0.0 无 admin_token 期望报错")
@@ -439,6 +442,7 @@ func TestValidate_ArchiveCleanupPolicy(t *testing.T) {
 				LiveRecord: LiveRecordConfig{AudioContainer: "m4a"},
 				Downloader: DownloaderConfig{Backend: "auto"},
 				Archive:    ArchiveConfig{CleanupPolicy: tt.policy},
+				VAD:        validVADDefaults(),
 			}
 			err := cfg.Validate()
 			if tt.wantErr && err == nil {
@@ -468,6 +472,20 @@ func baseCfg() *Config {
 		},
 		WebDAV: WebDAVConfig{URL: "http://w", Password: "yaml-plain"},
 		ASRS3:  ASRS3Config{Endpoint: "http://s", AccessKeySecret: "yaml-secret"},
+		VAD:    validVADDefaults(),
+	}
+}
+
+// validVADDefaults 返回能通过 Validate() 的 VADConfig 默认值。
+// 供手动构造 Config 字面量的测试复用,避免 VAD 引入后这些测试因 VAD 字段零值而 Validate 失败。
+func validVADDefaults() VADConfig {
+	return VADConfig{
+		Enabled:        true,
+		ThresholdDB:    -40,
+		MinSilenceSec:  2.0,
+		PaddingSec:     0.2,
+		DetectionMode:  "peak",
+		MinOutputRatio: 0.3,
 	}
 }
 
@@ -797,5 +815,142 @@ worker:
 	}
 	if cfg.Worker.Num != 3 {
 		t.Errorf("worker.num = %d, want 3", cfg.Worker.Num)
+	}
+}
+
+// TestVADDefaults 验证 VAD 默认值(空配置 → 推荐参数,零配置开箱即用)。
+// 见 plans/plan-vad-2026-07-27.md Phase 1。
+func TestVADDefaults(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load empty: %v", err)
+	}
+	if !cfg.VAD.Enabled {
+		t.Errorf("VAD.Enabled = false, want true (default on)")
+	}
+	if cfg.VAD.ThresholdDB != -40 {
+		t.Errorf("VAD.ThresholdDB = %d, want -40", cfg.VAD.ThresholdDB)
+	}
+	if cfg.VAD.MinSilenceSec != 2.0 {
+		t.Errorf("VAD.MinSilenceSec = %v, want 2.0", cfg.VAD.MinSilenceSec)
+	}
+	if cfg.VAD.PaddingSec != 0.2 {
+		t.Errorf("VAD.PaddingSec = %v, want 0.2", cfg.VAD.PaddingSec)
+	}
+	if cfg.VAD.DetectionMode != "peak" {
+		t.Errorf("VAD.DetectionMode = %q, want \"peak\"", cfg.VAD.DetectionMode)
+	}
+	if cfg.VAD.MinOutputRatio != 0.3 {
+		t.Errorf("VAD.MinOutputRatio = %v, want 0.3", cfg.VAD.MinOutputRatio)
+	}
+}
+
+// TestVADValidate 验证 VADConfig.Validate 的边界校验。
+func TestVADValidate(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  VADConfig
+		ok   bool
+	}{
+		{"default", VADConfig{ThresholdDB: -40, MinSilenceSec: 2, PaddingSec: 0.2, MinOutputRatio: 0.3}, true},
+		{"threshold_zero", VADConfig{ThresholdDB: 0, MinSilenceSec: 2, PaddingSec: 0.2, MinOutputRatio: 0.3}, true},
+		{"threshold_too_high", VADConfig{ThresholdDB: 10, MinSilenceSec: 2, PaddingSec: 0.2, MinOutputRatio: 0.3}, false},
+		{"threshold_too_low", VADConfig{ThresholdDB: -81, MinSilenceSec: 2, PaddingSec: 0.2, MinOutputRatio: 0.3}, false},
+		{"silence_zero", VADConfig{ThresholdDB: -40, MinSilenceSec: 0, PaddingSec: 0.2, MinOutputRatio: 0.3}, false},
+		{"silence_negative", VADConfig{ThresholdDB: -40, MinSilenceSec: -1, PaddingSec: 0.2, MinOutputRatio: 0.3}, false},
+		{"padding_negative", VADConfig{ThresholdDB: -40, MinSilenceSec: 2, PaddingSec: -0.1, MinOutputRatio: 0.3}, false},
+		{"ratio_zero", VADConfig{ThresholdDB: -40, MinSilenceSec: 2, PaddingSec: 0.2, MinOutputRatio: 0}, false},
+		{"ratio_over_one", VADConfig{ThresholdDB: -40, MinSilenceSec: 2, PaddingSec: 0.2, MinOutputRatio: 1.5}, false},
+		{"ratio_one_ok", VADConfig{ThresholdDB: -40, MinSilenceSec: 2, PaddingSec: 0.2, MinOutputRatio: 1}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			if tc.ok && err != nil {
+				t.Errorf("Validate() unexpected error: %v", err)
+			}
+			if !tc.ok && err == nil {
+				t.Errorf("Validate() expected error, got nil")
+			}
+		})
+	}
+}
+
+// TestApplyOverrides_OverridesVADFields 验证 ApplyOverrides 完整覆盖 VAD 段所有字段。
+func TestApplyOverrides_OverridesVADFields(t *testing.T) {
+	cfg := baseCfg()
+	enabled := false
+	threshold := -50
+	minSilence := 3.0
+	padding := 0.5
+	ratio := 0.5
+	overrides := map[string]json.RawMessage{
+		"vad": rawJSON(t, VADSectionDTO{
+			Enabled:        &enabled,
+			ThresholdDB:    &threshold,
+			MinSilenceSec:  &minSilence,
+			PaddingSec:     &padding,
+			MinOutputRatio: &ratio,
+		}),
+	}
+	if err := ApplyOverrides(cfg, overrides); err != nil {
+		t.Fatalf("ApplyOverrides: %v", err)
+	}
+	if cfg.VAD.Enabled {
+		t.Errorf("VAD.Enabled = true, want false")
+	}
+	if cfg.VAD.ThresholdDB != -50 {
+		t.Errorf("VAD.ThresholdDB = %d, want -50", cfg.VAD.ThresholdDB)
+	}
+	if cfg.VAD.MinSilenceSec != 3.0 {
+		t.Errorf("VAD.MinSilenceSec = %v, want 3.0", cfg.VAD.MinSilenceSec)
+	}
+	if cfg.VAD.PaddingSec != 0.5 {
+		t.Errorf("VAD.PaddingSec = %v, want 0.5", cfg.VAD.PaddingSec)
+	}
+	if cfg.VAD.MinOutputRatio != 0.5 {
+		t.Errorf("VAD.MinOutputRatio = %v, want 0.5", cfg.VAD.MinOutputRatio)
+	}
+}
+
+// TestApplyOverrides_VADPresenceAware 验证 VADSectionDTO 的 presence-aware 语义:
+// nil 字段保留基线,非 nil(含零值)覆盖。
+func TestApplyOverrides_VADPresenceAware(t *testing.T) {
+	cfg := baseCfg()
+	// 基线:Enabled=true, ThresholdDB=-40
+	if !cfg.VAD.Enabled || cfg.VAD.ThresholdDB != -40 {
+		t.Fatalf("baseline VAD not as expected: %+v", cfg.VAD)
+	}
+	// 只传 Enabled=false,其他字段 nil → 只改 Enabled
+	enabled := false
+	overrides := map[string]json.RawMessage{
+		"vad": rawJSON(t, VADSectionDTO{Enabled: &enabled}),
+	}
+	if err := ApplyOverrides(cfg, overrides); err != nil {
+		t.Fatalf("ApplyOverrides: %v", err)
+	}
+	if cfg.VAD.Enabled {
+		t.Errorf("Enabled should be false after override")
+	}
+	// 其他字段保留基线
+	if cfg.VAD.ThresholdDB != -40 {
+		t.Errorf("ThresholdDB = %d, want baseline -40 (presence-aware)", cfg.VAD.ThresholdDB)
+	}
+}
+
+// TestApplyOverrides_VADCorruptJSON 验证损坏的 VAD JSON 被跳过(不 fatal)。
+func TestApplyOverrides_VADCorruptJSON(t *testing.T) {
+	cfg := baseCfg()
+	baselineEnabled := cfg.VAD.Enabled
+	baselineThreshold := cfg.VAD.ThresholdDB
+	overrides := map[string]json.RawMessage{
+		"vad": json.RawMessage(`{not valid json`),
+	}
+	if err := ApplyOverrides(cfg, overrides); err != nil {
+		t.Fatalf("ApplyOverrides with corrupt vad JSON: %v (should not error)", err)
+	}
+	// 基线保留
+	if cfg.VAD.Enabled != baselineEnabled || cfg.VAD.ThresholdDB != baselineThreshold {
+		t.Errorf("corrupt VAD JSON should leave baseline intact, got %+v", cfg.VAD)
 	}
 }

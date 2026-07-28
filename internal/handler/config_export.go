@@ -43,6 +43,7 @@ type ConfigExportBundle struct {
 	DashScope    *config.DashScopeConfig `json:"dashscope,omitempty"`
 	Archive      *config.ArchiveConfig   `json:"archive,omitempty"`
 	MCP          *MCPExportSection       `json:"mcp,omitempty"`
+	VAD          *config.VADSectionDTO   `json:"vad,omitempty"` // 2026-07-27 VAD 静音裁剪(无密钥,直接投影)
 	Secrets      map[string]string       `json:"secrets"`
 	Channels     []channel.UpsertInput   `json:"channels"`
 	Glossary     GlossaryExportSection   `json:"glossary"`
@@ -302,6 +303,23 @@ func (s *Server) handleExportConfig(ctx *gin.Context) {
 	// 必须在下方 Secrets 收集段之前调用,因为它要写 bundle.Secrets。
 	bundle.MCP = mcpToExport(mcp, bundle.Secrets)
 
+	// VAD 段:无密钥,直接投影 DTO(指针+omitempty,旧 bundle 缺段为 nil,零回归)。
+	s.publishMu.RLock()
+	vad := s.cfg.VAD
+	s.publishMu.RUnlock()
+	vadEnabled := vad.Enabled
+	vadThreshold := vad.ThresholdDB
+	vadMinSilence := vad.MinSilenceSec
+	vadPadding := vad.PaddingSec
+	vadRatio := vad.MinOutputRatio
+	bundle.VAD = &config.VADSectionDTO{
+		Enabled:        &vadEnabled,
+		ThresholdDB:    &vadThreshold,
+		MinSilenceSec:  &vadMinSilence,
+		PaddingSec:     &vadPadding,
+		MinOutputRatio: &vadRatio,
+	}
+
 	// Secrets (actual values)
 	secretList, err := s.secrets.List(ctx.Request.Context())
 	if err != nil {
@@ -450,6 +468,7 @@ func (s *Server) handleImportConfig(ctx *gin.Context) {
 	nextWebDAV := s.cfg.WebDAV
 	nextASRS3 := s.cfg.ASRS3
 	nextMCP := s.cfg.MCP // 基线拷贝:bundle 无 mcp 段时保持不变(零回归)
+	nextVAD := s.cfg.VAD // 基线拷贝:bundle 无 vad 段时保持不变(零回归,2026-07-27)
 
 	// tombstone 判定的 hasSecret helper：bundle.Secrets 是否含某 env key。
 	hasSecret := func(envKey string) bool {
@@ -522,6 +541,27 @@ func (s *Server) handleImportConfig(ctx *gin.Context) {
 			MaxToolRounds: &nextMCP.MaxToolRounds,
 		}})
 	}
+	if bundle.VAD != nil {
+		// VAD 段无密钥,直接走 VADSectionDTO + ApplyOverrides 路径(与 PUT /api/config/vad 一致)。
+		// bundle.VAD 是指针投影 DTO,直接复用即可。
+		dto := *bundle.VAD
+		if dto.Enabled != nil {
+			nextVAD.Enabled = *dto.Enabled
+		}
+		if dto.ThresholdDB != nil {
+			nextVAD.ThresholdDB = *dto.ThresholdDB
+		}
+		if dto.MinSilenceSec != nil {
+			nextVAD.MinSilenceSec = *dto.MinSilenceSec
+		}
+		if dto.PaddingSec != nil {
+			nextVAD.PaddingSec = *dto.PaddingSec
+		}
+		if dto.MinOutputRatio != nil {
+			nextVAD.MinOutputRatio = *dto.MinOutputRatio
+		}
+		sections = append(sections, sectionDTO{"vad", dto})
+	}
 
 	// 待写入的 secrets（剔除空值）。
 	type secretKV struct{ k, v string }
@@ -542,6 +582,15 @@ func (s *Server) handleImportConfig(ctx *gin.Context) {
 		s.publishMu.Unlock()
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "imported config would be invalid: " + err.Error()})
 		return
+	}
+	// VAD 段单独校验(2026-07-27):import 不在 validateImportedSections 范围内,但非法值(如
+	// threshold_db > 0)会让下次启动 ApplyOverrides→cfg.Validate() 失败导致进程起不来(qoder I-1)。
+	if bundle.VAD != nil {
+		if err := nextVAD.Validate(); err != nil {
+			s.publishMu.Unlock()
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": "imported vad config invalid: " + err.Error()})
+			return
+		}
 	}
 
 	// 单事务：overwrite 清 secrets（ClearTx）→ 写各配置段 DTO → 写新 secrets。
@@ -578,6 +627,7 @@ func (s *Server) handleImportConfig(ctx *gin.Context) {
 	s.cfg.WebDAV = nextWebDAV
 	s.cfg.ASRS3 = nextASRS3
 	s.cfg.MCP = nextMCP
+	s.cfg.VAD = nextVAD
 	// 先清理旧 env keys（overwrite 下避免残留旧密钥被读到），再 set 新值。
 	if strategy == "overwrite" {
 		for k := range oldSecretKeys {

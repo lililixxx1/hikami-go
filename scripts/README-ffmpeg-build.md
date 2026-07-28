@@ -91,6 +91,7 @@ mp3（mp3float）和 aac encoder 属于 LGPL 部分，不依赖 GPL 组件。去
 --enable-decoder=aac,mp3,mp3float,flac,vorbis,opus,pcm_s16le,pcm_s8
 --enable-parser=aac,mpegaudio
 --enable-bsf=aac_adtstoasc
+--enable-filter=aresample,aformat,anull,silencedetect,atrim,asetpts,concat
 ```
 
 各选项对应代码出处：
@@ -101,6 +102,12 @@ mp3（mp3float）和 aac encoder 属于 LGPL 部分，不依赖 GPL 组件。去
 - `aac` encoder ← `internal/importer/importer.go:42`（`-c:a aac`）
 - `aac_adtstoasc` bsf ← FLV（ADTS AAC）→ m4a（ASC AAC）remux 隐式调用
 - `pipe` protocol ← `internal/live_record/ffmpeg.go:90`（`-i pipe:0`）
+- `silencedetect` filter ← `internal/asr/vad_processor.go`（VAD 静音扫描,2026-07-27 引入）
+- `atrim`/`asetpts`/`concat` filter ← `internal/asr/vad_processor.go:buildAtrimConcatFilter`（VAD 按 kept 段精确裁剪含 padding 的音频）
+- `aresample`/`aformat`/`anull` filter ← ffmpeg 隐式调用（声道/采样率转换）
+
+> 注:不用 `silenceremove` filter(VAD 计划曾考虑但 qoder C-1 审核发现它输出无 padding,
+> 与 silence_map 不变量矛盾,改用 atrim+concat 精确切)。`silencedetect` 仅用于扫描静音边界。
 
 ## 不支持什么
 

@@ -360,6 +360,8 @@ func (s *Server) routes() {
 	p.PUT("/api/config/tools", s.updateToolsConfig)
 	p.GET("/api/config/mcp", s.getMCPConfig)
 	p.PUT("/api/config/mcp", s.updateMCPConfig)
+	p.GET("/api/config/vad", s.getVADConfig)
+	p.PUT("/api/config/vad", s.updateVADConfig)
 	p.GET("/api/config/export", s.handleExportConfig)
 	p.POST("/api/config/import", s.handleImportConfig)
 
@@ -3306,6 +3308,87 @@ func (s *Server) updateMCPConfig(ctx *gin.Context) {
 		}
 	}
 
+	ctx.JSON(http.StatusOK, resp)
+}
+
+// --- VAD config handlers (ASR 前置静音裁剪) ---
+// 与 tools 段同模式(runtimeconfig 持久化)。DetectionMode 不暴露(VADProcessor 内部固定 peak)。
+// 保存后无需 refreshRuntimeStatus(VAD 无 runtime 探测);handler inline 调 VADConfig.Validate()
+// 拒绝非法值(qoder v2 M-1),避免存入非法值后下次启动 fatal。见 plans/plan-vad-2026-07-27.md Phase 5。
+
+type vadConfigResponse struct {
+	Enabled        bool    `json:"enabled"`
+	ThresholdDB    int     `json:"threshold_db"`
+	MinSilenceSec  float64 `json:"min_silence_sec"`
+	PaddingSec     float64 `json:"padding_sec"`
+	MinOutputRatio float64 `json:"min_output_ratio"`
+}
+
+func newVADConfigResponse(cfg config.Config) vadConfigResponse {
+	return vadConfigResponse{
+		Enabled:        cfg.VAD.Enabled,
+		ThresholdDB:    cfg.VAD.ThresholdDB,
+		MinSilenceSec:  cfg.VAD.MinSilenceSec,
+		PaddingSec:     cfg.VAD.PaddingSec,
+		MinOutputRatio: cfg.VAD.MinOutputRatio,
+	}
+}
+
+func (s *Server) getVADConfig(ctx *gin.Context) {
+	s.publishMu.RLock()
+	resp := newVADConfigResponse(*s.cfg)
+	s.publishMu.RUnlock()
+	ctx.JSON(http.StatusOK, resp)
+}
+
+func (s *Server) updateVADConfig(ctx *gin.Context) {
+	var input config.VADSectionDTO
+	if err := ctx.ShouldBindJSON(&input); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid json body"})
+		return
+	}
+	s.publishMu.Lock()
+	next := s.cfg.VAD // 基线拷贝
+	if input.Enabled != nil {
+		next.Enabled = *input.Enabled
+	}
+	if input.ThresholdDB != nil {
+		next.ThresholdDB = *input.ThresholdDB
+	}
+	if input.MinSilenceSec != nil {
+		next.MinSilenceSec = *input.MinSilenceSec
+	}
+	if input.PaddingSec != nil {
+		next.PaddingSec = *input.PaddingSec
+	}
+	if input.MinOutputRatio != nil {
+		next.MinOutputRatio = *input.MinOutputRatio
+	}
+	// qoder v2 M-1:inline 校验,400 拒绝非法值(与 Validate() 逻辑一致,避免存入后下次启动 fatal)
+	if err := next.Validate(); err != nil {
+		s.publishMu.Unlock()
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	dto := config.VADSectionDTO{
+		Enabled:        &next.Enabled,
+		ThresholdDB:    &next.ThresholdDB,
+		MinSilenceSec:  &next.MinSilenceSec,
+		PaddingSec:     &next.PaddingSec,
+		MinOutputRatio: &next.MinOutputRatio,
+	}
+	if err := runtimeconfig.WithTx(ctx.Request.Context(), s.runtimeCfg.DB(), func(tx *sql.Tx) error {
+		return s.persistSectionTx(ctx.Request.Context(), tx, "vad", dto)
+	}); err != nil {
+		s.publishMu.Unlock()
+		slog.Warn("persist vad config failed", "error", err)
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist vad config"})
+		return
+	}
+	s.cfg.VAD = next
+	resp := newVADConfigResponse(*s.cfg)
+	s.bumpConfigGen()
+	s.publishMu.Unlock()
 	ctx.JSON(http.StatusOK, resp)
 }
 

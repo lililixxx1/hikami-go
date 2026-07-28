@@ -2123,6 +2123,56 @@ paths:
         '401':
           $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
 
+  /api/config/vad:
+    get:
+      tags: [配置]
+      operationId: getVADConfig
+      summary: 获取 VAD 静音裁剪配置
+      description: |
+        ASR 前置 VAD(Voice Activity Detection)静音裁剪配置。
+        启用后:上传 DashScope 前先用 ffmpeg 裁掉 >min_silence_sec 的静音段,减少计费时长。
+        失败/裁剪比过低自动回退原始音频(零回归)。详见 plans/plan-vad-2026-07-27.md。
+      responses:
+        '200':
+          description: VAD 配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/VADConfigResponse'
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+    put:
+      tags: [配置]
+      operationId: updateVADConfig
+      summary: 更新 VAD 静音裁剪配置
+      description: |
+        全字段可选(presence-aware)。非法值(如 threshold_db > 0)返回 400。
+        改参立即生效(下次 ASR 任务用新参数,无需重启)。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: 'components/schemas/config-sections.yaml#/VADConfigRequest'
+      responses:
+        '200':
+          description: 更新后的 VAD 配置
+          content:
+            application/json:
+              schema:
+                $ref: 'components/schemas/config-sections.yaml#/VADConfigResponse'
+        '400':
+          description: 非法参数值
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        '401':
+          $ref: '#/paths/~1api~1health~1runtime/get/responses/401'
+
   /api/config/export:
     get:
       tags: [配置]

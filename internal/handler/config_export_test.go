@@ -778,3 +778,122 @@ func TestImportConfigOldBundleLeavesMCPUntouched(t *testing.T) {
 		t.Errorf("ConfigSectionsCount = %d, 期望 1(旧 bundle 只有 publish)", res.Details.ConfigSectionsCount)
 	}
 }
+
+// TestExportBundleVADSectionPresent 验证含 VAD 段的 bundle 能正确序列化/反序列化。
+// (HTTP 端到端测试在 TestVADConfigRoundTrip 已覆盖 GET/PUT;此处只验 bundle 结构。)
+func TestExportBundleVADSectionPresent(t *testing.T) {
+	enabled := false
+	threshold := -50
+	minSilence := 3.0
+	padding := 0.5
+	ratio := 0.4
+	bundle := ConfigExportBundle{
+		Version: "1",
+		VAD: &config.VADSectionDTO{
+			Enabled:        &enabled,
+			ThresholdDB:    &threshold,
+			MinSilenceSec:  &minSilence,
+			PaddingSec:     &padding,
+			MinOutputRatio: &ratio,
+		},
+	}
+	data, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	body := string(data)
+	if !strings.Contains(body, `"vad"`) {
+		t.Errorf("VAD section not serialized: %s", body)
+	}
+	if !strings.Contains(body, `"threshold_db":-50`) {
+		t.Errorf("threshold_db not in output: %s", body)
+	}
+
+	// 反序列化回来,VAD 段字段保留
+	var back ConfigExportBundle
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.VAD == nil {
+		t.Fatal("VAD section lost after round-trip")
+	}
+	if back.VAD.Enabled == nil || *back.VAD.Enabled {
+		t.Errorf("VAD.Enabled not preserved")
+	}
+	if back.VAD.ThresholdDB == nil || *back.VAD.ThresholdDB != -50 {
+		t.Errorf("VAD.ThresholdDB not preserved")
+	}
+}
+
+// TestExportBundleVADOmittable 验证 VAD 段为 nil 时被 omitempty 省略(旧备份兼容)。
+func TestExportBundleVADOmittable(t *testing.T) {
+	bundle := ConfigExportBundle{Version: "1"} // VAD 为 nil
+	data, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), "vad") {
+		t.Errorf("nil VAD should be omitted by omitempty: %s", string(data))
+	}
+}
+
+// TestImportConfigVADRoundTrip 验证 VAD 段导入 round-trip(merge 策略)。
+func TestImportConfigVADRoundTrip(t *testing.T) {
+	server := newTestServer(t)
+	// 导入含 vad 段的 bundle
+	body := `{
+		"version":"1",
+		"vad":{"enabled":false,"threshold_db":-50,"min_silence_sec":3.0,"padding_sec":0.5,"min_output_ratio":0.5}
+	}`
+	resp := performRequest(server, http.MethodPost, "/api/config/import?strategy=merge", body)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("import status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	server.publishMu.RLock()
+	defer server.publishMu.RUnlock()
+	if server.cfg.VAD.Enabled {
+		t.Errorf("VAD.Enabled = true, want false (imported)")
+	}
+	if server.cfg.VAD.ThresholdDB != -50 {
+		t.Errorf("VAD.ThresholdDB = %d, want -50", server.cfg.VAD.ThresholdDB)
+	}
+	if server.cfg.VAD.MinSilenceSec != 3.0 {
+		t.Errorf("VAD.MinSilenceSec = %v, want 3.0", server.cfg.VAD.MinSilenceSec)
+	}
+	if server.cfg.VAD.PaddingSec != 0.5 {
+		t.Errorf("VAD.PaddingSec = %v, want 0.5", server.cfg.VAD.PaddingSec)
+	}
+	if server.cfg.VAD.MinOutputRatio != 0.5 {
+		t.Errorf("VAD.MinOutputRatio = %v, want 0.5", server.cfg.VAD.MinOutputRatio)
+	}
+
+	// runtime_settings 表里应有 vad section
+	if got := runtimeSettingsSection(t, server, "vad"); got == "" {
+		t.Errorf("vad section not persisted to runtime_settings")
+	}
+}
+
+// TestImportConfigOldBundleLeavesVADUntouched 旧 bundle(无 vad 段)导入不应改 VAD 配置(零回归)。
+func TestImportConfigOldBundleLeavesVADUntouched(t *testing.T) {
+	server := newTestServer(t)
+	server.publishMu.Lock()
+	server.cfg.VAD.Enabled = true
+	server.cfg.VAD.ThresholdDB = -40
+	server.publishMu.Unlock()
+
+	// 不含 vad 段的最小 bundle
+	minimal := `{"version":"1","publish":{"mode":"draft","category_id":15}}`
+	resp := performRequest(server, http.MethodPost, "/api/config/import?strategy=merge", minimal)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("import status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	server.publishMu.RLock()
+	defer server.publishMu.RUnlock()
+	if !server.cfg.VAD.Enabled || server.cfg.VAD.ThresholdDB != -40 {
+		t.Errorf("旧 bundle 破坏了 VAD 配置: %+v", server.cfg.VAD)
+	}
+	// runtime_settings 不应有 vad section
+	if got := runtimeSettingsSection(t, server, "vad"); got != "" {
+		t.Errorf("旧 bundle 写入 vad section(应零回归): %s", got)
+	}
+}

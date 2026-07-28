@@ -135,6 +135,34 @@ export function updateMCPConfig(config: MCPConfigUpdate): Promise<MCPConfig> {
   return put('/api/config/mcp', config)
 }
 
+// VAD 静音裁剪配置段(2026-07-27 ASR 前置 VAD 引入)。
+// generated.ts 尚未含此端点(spec 待补),过渡期手写;spec 补登后改走 Schema<'VADConfigResponse'> 派生。
+// 见 plans/plan-vad-2026-07-27.md Phase 7。
+export interface VADConfig {
+  enabled: boolean
+  threshold_db: number
+  min_silence_sec: number
+  padding_sec: number
+  min_output_ratio: number
+}
+
+// VADConfig 的 PUT 请求(partial,presence-aware:nil 字段不改)。
+export interface VADConfigUpdate {
+  enabled?: boolean
+  threshold_db?: number
+  min_silence_sec?: number
+  padding_sec?: number
+  min_output_ratio?: number
+}
+
+export function getVADConfig(): Promise<VADConfig> {
+  return get('/api/config/vad')
+}
+
+export function updateVADConfig(config: VADConfigUpdate): Promise<VADConfig> {
+  return put('/api/config/vad', config)
+}
+
 // 触发 AI 批量复核 pending 候选词(异步,返回 202)。
 export function reviewGlossaryCandidates(channelId?: string): Promise<{ ok: boolean; message: string }> {
   return post('/api/glossary/candidates/review', channelId ? { channel_id: channelId } : {})

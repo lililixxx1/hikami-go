@@ -126,6 +126,20 @@ mcp:
   #     timeout_sec: 30
   servers: []
 
+# VAD 静音裁剪(ASR 前置,2026-07-27 引入)。
+# 启用后,上传 DashScope ASR 前会先用 ffmpeg 裁掉直播录音中的长静音段(主播离开 / BGM 间奏 / 换 P),
+# 减少计费时长(实测 -40dB/2s 节省 3-10%,BGM 多的直播节省少)。
+# 裁剪后音频与 silence_map.json 反向映射回原始时间线,所有下游(回顾/术语/弹幕)零改动。
+# 任何环节失败(ffmpeg 缺 filter / 裁剪比过低 / Detect 错误)会自动回退原始音频,不影响 ASR 成功。
+# 详见 plans/plan-vad-2026-07-27.md。
+vad:
+  enabled: true           # 默认开启(实测零真实内容损失)
+  threshold_db: -40       # 静音判定阈值(-80 ~ 0,值越小越严格,推荐 -40)
+  min_silence_sec: 2.0    # 触发裁剪的最小静音时长(秒,推荐 2.0)
+  padding_sec: 0.2        # 说话段两端各保留的静音缓冲(秒,推荐 0.2)
+  detection_mode: "peak"  # 固定 peak(silencedetect 只支持 peak,VADProcessor 内部忽略此字段)
+  min_output_ratio: 0.3   # 裁剪后/原始低于此值视为异常,回退原始(防 ffmpeg bug 裁过头)
+
 downloader:
   # 回放下载后端：
   #   auto/native 使用 Go 原生 B 站下载链路（单 P 音频 + 弹幕 XML）

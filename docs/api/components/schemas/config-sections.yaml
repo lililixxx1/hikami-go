@@ -567,12 +567,74 @@ MCPConfigRequest:
     max_tool_rounds:
       type: integer
 
+# ───── VAD(ASR 前置静音裁剪,2026-07-27)─────
+VADConfigResponse:
+  type: object
+  description: |
+    GET /api/config/vad 响应。ASR 前置 VAD(Voice Activity Detection)静音裁剪配置。
+    启用后:asr.HandleTask 在调 DashScope 前先用 ffmpeg 裁掉 >min_silence_sec 的静音段,
+    产出 audio.asr.trimmed.mp3 + silence_map.json,ASR 返回后用 silence_map 反向映射回原始时间线。
+    失败/裁剪比过低/ffmpeg 缺 filter → 自动回退原始音频(零回归)。详见 plans/plan-vad-2026-07-27.md。
+  required: [enabled, threshold_db, min_silence_sec, padding_sec, min_output_ratio]
+  properties:
+    enabled:
+      type: boolean
+      description: VAD 总开关(默认 true,失败自动回退原始音频)
+    threshold_db:
+      type: integer
+      minimum: -80
+      maximum: 0
+      description: 静音判定阈值(默认 -40,值越小越严格)
+    min_silence_sec:
+      type: number
+      format: float
+      minimum: 0.0001
+      description: 触发裁剪的最小静音时长(默认 2.0 秒)
+    padding_sec:
+      type: number
+      format: float
+      minimum: 0
+      description: 说话段两端保留的静音缓冲(默认 0.2 秒,silence_map 层实现,不用 ffmpeg stop_silence)
+    min_output_ratio:
+      type: number
+      format: float
+      minimum: 0.0001
+      maximum: 1
+      description: 裁剪后/原始低于此值视为异常,回退原始音频(默认 0.3,防 ffmpeg bug 裁过头)
+
+VADConfigRequest:
+  type: object
+  description: |
+    PUT /api/config/vad 请求。全字段可选(presence-aware)。
+    非法值(如 threshold_db > 0 或 min_silence_sec <= 0)返回 400。
+    改参立即生效(下次 ASR 任务用新参数,VADProcessor 持 *config.Config 指针)。
+  properties:
+    enabled:
+      type: boolean
+    threshold_db:
+      type: integer
+      minimum: -80
+      maximum: 0
+    min_silence_sec:
+      type: number
+      format: float
+      minimum: 0.0001
+    padding_sec:
+      type: number
+      format: float
+      minimum: 0
+    min_output_ratio:
+      type: number
+      format: float
+      minimum: 0.0001
+      maximum: 1
+
 # ───── Export / Import ─────
 ConfigExportBundle:
   type: object
   description: |
     GET /api/config/export 响应 + POST /api/config/import 请求体。
-    全局配置 6 段(指针 + omitempty,缺席=备份不含该段)+ secrets + channels +
+    全局配置 9 段(指针 + omitempty,缺席=备份不含该段)+ secrets + channels +
     glossary + templates + bili_accounts。
   required: [version, exported_at, secrets, channels, glossary, templates, bili_accounts]
   properties:
@@ -600,6 +662,9 @@ ConfigExportBundle:
       allOf:
         - $ref: 'config-sections.yaml#/ExportMCP'
       description: MCP 配置段导出投影(指针,缺席=备份不含该段;密钥走 secrets 段)
+    vad:
+      $ref: 'config-sections.yaml#/VADConfigRequest'
+      description: VAD 静音裁剪配置段(2026-07-27,指针,缺席=备份不含该段;无密钥,直接投影)
     secrets:
       type: object
       additionalProperties:

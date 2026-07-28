@@ -41,6 +41,7 @@ type Config struct {
 	Downloader DownloaderConfig `mapstructure:"downloader"`
 	Publish    PublishConfig    `mapstructure:"publish"`
 	MCP        MCPConfig        `mapstructure:"mcp"`
+	VAD        VADConfig        `mapstructure:"vad"` // 2026-07-27 ASR 前置静音裁剪(降 DashScope 计费)
 
 	Notify NotifyConfig `mapstructure:"notify"`
 
@@ -433,6 +434,40 @@ func (m MCPConfig) EffectiveMaxToolRounds() int {
 	return 5
 }
 
+// VADConfig 控制 ASR 前置 VAD(Voice Activity Detection)静音裁剪。
+// 启用后:asr.HandleTask 在调 DashScope 前先用 ffmpeg 裁掉 >min_silence_sec 的静音段,
+// 产出 audio.asr.trimmed.mp3 + silence_map.json,ASR 返回后用 silence_map 反向映射回原始时间线。
+// 目的:减少 DashScope ASR 计费时长(实测 -40dB/2s 节省 3-10%,BGM 多的直播节省少)。
+// 零回归:失败/裁剪比低于 min_output_ratio/ffmpeg 缺 filter → 用原始音频,行为与关闭一致。
+// 详见 plans/plan-vad-2026-07-27.md。
+type VADConfig struct {
+	Enabled        bool    `mapstructure:"enabled"          json:"enabled"`
+	ThresholdDB    int     `mapstructure:"threshold_db"     json:"threshold_db"`     // -80 ~ 0,推荐 -40
+	MinSilenceSec  float64 `mapstructure:"min_silence_sec"  json:"min_silence_sec"`  // > 0,推荐 2.0
+	PaddingSec     float64 `mapstructure:"padding_sec"      json:"padding_sec"`      // >= 0,推荐 0.2(silence_map 层实现,不用 ffmpeg stop_silence)
+	DetectionMode  string  `mapstructure:"detection_mode"   json:"detection_mode"`   // "peak" | "rms",固定 peak(silencedetect 只支持 peak,VADProcessor 内部忽略此字段)
+	MinOutputRatio float64 `mapstructure:"min_output_ratio" json:"min_output_ratio"` // 裁剪后/原始 < 此值视为异常,回退原始(防 ffmpeg bug 裁过头)
+}
+
+// Validate 校验 VADConfig 字段范围。Config.Validate 与 handler updateVADConfig 都调它
+// (qoder v2 M-1:handler inline 校验避免存入非法值后下次启动 fatal)。
+func (v VADConfig) Validate() error {
+	if v.ThresholdDB > 0 || v.ThresholdDB < -80 {
+		return fmt.Errorf("vad.threshold_db must be in [-80, 0]")
+	}
+	if v.MinSilenceSec <= 0 {
+		return fmt.Errorf("vad.min_silence_sec must be > 0")
+	}
+	if v.PaddingSec < 0 {
+		return fmt.Errorf("vad.padding_sec must be >= 0")
+	}
+	if v.MinOutputRatio <= 0 || v.MinOutputRatio > 1 {
+		return fmt.Errorf("vad.min_output_ratio must be in (0, 1]")
+	}
+	// detection_mode 不校验:VADProcessor 内部固定 peak(写死),忽略用户配置。
+	return nil
+}
+
 func (c *DownloaderConfig) NativeConfigured() bool {
 	backend := strings.ToLower(strings.TrimSpace(c.Backend))
 	return backend == "" || backend == "auto" || backend == "native"
@@ -606,6 +641,17 @@ type MCPSectionDTO struct {
 	Servers       *[]MCPServerConfig `json:"servers,omitempty"`
 	Builtin       *MCPBuiltinConfig  `json:"builtin,omitempty"`
 	MaxToolRounds *int               `json:"max_tool_rounds,omitempty"`
+}
+
+// VADSectionDTO 对应 updateVADConfig 管理的 VAD 静音裁剪配置段(presence-aware)。
+// DetectionMode 不暴露(UI 不显示),VADProcessor 内部固定 peak。
+// 见 plans/plan-vad-2026-07-27.md Phase 5。
+type VADSectionDTO struct {
+	Enabled        *bool    `json:"enabled,omitempty"`
+	ThresholdDB    *int     `json:"threshold_db,omitempty"`
+	MinSilenceSec  *float64 `json:"min_silence_sec,omitempty"`
+	PaddingSec     *float64 `json:"padding_sec,omitempty"`
+	MinOutputRatio *float64 `json:"min_output_ratio,omitempty"`
 }
 
 // ApplyOverrides 用 runtime_settings 的 per-section JSON 覆盖 cfg 的对应段。
@@ -843,6 +889,27 @@ func ApplyOverrides(cfg *Config, overrides map[string]json.RawMessage) error {
 		}
 	}
 
+	// VAD 段(2026-07-27 ASR 前置静音裁剪):presence-aware 覆盖,与 tools 段同模式。
+	if raw, ok := overrides["vad"]; ok && len(raw) > 0 {
+		var dto VADSectionDTO
+		apply("vad", &dto)
+		if dto.Enabled != nil {
+			cfg.VAD.Enabled = *dto.Enabled
+		}
+		if dto.ThresholdDB != nil {
+			cfg.VAD.ThresholdDB = *dto.ThresholdDB
+		}
+		if dto.MinSilenceSec != nil {
+			cfg.VAD.MinSilenceSec = *dto.MinSilenceSec
+		}
+		if dto.PaddingSec != nil {
+			cfg.VAD.PaddingSec = *dto.PaddingSec
+		}
+		if dto.MinOutputRatio != nil {
+			cfg.VAD.MinOutputRatio = *dto.MinOutputRatio
+		}
+	}
+
 	return cfg.Validate()
 }
 
@@ -942,6 +1009,14 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("mcp.max_tool_rounds", 5)
 	v.SetDefault("mcp.builtin.brave_api_key_env", "BRAVE_API_KEY")
 	v.SetDefault("mcp.builtin.tavily_api_key_env", "TAVILY_API_KEY")
+	// VAD 默认开启(实测 -40dB/2s 零真实内容损失,3-10% 降本);失败自动回退原始音频。
+	// 详见 plans/plan-vad-2026-07-27.md 与 internal/asr/vad_processor.go。
+	v.SetDefault("vad.enabled", true)
+	v.SetDefault("vad.threshold_db", -40)
+	v.SetDefault("vad.min_silence_sec", 2.0)
+	v.SetDefault("vad.padding_sec", 0.2)
+	v.SetDefault("vad.detection_mode", "peak") // 固定 peak:对齐 silencedetect,不改
+	v.SetDefault("vad.min_output_ratio", 0.3)  // 裁剪后 < 30% 原始 → 视为异常回退
 	v.SetDefault("downloader.backend", "auto")
 	v.SetDefault("publish.enabled", false)
 	v.SetDefault("publish.mode", "draft")
@@ -1019,6 +1094,9 @@ func (c *Config) Validate() error {
 	case "", "auto", "native", "ytdlp":
 	default:
 		return fmt.Errorf("downloader.backend must be one of: auto, native, ytdlp, got %s", c.Downloader.Backend)
+	}
+	if err := c.VAD.Validate(); err != nil {
+		return err
 	}
 	// CookieEncryptionKey 格式由启动阶段的 biliutil.SetCookieEncryptionKey 统一校验。
 	return nil

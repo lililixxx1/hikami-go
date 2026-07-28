@@ -229,6 +229,19 @@ ALTER TABLE channels ADD COLUMN publish_topics TEXT NOT NULL DEFAULT '';`,
 	// v37: glossary_candidates 表加 ai_review 列(Phase 5 批量复核功能)。
 	// 存 AI 复核理由(核实结论 + 置信度说明),空表示未复核。status 不因此改变。
 	`ALTER TABLE glossary_candidates ADD COLUMN ai_review TEXT NOT NULL DEFAULT '';`,
+	// v38: runtime_settings 表 CHECK 约束扩展 +vad 段(ASR 前置 VAD 静音裁剪配置)。
+	// 同 v35/v36 表重建范式:临时表→复制→DROP→建新表→回灌→DROP 临时表。
+	// 新表 CHECK 白名单扩到 9 段,旧数据全量回灌(8 段无损)。
+	// 见 plans/plan-vad-2026-07-27.md Phase 5。
+	`CREATE TABLE runtime_settings_v38 (
+			section TEXT NOT NULL CHECK (section IN ('publish','asr_s3','dashscope','recap_ai','webdav','archive','tools','mcp','vad')),
+			data TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(data)),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+			PRIMARY KEY (section)
+		);`,
+	`INSERT INTO runtime_settings_v38 (section, data, updated_at) SELECT section, data, updated_at FROM runtime_settings;`,
+	`DROP TABLE runtime_settings;`,
+	`ALTER TABLE runtime_settings_v38 RENAME TO runtime_settings;`,
 }
 
 func Migrate(database *sql.DB) error {

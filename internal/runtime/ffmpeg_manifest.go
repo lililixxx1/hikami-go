@@ -29,13 +29,17 @@ type FFmpegAsset struct {
 }
 
 func CurrentManifest() map[string]FFmpegAsset {
-	// embedded-minimal-7.x：标识嵌入的是裁剪版 ffmpeg（基于 n7.x）。
+	// embedded-minimal-7.x-vad：标识嵌入的裁剪版 ffmpeg（基于 n7.x，2026-07-27 起含 VAD 用 filter）。
 	//   - linux-*：下载兜底用 BtbN 完整 gpl 版（裁剪超集），二者共用同一 version 缓存目录无功能问题。
 	//   - windows-amd64：仅走 embedded（裁剪版 zip 顶层直接是 bin/，无 BtbN 那层
 	//     ffmpeg-master-latest-... 前缀目录）。ArchiveURL 故意留空——embedded 解包失败
 	//     回退到下载分支时空 URL 会立刻报错（downloadAndInstallFFmpeg 有空 URL 保护），
 	//     而不是去拉 80MB 完整版（且完整版目录结构与裁剪版 zip 不同，下载了也找不到路径）。
-	const version = "embedded-minimal-7.x"
+	//
+	// 2026-07-27:vad 后缀让旧用户升级时重新解包,因为旧 embedded-minimal-7.x 不含
+	// silencedetect/atrim/asetpts/concat filter(VAD 会自动 fallback 原始音频,功能降级但不崩)。
+	// 见 plans/plan-vad-2026-07-27.md Phase 6 + scripts/build-ffmpeg-minimal.sh。
+	const version = "embedded-minimal-7.x-vad"
 	const licenseURL = "https://github.com/BtbN/FFmpeg-Builds/blob/master/LICENSE"
 
 	return map[string]FFmpegAsset{

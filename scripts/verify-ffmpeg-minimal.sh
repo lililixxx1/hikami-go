@@ -167,6 +167,36 @@ else
   ok "FLV demuxer 用例跳过（无法合成素材，非裁剪问题）"
 fi
 
+# ---------- 7. VAD 静音裁剪 (internal/asr/vad_processor.go: Detect + Trim) ----------
+# ASR 前置 VAD 用 silencedetect 扫描静音 + atrim+concat 精确切含 padding 的音频。
+# 验证方式:用 ffmpeg -filters 列表 grep 四个 filter 名,而不是跑命令(因为 -f null 在
+# 缺 pcm_s16le encoder 时会误报但退出码 0,导致跑命令的判断不可靠)。
+# 见 plans/plan-vad-2026-07-27.md Phase 6。
+section "7. VAD 静音裁剪 filters (silencedetect + atrim + asetpts + concat)"
+
+FILTERS_LIST="$("${FFMPEG}" -hide_banner -filters 2>&1)"
+MISSING=""
+for f in silencedetect atrim asetpts concat; do
+  if ! echo "${FILTERS_LIST}" | grep -qw "${f}"; then
+    MISSING="${MISSING} ${f}"
+  fi
+done
+if [[ -z "${MISSING}" ]]; then
+  ok "VAD filters: silencedetect + atrim + asetpts + concat 全部可用"
+else
+  fail "VAD filters 缺失:${MISSING}(检查 build-ffmpeg-minimal.sh 的 --enable-filter 是否含这些)"
+fi
+
+# 7b. 端到端:用 sample.m4a 跑 atrim+concat,输出到 mp3 文件验证链路通(含 mp3 muxer + libmp3lame)
+if "${FFMPEG}" -y -hide_banner -loglevel warning -i "${SAMPLE}" \
+    -filter_complex "[0:a]atrim=start=0:end=0.5,asetpts=PTS-STARTPTS[a0];[0:a]atrim=start=0.5:end=1.0,asetpts=PTS-STARTPTS[a1];[a0][a1]concat=n=2:v=0:a=1[out]" \
+    -map "[out]" -ac 1 -ar 16000 -b:a 64k -f mp3 vad_trimmed.mp3 2>"${ERRLOG}" \
+    && [[ -s vad_trimmed.mp3 ]]; then
+  ok "VAD atrim+concat 端到端: 产出到 vad_trimmed.mp3 ($(wc -c < vad_trimmed.mp3) bytes)"
+else
+  fail "VAD atrim+concat 端到端失败(检查 filter 链路 / mp3 muxer / libmp3lame encoder)"
+fi
+
 # ---------- 汇总 ----------
 echo ""
 echo "========================================"

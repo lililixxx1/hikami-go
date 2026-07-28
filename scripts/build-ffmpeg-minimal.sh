@@ -137,7 +137,7 @@ build_inner() {
     --enable-decoder=aac,mp3,mp3float,flac,vorbis,opus,pcm_s16le,pcm_s8 \
     --enable-parser=aac,mpegaudio \
     --enable-bsf=aac_adtstoasc \
-    --enable-filter=aresample,aformat,anull \
+    --enable-filter=aresample,aformat,anull,silencedetect,atrim,asetpts,concat \
     --extra-cflags="-I${lame_prefix}/include" \
     --extra-ldflags="-L${lame_prefix}/lib" \
     >configure.log 2>&1 || { tail -30 configure.log; die "ffmpeg configure 失败"; }
