@@ -1,5 +1,11 @@
-import { get, post, put, del, delJson } from './client'
+import client, { get, post, put, del, delJson } from './client'
 import type { Session, SessionDetail, Task, ListResponse, DiscoverResult, DiscoverPickItem, RecapContent } from './types-derived'
+
+// 发现预览请求单独放宽到 90s（覆盖全局 30s 默认值）。
+// 该请求后端要对每条空标题回放回源 B站 view API 取真实标题，即使有缓存复用 + 有界并发，
+// 在回放数量多/网络慢/风控重试场景下仍可能超过 30s；放任超时会误伤为「发现不了」。
+// 2026-07-29 修复：详见 plans/plan-discover-title-perf-2026-07-29.md。
+const DISCOVER_PREVIEW_TIMEOUT = 90000
 
 // discoverSessions 是「一键全部下载」入口（旧两步式发现的行为：建场次 + 入队下载）。
 // 保留作为抽屉「全部下载」快捷按钮的后端调用。
@@ -10,7 +16,9 @@ export function discoverSessions(): Promise<ListResponse<DiscoverResult>> {
 // previewDiscoverSessions 是两步式发现的「第一步预览」：列出所有频道会发现哪些回放，
 // 但不建场次、不入队。返回的每条带 exists 标记（是否已建过 download 场次）。
 export function previewDiscoverSessions(): Promise<ListResponse<DiscoverResult>> {
-  return post('/api/sessions/discover/preview')
+  return client.post('/api/sessions/discover/preview', undefined, {
+    timeout: DISCOVER_PREVIEW_TIMEOUT,
+  }).then((r) => r.data)
 }
 
 // previewDiscoverSessionsByURL 是 2026-07-19 解耦改动新增的「按 URL 发现」入口。
@@ -22,7 +30,11 @@ export function previewDiscoverSessionsByURL(input: {
   account_id?: number
   title_prefix?: string
 }): Promise<ListResponse<DiscoverResult>> {
-  return post('/api/sessions/discover/preview-by-url', input)
+  return client
+    .post('/api/sessions/discover/preview-by-url', input, {
+      timeout: DISCOVER_PREVIEW_TIMEOUT,
+    })
+    .then((r) => r.data)
 }
 
 // executeDiscoverSessions 是两步式发现的「第二步执行」：按前端勾选的 entry 列表建场次 + 入队下载。

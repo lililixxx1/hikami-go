@@ -61,12 +61,6 @@ type VideoPage struct {
 	Page int    `json:"page"`
 }
 
-// FetchVideoInfo 获取 B 站视频信息。
-func FetchVideoInfo(ctx context.Context, bvid string, cookie string) (*VideoInfo, error) {
-	vc := &VideoClient{}
-	return vc.Fetch(ctx, bvid, cookie)
-}
-
 // ensure 懒初始化 -352 风控对抗字段。
 // 整个方法持有 signersMu，保护 buvids/signers/newSigner 三字段的初始化，
 // 避免并发首次 Fetch 的数据竞争（与 signerForCookie 共用同一把锁）。

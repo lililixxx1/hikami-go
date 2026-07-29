@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os/exec"
 	"strings"
+	"sync"
 
 	"hikami-go/internal/biliutil"
 	"hikami-go/internal/channel"
@@ -523,35 +524,84 @@ func (m *Manager) previewCoreForChannel(ctx context.Context, item channel.Channe
 	}, cookieFile)
 }
 
+// previewTitleConcurrency 是发现预览阶段并发解析标题(空标题回源 view API)的上限。
+// 取值权衡(2026-07-29):B 站 -352 风控对短时高频请求敏感(live_record 冷却经验),
+// 并发度过高会触发风控;过低则 38 条回放串行解析约 8-15s 仍有超 30s 风险。5 路有界并发
+// 把 38 条压到约 3-5s,与保守的风控节奏相容。
+const previewTitleConcurrency = 5
+
 // previewFromEntries 共享的预览循环:title_prefix 过滤 + resolveTitle + Result 构造。
 // 不涉及 cookie 解析(已在外层 previewCore/previewCoreForChannel 完成,传入 cookieFile)。
+//
+// 标题解析改为有界并发(2026-07-29):yt-dlp --flat-playlist 对合集页常返回空标题,
+// 几乎每条都要回源 view API 取真实标题。串行下 38 条 × 单次 ~200-400ms 会撞前端 30s 超时。
+// 改用 semaphore(channel)限流到 previewTitleConcurrency 路,结果按原始 index 写回保持顺序。
+// title_prefix 过滤在并发前(用 entry 原始标题),仅 resolveTitle 走并发。
 func (m *Manager) previewFromEntries(ctx context.Context, in PreviewInput, cookieFile string) ([]Result, error) {
 	entries, err := m.lister.List(ctx, in.SourceURL, cookieFile)
 	if err != nil {
 		return nil, err
 	}
 
-	results := make([]Result, 0, len(entries))
+	// 先做 title_prefix 过滤(用原始标题),得到待解析的子集及其原始 index(用于按序写回)。
+	type pending struct {
+		index int
+		entry Entry
+	}
 	titlePrefix := strings.TrimSpace(in.TitlePrefix)
-	for _, entry := range entries {
-		// title_prefix 匹配用原始标题(同 DiscoverChannel 逻辑,详见其注释)。
+	var pendings []pending
+	for i, entry := range entries {
 		if titlePrefix != "" && strings.TrimSpace(entry.Title) != "" && !matchAnyPrefix(entry.Title, titlePrefix) {
 			slog.Info("discover preview skipped replay", "channel_id", in.ChannelID, "source_id", entry.ID, "reason", "title_prefix_mismatch", "title", entry.Title, "title_prefix", titlePrefix)
 			continue
 		}
-		title := m.resolveTitle(ctx, in.ChannelID, entry.ID, entry.Title)
-		slog.Info("discover preview accepted replay", "channel_id", in.ChannelID, "source_id", entry.ID, "title", title)
-		results = append(results, Result{
-			ChannelID: in.ChannelID,
-			SourceID:  entry.ID,
-			Title:     title,
-			SourceURL: entryURL(entry),
-		})
+		pendings = append(pendings, pending{index: i, entry: entry})
 	}
-	if results == nil {
+
+	// results 按 entries 原始 index 写回,保持前端展示顺序与串行版本一致。
+	results := make([]Result, len(entries))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, previewTitleConcurrency)
+	for _, p := range pendings {
+		// ctx 取消时不再启动新 goroutine(已启动的由 resolveTitle 内部 HTTP 自行收尾)。
+		if ctx.Err() != nil {
+			break
+		}
+		wg.Add(1)
+		go func(p pending) {
+			defer wg.Done()
+			// 排队等槽位时也响应 ctx 取消(qoderclicn Minor#1):避免取消后仍阻塞到有槽位
+			// 才退出,缩短取消延迟。取消则提前返回(results[p.index] 留零值,被后续零值过滤剔除)。
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			defer func() { <-sem }()
+			title := m.resolveTitle(ctx, in.ChannelID, p.entry.ID, p.entry.Title)
+			slog.Info("discover preview accepted replay", "channel_id", in.ChannelID, "source_id", p.entry.ID, "title", title)
+			results[p.index] = Result{
+				ChannelID: in.ChannelID,
+				SourceID:  p.entry.ID,
+				Title:     title,
+				SourceURL: entryURL(p.entry),
+			}
+		}(p)
+	}
+	wg.Wait()
+
+	// 收集非零值结果(过滤后跳过的 index 处为零值 Result,需剔除),保持原始顺序。
+	out := make([]Result, 0, len(pendings))
+	for i := range results {
+		// 只收 pendings 覆盖过的 index;跳过的 entry 留下零值,其 SourceID 为空。
+		if results[i].SourceID != "" {
+			out = append(out, results[i])
+		}
+	}
+	if out == nil {
 		return []Result{}, nil
 	}
-	return results, nil
+	return out, nil
 }
 
 // PreviewChannel 列出某个频道的回放(不建场次、不入队),供两步式发现的预览阶段使用。

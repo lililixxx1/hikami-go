@@ -493,6 +493,13 @@ type Handler struct {
 	downloader         Downloader
 	channels           *channel.Store
 	cookieAccountStore *biliutil.CookieAccountStore
+	// viewClient 是长生命周期的 B 站 view 客户端,持有共享的 BuvidStore(24h 缓存)与
+	// WBI signer map(1h 缓存)。ResolveDownloadTitle 一次预览请求会对多条视频逐条取标题,
+	// 必须复用同一实例,否则每次新建实例会让 buvid/WBI 两层缓存形同虚设,每条视频都重打
+	// finger/spi + nav 副请求,发现回放预览在 38 条规模下耗时超 30s 被前端超时砍掉
+	// (2026-07-29 修复)。参照 channel.Identifier.buvids / NativeDownloader.ViewBuvids 范式。
+	// 零值 VideoClient 可用:首次 Fetch 时 ensure() 懒初始化内部组件。
+	viewClient *biliutil.VideoClient
 }
 
 func NewHandler(cfg *config.Config, sessions *session.Store, states *state.Store, workers *worker.Pool, downloader Downloader, channels *channel.Store) *Handler {
@@ -503,7 +510,15 @@ func NewHandler(cfg *config.Config, sessions *session.Store, states *state.Store
 		workers:    workers,
 		downloader: downloader,
 		channels:   channels,
+		viewClient: &biliutil.VideoClient{}, // 长生命周期:跨 ResolveDownloadTitle 调用共享缓存
 	}
+}
+
+// SetViewClient 替换内部 view 客户端,仅用于测试注入指向 httptest 桩的实例
+// (对齐 NativeDownloader.ViewBuvids / channel.Identifier.SetBuvidStore 注入范式)。
+// 必须在首次 ResolveDownloadTitle 前调用;生产代码用 NewHandler 注入的默认实例。
+func (h *Handler) SetViewClient(vc *biliutil.VideoClient) {
+	h.viewClient = vc
 }
 
 // SetCookieAccountStore 注入账号池，使下载支持账号化 cookie 解析
@@ -559,7 +574,9 @@ func (h *Handler) CreateFromURL(ctx context.Context, channelID, rawURL string) (
 // 导出方法，实现 discover.TitleResolver 接口。
 func (h *Handler) ResolveDownloadTitle(ctx context.Context, channelID, sourceID string) string {
 	cookieHeader := h.downloadCookieHeader(ctx, channelID)
-	info, err := biliutil.FetchVideoInfo(ctx, sourceID, cookieHeader)
+	// 用 h.viewClient(长生命周期)而非包级 FetchVideoInfo:后者每次新建实例会丢弃
+	// BuvidStore/WBI signer 缓存,导致一次预览里每条视频都重打 finger/spi + nav。
+	info, err := h.viewClient.Fetch(ctx, sourceID, cookieHeader)
 	if err != nil {
 		slog.Warn("resolve download title: view api failed, fallback to source id",
 			"channel_id", channelID, "source_id", sourceID, "error", err)
