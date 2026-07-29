@@ -229,6 +229,23 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
 
 ## 变更记录
 
+- 2026-07-27(日):**`/init-project` 增量同步 — 07-25 discover account select + 隐私/默认值清理补登**(无代码改动,纯文档漂移修复)。HEAD `10d0c3f`(上次 `/init` 终点)→ 当前 `76fcf6a`,9 commit。AGENTS.md changelog 已有 07-25 media_ready + 07-26 API 契约两条顶部条目,但机械统计发现 **5 个 commit 未在 changelog 记录或索引未同步**,典型「changelog 写了但索引忘了同步」+「独立功能 commit 漏记」型漂移(与 07-20/07-21 同款)。
+
+  **漏记的 commit**(按时间序):
+  ① **`a234919`(07-25)清理开发机用户名泄露 + 移除误入库工作产物**:替换 9 个文件中真实用户名 lioi/cc/Administrator 为 `<user>` 占位;`git rm --cached reviews/`(12 个 AI 审查记录)+ `.claude/index.json`(过期扫描缓存,均保留本地);`.gitignore` `.claude/plans/`→`.claude/`(整目录)+ 删冗余 `/reviews/`;顺带带回 Go 1.25.0→1.25.5(根 CLAUDE.md/docs/DESIGN.md)。**两轮 qoder-code-review 通过**(计划 Ready with fixes 4 Minor 全采纳,执行后 Ready)。
+  ② **`7105a06`(07-25)chore(gitignore)**:`hikami-go/` 与 `data/` 并列忽略(覆盖默认/示例两种配置)+ `.tmp/ffmpeg-build/`→`.tmp/`(整目录)。
+  ③ **`63e25db`(07-25)fix(config) `output_root` 默认值 `hikami-go`→`./data`**:根因消除(`hikami-go` 与 module 同名 git 不自动忽略曾致录播产物误入暂存);新增 `TestSetDefaults_OutputRoot` 回归防线(config 39→40);main.go 启动检测旧目录打 WARN 引导迁移;config.full.example.yaml/docs/DESIGN.md 同步。
+  ④ **`860a581`(07-25)feat(discover) 发现回放 Cookie 选择改为选已登录 B 站账号**(branch `fix/discover-account-select-2026-07-25`,qoder 计划审核 Ready with fixes + 代码审核待调):**API 契约破坏性更改**(`POST /api/sessions/discover/preview-by-url` body `cookie_file`→`account_id`,仅前端单一调用方无第三方依赖);`resolveURLCookie` 插入「显式 account_id」分支复用 ResolveCookie 三级链(消除两份重复逻辑 + GetByID 预检查 + fallthrough WARN);前端 DiscoverPreviewDrawer `HInput`→`HSelect` 选账号(复用 ChannelPublishConfig 的 accountIdProxy)。**测试**:discover 32→34(删 2 旧 CookieFile + 加 4 新 account_id)、前端新建 DiscoverPreviewDrawer.test.ts 7 用例(200→207、27→28 文件)。**此前 changelog 完全未记**,本轮补登。
+  ⑤ **`ee451e6`/`395ef0e`/`1092f59`(07-25)media_ready 三连**:normalize convertAtomic 空文件 post-condition + session 守卫③.5 + variadic NewStore + cleanup 脚本 + 文档同步——**AGENTS.md 07-25 changelog 已详记**,本轮仅同步索引数字(config/session/normalize/handler/web)。
+
+  **根 `CLAUDE.md` 精简模块索引 4 行**:`config` 39→**40**(+1 TestSetDefaults_OutputRoot + 2026-07-25 output_root 默认值说明)、`discover` 32→**34**(+2 account_id 测试 + 2026-07-25 Cookie 选择改 account_id 说明)、`web` 200/27→**207/28**(+7 DiscoverPreviewDrawer.test.ts + 2026-07-25 说明)、`handler` 测试数不变 94 但补 2026-07-25 account_id body case 说明。
+
+  **模块 CLAUDE.md 5 处**:① `config/CLAUDE.md` 测试段 39→40 + TestSetDefaults_OutputRoot + changelog(output_root 默认值反转);② `discover/CLAUDE.md` 测试段 32→34 + account_id 测试说明 + changelog(Cookie 选择改 account_id);③ `handler/CLAUDE.md` server_test 71→**72**(内部一致性:72+17+5=94,此前 71+17+5=93 自相矛盾)+ TestDiscoverPreviewByURL account_id case + changelog(account_id body + 07-26 API 契约对齐);④ `web/CLAUDE.md` 测试段 200/27→207/28 + DiscoverPreviewDrawer.test.ts + changelog(07-25 account select + 07-26 契约对齐);⑤ 根 CLAUDE.md 索引 4 行(见上)。
+
+  **核实通过(无需改)**:DB v37✓、Go 1.25.5✓、技术栈声明✓、AGENTS.md 07-25 media_ready + 07-26 API 契约 changelog 已完整记录、config/CLAUDE.md output_root 默认值 `./data`(line 34)已在 `63e25db` 同步、其余 22 包测试计数零偏差(aiprovider 5/archive 13/asr 67/biliutil 84/channel 69/db 9/download 56/executil 0/fsutil 4/glossary 77/importer 15/live_record 89/mcp 19/notify 12/publisher 68/recap 115/runtime 26/runtimeconfig 10/scheduler 13/secrets 9/state 11/upload 38/worker 44)。**未追踪文件**:`release-v0.1.0-rc3-linux.md`(一次性 release 操作指引,文件首行注明「不入库,执行完可删」,tag `v0.1.0-rc3` 已本地打指向 `76fcf6a` 未推送——**不在本文档范围,留用户决定推送/删除时机**)。
+
+  **验证**:`go test ./internal/config/... ./internal/discover/... ./internal/handler/...` 全绿、前端 `vitest run` 28 文件 207 全过(已在审计时实跑确认)。**回归**:零(纯文档,无代码改动)。文档:本条 + 根 CLAUDE.md 索引 4 行 + config/discover/handler/web CLAUDE.md。
+
 - 2026-07-26(日):**前后端 API 契约不一致对齐**(branch `fix/api-contract-2026-07-26`,qoderclicn/Qwen3.8-Max-Preview 计划审核 Ready with fixes + 代码审核 Ready,reasoning high 全程,「写计划→审计划→执行→审代码」四阶段闭环)。**触发**:用户要求"测试前后端对应",四项核查(测试套件 + API 契约 + 数据类型 + 测试覆盖)后发现 3 处 HIGH + 5 处 MEDIUM 的 spec/code/前端类型不一致。**性质**:**spec 与前端类型对齐型**,后端 Go 代码**零改动**(事实基准),核心是补 spec schema + 重生成 generated.ts + 清理前端失真补丁。12 文件 +393/-54。
 
   **计划审核**(Ready with fixes,4 Important + 3 Minor 全采纳):qoder 逐字核实 S1/S2 补登 schema 时发现计划凭印象写错——S1 notify/test 响应写了不存在的 `ok` 字段(实际只有 `{message}`,另有 409 分支)、S2 topics/search 写成裸数组(实际是 `{items:[{id,name,stat_desc}]}` 包裹,且漏 `stat_desc`)。这正是本计划要修的"spec 与代码不一致"的反面,凸显独立审核价值。其它:I-3(MCPServerConfig generated 全 optional 但 MCPCardV10 无 `?.` 守卫,明确保留手写)、I-4(删 SettingsView glossary 清单整项会让 GlossaryCardV10 成孤儿,改为只删 `done` 属性)、M-1(H1 修后 source_type Omit 补丁变死代码,纳入清理)、M-2(M4 行号引用修正)、M-3(回归矩阵加基线比对步骤)。

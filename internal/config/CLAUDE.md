@@ -163,11 +163,11 @@
 
 ## 测试与质量
 
-- `config_test.go`: 39 个测试用例，覆盖：
+- `config_test.go`: 40 个测试用例，覆盖：
   - 默认值: TestLoad_DefaultValues（Web/Worker/DashScope/RecapAI 全部默认值验证）
   - 校验: TestValidate_MissingOutputRoot、TestValidate_MissingDbPath、TestValidate_Success、TestValidate_WorkerNumZero、TestValidate_PublishModeInvalid、TestValidate_DownloaderBackend、**TestValidate_ArchiveCleanupPolicy**（archive.cleanup_policy 合法值校验）
   - 日志级别: TestLogLevel_Default、TestLogLevel_Explicit（6 种输入映射）
-  - 默认设置: TestSetDefaults_WebListen、TestSetDefaults_DashScope
+  - 默认设置: TestSetDefaults_WebListen、TestSetDefaults_DashScope、**TestSetDefaults_OutputRoot（2026-07-25 新增：钉死 `output_root` 默认值为 `./data`,防止未来再次漂移;`hikami-go` 与 module 同名 git 不自动忽略曾致录播产物误入暂存）**
   - 日志格式: TestLogFormat（json 默认 / text 显式）
   - 覆盖: TestLoad_ExplicitOverrides（Web.Listen / RecapAI.Model / RecapAI.MaxTokens）
   - 下载后端 helper: TestDownloaderConfigHelpers、TestNativeConfigured_RequiresPassword
@@ -195,12 +195,13 @@ A: `web.listen` 默认值为 `:6334`（从 `:8080` 变更），可在 YAML 中�
 ## 相关文件清单
 
 - `config.go` -- 唯一源文件
-- `config_test.go` -- 配置加载与验证测试（39 个用例）
+- `config_test.go` -- 配置加载与验证测试（40 个用例）
 
 ## 变更记录 (Changelog)
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-07-25 | 配置变更 | **`output_root` 默认值 `hikami-go` → `./data`**(commit `63e25db`,branch 隐含)。**触发**:`hikami-go` 作为默认输出目录与 Go module 同名,git 不会自动忽略,曾导致真实录播产物(transcript/danmaku/recap)误入暂存区(2026-07-25 隐私清理时发现)。改为 `./data`,与 `config.example.yaml` 及 README/AGENTS 引导用户复制的模板一致。**改动**:① `config.go:874` SetDefault `'hikami-go'` → `'./data'`;② 新增 `TestSetDefaults_OutputRoot`(回归防线:钉死新默认值,防止未来再次漂移),config 39→40;③ `config.full.example.yaml` + `docs/DESIGN.md` 同步当前状态描述;④ `cmd/hikami/main.go` 启动检测旧目录 `hikami-go/` 打 WARN 引导迁移(`filepath.Clean` 归一化比较,平台无关措辞,结构化日志);⑤ `.gitignore` 兜底 `hikami-go/` 与 `data/` 并列忽略。**受影响**:仅「无 config.yaml、跑默认值」的用户(README 引导复制 config.example.yaml 的用户本就不会受影响)。 |
 | 2026-07-22 | 功能 | **新增 `mcp` 配置段(MCP 搜索工具集成 Phase 2)**(commit `5b84b63`)。第 8 个 runtimeconfig 段——`MCPConfig`(Enabled + `Servers []MCPServerConfig` + `Builtin MCPBuiltinConfig` + `MaxToolRounds int`)+ `MCPServerConfig`(Name/URL/Transport stdio\|http\|sse/Command/Args/Env/Headers/TimeoutSec;2026-07-22 后 Headers 支持自定义请求头)+ `MCPBuiltinConfig`(BraveAPIKey/BraveAPIKeyEnv/TavilyAPIKey/TavilyAPIKeyEnv)+ `MCPSectionDTO`(presence-aware,Servers/Builtin 指针化,密钥只写 `*_set` bool)+ `EffectiveMaxToolRounds()` 方法(<=0 兜底默认 3、超过 10 截断,供 mcp Manager 与 glossary Discoverer 注入)+ ApplyOverrides mcp case。**DB v36 迁移**:runtime_settings 表 CHECK 白名单 `+mcp`(标准表重建范式)。配套 handler `GET/PUT /api/config/mcp`(密钥只写,PUT 后 mcpManager.Reload 热重载)。新增 4 测试(_OverridesMCPFields/_MCPPresenceAware/_MCPClearServers + EffectiveMaxToolRounds),config 35→39。详见 `AGENTS.md` 2026-07-22 changelog。 |
 | 2026-07-21 | BUG 修复 | **DashScope `asr_url`/`tasks_url` Effective 默认值兜底**(branch `fix/bug-fix-2026-07-20`,commit `61f3989` v6 + `add3b51` v7)。**触发**:实测发现 `runtime_settings` 表把 DashScope `asr_url`/`tasks_url` 持久化为空字符串,覆盖 viper SetDefault 默认值(`config.go:781-782`),导致 ASR POST 到空 URL 失败(`Post "": unsupported protocol scheme ""`)。**根因**:`dashscopeConfigToDTO` 用 `&c.ASRURL` 总是取地址,ApplyOverrides 的 nil 检查无法区分「空串指针」与「非空串指针」。**修复**(参照现有 `EffectiveBaseURL`/`EffectiveAPIKeyEnv` 模式):新增 `DefaultDashScopeASRURL`/`DefaultDashScopeTasksURL` 常量 + `EffectiveASRURL()`/`EffectiveTasksURL()` 方法(空串兜底),SetDefault 改引用常量。新增 `TestDashScopeEffectiveURLs`,config 34→35。 |
 | 2026-07-19 | 配置变更 | **`cron.discovery` 默认值 `@every 20m` → `""`(禁用)**(branch `fix/decouple-recap-replay-2026-07-18`,主播管理 ↔ 回顾管理·回放解耦)。原因:回顾管理·回放页的「发现回放」改为独立 URL 入口,不再依赖 scheduler 自动遍历主播表下载。默认禁用后,scheduler.go:85 的 `if discoverySpec != ""` 跳过 cron 注册。**向后兼容**:viper 用户配置优先级 > SetDefault,旧 config.yaml 显式写了 `cron.discovery: "@every 20m"` 的用户维持原行为不变;仅未显式配置的(默认 config.example.yaml)变为不自动发现——这正是用户诉求。无新增测试(默认值变更,scheduler 包测试已覆盖空串跳过)。测试计数不变(34)。 |

@@ -169,9 +169,9 @@ fi
 
 # ---------- 7. VAD 静音裁剪 (internal/asr/vad_processor.go: Detect + Trim) ----------
 # ASR 前置 VAD 用 silencedetect 扫描静音 + atrim+concat 精确切含 padding 的音频。
-# 验证方式:用 ffmpeg -filters 列表 grep 四个 filter 名,而不是跑命令(因为 -f null 在
-# 缺 pcm_s16le encoder 时会误报但退出码 0,导致跑命令的判断不可靠)。
-# 见 plans/plan-vad-2026-07-27.md Phase 6。
+# 7a 查 filter 是否在列表;7b 测 Trim 路径(带 -c:a libmp3lame -f mp3);
+# 7c 测 Detect 路径(裸 -f null -),2026-07-28 实测发现裁剪版缺 pcm_s16le encoder 会让它失败。
+# 见 plans/plan-vad-2026-07-27.md Phase 6 + scripts/FFMPEG-REBUILD-PCM-S16LE-2026-07-28.md。
 section "7. VAD 静音裁剪 filters (silencedetect + atrim + asetpts + concat)"
 
 FILTERS_LIST="$("${FFMPEG}" -hide_banner -filters 2>&1)"
@@ -195,6 +195,18 @@ if "${FFMPEG}" -y -hide_banner -loglevel warning -i "${SAMPLE}" \
   ok "VAD atrim+concat 端到端: 产出到 vad_trimmed.mp3 ($(wc -c < vad_trimmed.mp3) bytes)"
 else
   fail "VAD atrim+concat 端到端失败(检查 filter 链路 / mp3 muxer / libmp3lame encoder)"
+fi
+
+# 7c. VAD Detect 路径(生产 vad_processor.go:Detect 用的命令)
+#     这是 2026-07-28 实测发现的 bug 防线:裁剪版必须支持裸 -f null -(不带 -c:a),
+#     否则 silencedetect 扫描会因缺 pcm_s16le encoder 100% 失败,VAD 功能完全失效。
+#     不加 -c:a 是测试点——验证 ffmpeg 自身支持标准惯用法,而非业务代码绕过。
+if "${FFMPEG}" -y -hide_banner -loglevel warning -i "${SAMPLE}" \
+    -af "silencedetect=noise=-40dB:d=0.1" \
+    -f null - 2>"${ERRLOG}"; then
+  ok "VAD Detect 路径 (-f null -): pcm_s16le encoder 可用(裁剪版符合标准 ffmpeg 行为)"
+else
+  fail "VAD Detect 路径失败(检查 build-ffmpeg-minimal.sh 的 --enable-encoder 是否含 pcm_s16le)"
 fi
 
 # ---------- 汇总 ----------

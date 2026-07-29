@@ -63,8 +63,13 @@ build_inner() {
   # 1. 交叉编译 libmp3lame 静态库（normalize 的 -f mp3 必需）
   if [[ ! -f "${lame_prefix}/lib/libmp3lame.a" ]]; then
     echo "==> [inner] 交叉编译 libmp3lame ${lame_tag}"
-    if [[ ! -d "lame-${lame_tag}/.git" ]] && [[ ! -d "lame-${lame_tag}/configure" ]]; then
-      wget -q "https://downloads.sourceforge.net/project/lame/lame/${lame_tag}/lame-${lame_tag}.tar.gz" -O lame.tgz
+    # configure 是文件不是目录,用 -f 判断(qoder review 2026-07-29 Important#1:
+    # 原来用 -d 永远 false → 缓存失效,每次重跑 wget+tar)
+    if [[ ! -d "lame-${lame_tag}/.git" ]] && [[ ! -f "lame-${lame_tag}/configure" ]]; then
+      # qoder review 2026-07-29 Important#3: SourceForge 会 302 到镜像 + 偶尔返回 HTML 中间页,
+      # 加 --content-disposition 跟重定向,下载后校验是 gzip(否则 tar 会报 confusing 错)
+      wget -q --max-redirect=10 "https://downloads.sourceforge.net/project/lame/lame/${lame_tag}/lame-${lame_tag}.tar.gz" -O lame.tgz
+      gzip -t lame.tgz 2>/dev/null || die "lame 下载产物不是有效 gzip(SourceForge 可能返回了 HTML 中间页,检查网络)"
       tar xzf lame.tgz
     fi
     cd "lame-${lame_tag}"
@@ -98,8 +103,13 @@ build_inner() {
   #      可装 nasm 后去掉 --disable-asm。
   #    - demuxer：flv(直播)、concat(合并)、mov/aac/mp3/wav/flac/ogg/matroska/asf(导入/探测兜底)
   #    - muxer：mp4+mov(m4a)、mp3(normalize)、null(ffprobe)、matroska(兜底)
-  #    - encoder：libmp3lame(normalize，外部库)、aac(importer，原生)
+  #    - encoder：libmp3lame(normalize，外部库)、aac(importer，原生)、pcm_s16le(-f null 惯用法)
   #      ⚠️ ffmpeg 无原生 mp3 编码器，写 mp3 必须用 libmp3lame（注册名 ff_libmp3lame_encoder）
+  #      ⚠️ pcm_s16le 不是业务编码需求，而是让 -f null（分析扫描后丢弃输出）可用——
+  #         silencedetect/volumedetect 等 analysis filter 都用 -f null，默认选 pcm_s16le encoder，
+  #         缺它会导致 VAD Detect 等功能失败（2026-07-28 实测发现，见 scripts/FFMPEG-REBUILD-PCM-S16LE-2026-07-28.md）。
+  #         decoder 行已 enable pcm_s16le（ffprobe 解析用），pcm.c 已编译进 ffmpeg.exe，
+  #         encoder 补同款仅多注册一个 encoder 结构体，增量约几 KB。
   #    - decoder：覆盖录制/导入可能遇到的音频编码（AAC/MP3/FLAC/Vorbis/Opus/PCM）
   #    - protocol：file（读写本地音频文件，必需！）、pipe（直播录制 stdin）
   #      ⚠️ --disable-everything 会关掉 file 协议，必须显式补回，否则 ffmpeg 无法
@@ -133,7 +143,7 @@ build_inner() {
     --enable-protocol=file,pipe \
     --enable-demuxer=flv,concat,mov,mp3,aac,wav,flac,ogg,matroska,asf \
     --enable-muxer=mp4,mov,ipod,mp3,null,matroska \
-    --enable-encoder=libmp3lame,aac \
+    --enable-encoder=libmp3lame,aac,pcm_s16le \
     --enable-decoder=aac,mp3,mp3float,flac,vorbis,opus,pcm_s16le,pcm_s8 \
     --enable-parser=aac,mpegaudio \
     --enable-bsf=aac_adtstoasc \
@@ -158,10 +168,17 @@ build_inner() {
   mkdir -p "${workdir}/staging/bin"
   cp -f ffmpeg.exe  "${workdir}/staging/bin/"
   cp -f ffprobe.exe "${workdir}/staging/bin/"
-  # 许可证：ffmpeg GPLv3 + lame LGPL
+  # 许可证：ffmpeg GPLv3(必需,GPL 合规)+ lame LGPL(可选)
+  # qoder review 2026-07-29 Important#2: 原来 || true 会掩盖 license 缺失,
+  #   导致后续 zip 报 confusing 错或静默发布无 license 的 GPL 二进制(合规风险)。
   cp -f LICENSE.txt "${workdir}/staging/" 2>/dev/null \
-    || cp -f COPYING.GPLv3 "${workdir}/staging/LICENSE.txt" 2>/dev/null || true
-  cp -f "${workdir}/lame-${lame_tag}/COPYING" "${workdir}/staging/LICENSE.lame.txt" 2>/dev/null || true
+    || cp -f COPYING.GPLv3 "${workdir}/staging/LICENSE.txt" 2>/dev/null \
+    || cp -f COPYING "${workdir}/staging/LICENSE.txt" 2>/dev/null
+  [[ -f "${workdir}/staging/LICENSE.txt" ]] \
+    || die "找不到 ffmpeg 许可证文件(GPL 合规必需,检查源码树根目录的 LICENSE/COPYING.GPLv3)"
+  # lame LGPL license 可选(缺失仅 WARN,不阻断)
+  cp -f "${workdir}/lame-${lame_tag}/COPYING" "${workdir}/staging/LICENSE.lame.txt" 2>/dev/null \
+    || echo "WARN: 找不到 lame COPYING(LGPL),将不带 lame license 打包"
   echo "==> [inner] 完成，staging 在 ${workdir}/staging"
 }
 
@@ -174,7 +191,12 @@ pack() {
 
   # zip 内部路径布局须与 ffmpeg_manifest.go 的 FFmpegPath/FFprobePath 一致：
   # 当前 manifest 用 bin/ffmpeg.exe、bin/ffprobe.exe。
-  ( cd "${staging}" && zip -r -X "${OUT_ZIP}" bin LICENSE.txt LICENSE.lame.txt >/dev/null )
+  # LICENSE.txt 必需(GPL 合规),LICENSE.lame.txt 可选(LGPL,缺失不阻断)
+  if [[ -f "${staging}/LICENSE.lame.txt" ]]; then
+    ( cd "${staging}" && zip -r -X "${OUT_ZIP}" bin LICENSE.txt LICENSE.lame.txt >/dev/null )
+  else
+    ( cd "${staging}" && zip -r -X "${OUT_ZIP}" bin LICENSE.txt >/dev/null )
+  fi
 
   echo "==> 打包完成：${OUT_ZIP}"
   ls -lh "${OUT_ZIP}"

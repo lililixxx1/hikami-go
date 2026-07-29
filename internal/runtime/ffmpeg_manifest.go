@@ -29,6 +29,9 @@ type FFmpegAsset struct {
 }
 
 func CurrentManifest() map[string]FFmpegAsset {
+	// 仅覆盖项目部署目标平台(windows-amd64 / linux-amd64 / linux-arm64);
+	// 其他平台(如 darwin-arm64、linux-386)不在 manifest → ResolveFFmpeg 回退到系统 ffmpeg。
+	//
 	// embedded-minimal-7.x-vad：标识嵌入的裁剪版 ffmpeg（基于 n7.x，2026-07-27 起含 VAD 用 filter）。
 	//   - linux-*：下载兜底用 BtbN 完整 gpl 版（裁剪超集），二者共用同一 version 缓存目录无功能问题。
 	//   - windows-amd64：仅走 embedded（裁剪版 zip 顶层直接是 bin/，无 BtbN 那层
@@ -39,7 +42,11 @@ func CurrentManifest() map[string]FFmpegAsset {
 	// 2026-07-27:vad 后缀让旧用户升级时重新解包,因为旧 embedded-minimal-7.x 不含
 	// silencedetect/atrim/asetpts/concat filter(VAD 会自动 fallback 原始音频,功能降级但不崩)。
 	// 见 plans/plan-vad-2026-07-27.md Phase 6 + scripts/build-ffmpeg-minimal.sh。
-	const version = "embedded-minimal-7.x-vad"
+	//
+	// 2026-07-28:vad2 后缀:补 pcm_s16le encoder,修复 -f null - (VAD Detect 路径) 失败。
+	// 旧 -vad 版缺 pcm_s16le encoder,silencedetect 的 -f null - 找不到 encoder 100% 失败,
+	// 导致 VAD 功能完全失效。见 scripts/FFMPEG-REBUILD-PCM-S16LE-2026-07-28.md。
+	const version = "embedded-minimal-7.x-vad2"
 	const licenseURL = "https://github.com/BtbN/FFmpeg-Builds/blob/master/LICENSE"
 
 	return map[string]FFmpegAsset{
