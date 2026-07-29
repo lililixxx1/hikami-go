@@ -20,7 +20,7 @@
 
 | 方法 | 说明 |
 |------|------|
-| `NewHandler(cfg, sessions, states, transcriber)` | 创建 Handler |
+| `NewHandler(cfg, sessions, states, transcriber, vadProc...)` | 创建 Handler。`vadProc` 是 variadic 可选参数(2026-07-27 VAD 引入):不传时禁用 VAD(老调用零回归);main.go 装配时传 `NewVADProcessor(cfg)`,`cfg.VAD.Enabled=false` 时 VADProcessor 存在但 HandleTask 内部跳过 |
 | `CreateTask(ctx, pool, sessionID)` | 校验前置条件并创建任务 |
 | `Register(pool)` | 注册 asr 任务处理器 |
 
@@ -206,6 +206,12 @@ type resumableTranscriber interface {
   - `TestCheckTaskUsesEffectiveTasksURL`：同上验证 `checkTask` 调用点
   - `TestCheckTaskUsesEffectiveTasksURL_TrimRight`：验证 TasksURL 保留 `TrimRight('/')`（B 站 tasks 端点尾斜杠敏感）
 
+- **VAD 测试（2026-07-27 新增,4 文件共 31 个测试）**:
+  - `vad_processor_test.go`（14 个）：`parseSilenceDetect`（Basic/TrailingSilence/Empty）、`buildSilenceMap`（NoSilence/OneSilence/MultiSilence/TrailingSilence/HeadSilence/FullSilence/ShortSpeech/Invariants/NoOverlap 9 种区间表构造）、`buildAtrimConcatFilter`（多段/单段 atrim+concat 滤镜链字符串）、`remapTrimmedToOriginal`（Basic/TwoSegments/Boundaries 时间戳反向映射）、`remapSegments`（AllFields/NonIntField/FloatField ASR 结果全字段重映射)
+  - `vad_silence_map_test.go`（12 个）：`loadSilenceMap`（NotExist/Empty/BadVersion/RoundTrip）、`SilenceMap_OutputRatio`（裁剪比计算）、`SilenceMap_JSONTags`（序列化字段名）、含 buildSilenceMap 与 remap 的交叉验证
+  - `vad_handler_test.go`（3 个）：`TestHandleTask_VADNil_UsesOriginal`（未注入 vadProc 用原始音频）、`TestHandleTask_VADDisabled_UsesOriginal`（注入但 cfg.VAD.Enabled=false 跳过）、`TestHandleTask_OriginalSegmentsPreserved_WhenNoVAD`（零回归契约:无 VAD 时 segments 不变)
+  - `vad_integration_test.go`（2 个）：`TestVADIntegration_DetectFindsSilence`（端到端 Detect 扫静音）、`TestVADIntegration_TrimMatchesSilenceMap`（端到端 Trim 与 SilenceMap 一致）
+
 ## 常见问题 (FAQ)
 
 **Q: DashScope ASR 模型如何选择？**
@@ -223,16 +229,25 @@ A: 在 YAML 配置文件中添加 `asr_s3` 配置块：endpoint（S3 端点 URL�
 **Q: ASR 提交返回 409？**
 A: 检查场次状态（需要 `media_ready`）、ASR 音频文件是否存在、是否已有活跃任务、ASR 能力是否可用。
 
+**Q: VAD 静音裁剪是什么?失败会影响 ASR 吗?**
+A: ASR 调 DashScope 前先用 ffmpeg 裁掉 `>min_silence_sec` 的静音段(产出 `audio.asr.trimmed.mp3` + `silence_map.json`),ASR 返回后用 silence_map 反向映射回原始时间线。目的是**减少 DashScope ASR 计费时长**(实测 -40dB/2s 降 3-10%,BGM 多的直播节省少)。**零回归兜底**(三层):ffmpeg 处理失败 / 裁剪后/原始比 `output/orig < min_output_ratio`(默认 0.3,防 ffmpeg bug 裁过头)/ ffmpeg 缺 `silencedetect`+`atrim`+`concat` filter → 全部用原始音频,行为与关闭 VAD 完全一致。`VADProcessor` 持 `*config.Config` 指针,`updateVADConfig` 改参后下次 ASR 任务立即生效。详见 `plans/plan-vad-2026-07-27.md`。
+
 ## 相关文件清单
 
-- `asr.go` -- Handler 实现、LocalTranscriber
+- `asr.go` -- Handler 实现、LocalTranscriber、**2026-07-27 VAD 集成**(`applyVAD` 决策树:Detect→Trim→ASR→silence_map 反向映射;三层兜底回退原始音频;`NewHandler` 加 variadic `vadProc`)
 - `dashscope.go` -- DashScopeTranscriber、退避重试、远端任务恢复、SRT 生成、结果解析、**2026-07-21 3 个调用点（submit/checkTask/`tasks_url`）改用 `EffectiveASRURL()`/`EffectiveTasksURL()` 空串兜底，修复 ASR 配置丢失 BUG**
+- `vad_processor.go` -- **2026-07-27 新增**：`VADProcessor`(持 `*config.Config` 指针,改参立即生效;`Detect` 跑 silencedetect 扫静音、`Trim` 跑 atrim+concat 滤镜链、`BuildSilenceMap` 区间表→segment 表含 padding 与首尾静音处理)
+- `vad_silence_map.go` -- **2026-07-27 新增**：`SilenceMap` 结构(裁剪段表 + padding,JSON 持久化 v1 版本号,Load/Save/round-trip)
 - `temp_server.go` -- 本地 ASR 临时音频 HTTP 服务（Publish/Delete/MountHandler）
 - `s3_publisher.go` -- S3 兼容对象存储后端（Publish/Delete，minio-go SDK）
 - `public_ip.go` -- 公网 IP 自动检测（多端点回退、私有 IP 过滤）
 - `danmaku_correction.go` -- ASR segments 驱动的弹幕时间校正
 - `asr_test.go` -- 单元测试（37 个用例）
 - `dashscope_test.go` -- **DashScope Effective URL 测试（2026-07-21 新增 4 个用例）**
+- `vad_processor_test.go` -- **2026-07-27 新增**：VAD 处理器测试（14 个用例:parseSilenceDetect/buildSilenceMap/buildAtrimConcatFilter/remap）
+- `vad_silence_map_test.go` -- **2026-07-27 新增**：SilenceMap 持久化测试（12 个用例:Load/Save/round-trip/输出比/JSON tags）
+- `vad_handler_test.go` -- **2026-07-27 新增**：VAD 集成零回归测试（3 个用例:nil/disabled/原始 segments 保留）
+- `vad_integration_test.go` -- **2026-07-27 新增**：VAD 端到端集成测试（2 个用例:Detect 扫静音/Trim 与 SilenceMap 一致）
 - `danmaku_correction_test.go` -- 弹幕校正测试（1 个用例）
 - `temp_server_test.go` -- 临时音频服务测试（10 个用例）
 - `s3_publisher_test.go` -- S3 发布后端测试（7 个顶级 + 8 个子测试）
@@ -242,6 +257,7 @@ A: 检查场次状态（需要 `media_ready`）、ASR 音频文件是否存在�
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-07-27 | 功能 | **ASR 前置 VAD 静音裁剪降本**(commit `b1ba520`,branch `feat/vad-2026-07-27`)。ASR 调 DashScope 前先用 ffmpeg 裁掉 `>min_silence_sec` 的静音段,产出 `audio.asr.trimmed.mp3` + `silence_map.json`,ASR 返回后用 silence_map 反向映射回原始时间线(segments/text/words/begin/end 全字段重映射)。**实测 -40dB/2s 节省 3-10% DashScope 计费时长**(BGM 多的直播节省少),零真实内容损失。**新增 4 文件**:① `vad_processor.go`(`VADProcessor` 持 `*config.Config` 指针,改参立即生效;`Detect` 跑 `silencedetect=noise=-40dB:d=2 -f null -` 扫静音 + `Trim` 跑 `atrim+concat` 滤镜链 + `BuildSilenceMap` 区间表→segment 表含 padding 与首尾静音处理);② `vad_silence_map.go`(`SilenceMap` JSON 持久化 v1 版本号,Load/Save/round-trip);③ `asr.go` `NewHandler` 加 variadic `vadProc ...*VADProcessor`(不传禁用零回归,main.go 装配注入;`cfg.VAD.Enabled=false` 时 Processor 存在但 HandleTask 内部跳过)+ `applyVAD` 决策树(Detect→Trim→ASR→反向映射)。**零回归兜底三层**:ffmpeg 处理失败 / 裁剪比 `output/orig < min_output_ratio`(默认 0.3 防裁过头)/ ffmpeg 缺 `silencedetect`+`atrim`+`concat` filter → 全部用原始音频。新增 4 测试文件 31 用例(vad_processor 14 + vad_silence_map 12 + vad_handler 3 零回归契约 + vad_integration 2 端到端),asr 包函数口径 67→**98**。详见 `AGENTS.md` 2026-07-29 changelog + `plans/plan-vad-2026-07-27.md`。 |
 | 2026-07-21 | BUG 修复 | **DashScope `asr_url`/`tasks_url` Effective 兜底**(branch `fix/bug-fix-2026-07-20`,commit `61f3989` v6)。**触发**:实测发现 DashScope `asr_url`/`tasks_url` 在 `runtime_settings` 表被持久化为空字符串,覆盖 viper SetDefault 默认值,导致 ASR POST 到空 URL 失败(`Post "": unsupported protocol scheme ""`)。**根因**:`dashscopeConfigToDTO` 用 `&c.ASRURL` 总是取地址,ApplyOverrides 的 nil 检查无法区分「空串指针」与「非空串指针」。**修复**:`dashscope.go` 3 个调用点（`submit` line 227 / `checkTask` line 311 / `tasks_url` line 356）改用 `c.EffectiveASRURL()`/`c.EffectiveTasksURL()`（TasksURL 保留 `TrimRight('/')`）。新增 `dashscope_test.go` 4 个测试（`TestDashScopeEffectiveURLs` + `TestSubmitUsesEffectiveASRURL`/`TestCheckTaskUsesEffectiveTasksURL` + TrimRight 变体，用 `urlCapturingTransport` 捕获实际请求 URL 验证调用点真的用了 Effective 而非空串）。asr 包总测试 63→67。 |
 | 2026-06-24 | 重构 | **双重降级收敛**（`5fadea4`）：移除 `asr.go` HandleTask 中冗余的 `Apply(EventTaskFailed)` 调用（2 处）。任务失败降级现已统一由 `worker` 处理（普通任务由 `EventTaskFailed` 全局特判降级；旁路任务经 `Register(..., WithBypassFailState())` 声明后仅写 `last_error`），各业务 handler 不再自行 `Apply`，避免双写。本模块无新增对外接口，测试数无变化（仍 63） |
 | 2026-06-05 | 日志增强 | ASR 任务开始/完成日志新增 channel_id、session_id、model；DashScope 转写生命周期新增 submit、poll、状态变化、retry、completion 结构化日志；Handler 向 Transcriber 传播 channel_id/session_id 上下文 |

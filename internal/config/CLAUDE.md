@@ -163,7 +163,7 @@
 
 ## 测试与质量
 
-- `config_test.go`: 40 个测试用例，覆盖：
+- `config_test.go`: 45 个测试用例，覆盖：
   - 默认值: TestLoad_DefaultValues（Web/Worker/DashScope/RecapAI 全部默认值验证）
   - 校验: TestValidate_MissingOutputRoot、TestValidate_MissingDbPath、TestValidate_Success、TestValidate_WorkerNumZero、TestValidate_PublishModeInvalid、TestValidate_DownloaderBackend、**TestValidate_ArchiveCleanupPolicy**（archive.cleanup_policy 合法值校验）
   - 日志级别: TestLogLevel_Default、TestLogLevel_Explicit（6 种输入映射）
@@ -172,7 +172,7 @@
   - 覆盖: TestLoad_ExplicitOverrides（Web.Listen / RecapAI.Model / RecapAI.MaxTokens）
   - 下载后端 helper: TestDownloaderConfigHelpers、TestNativeConfigured_RequiresPassword
   - **Effective\* 默认值**：TestRecapAIEffectiveDefaults、TestDashScopeEffectiveAPIKeyEnv、TestASRS3EffectiveAccessKeyEnv、TestEffectivePasswordEnv_DefaultFallback、TestEffectivePassword_Managed*（true 不回退 / false 回退 Yaml）、TestEffectiveAccessKey_ManagedDoesNotFallBack、**TestDashScopeEffectiveURLs（2026-07-21 新增：`DefaultDashScopeASRURL`/`DefaultDashScopeTasksURL` 常量 + `EffectiveASRURL()`/`EffectiveTasksURL()` 空串兜底，修复 ASR 配置丢失 BUG）**
-  - **ApplyOverrides（runtimeconfig 持久化覆盖）**：TestApplyOverrides_OverridesPublishFields、_MissingSectionRetainsBaseline、_EmptyObjectRetainsBaseline、_CorruptJSONSkippedNotFatal、_DoesNotFreezeHiddenRecapFields、_InjectsWebDAVTombstone、**_OverridesToolsFields / _ToolsPresenceAware / _ToolsEmptyStringClears（2026-07-08 新增 tools 段：全覆盖 / nil 保留基线 / 空串清空）**、**_OverridesMCPFields / _MCPPresenceAware / _MCPClearServers（2026-07-22 新增 mcp 段：servers 全覆盖 / nil 保留基线 / 显式空数组清空 server 列表）+ TestMCPConfig_EffectiveMaxToolRounds（`EffectiveMaxToolRounds()` 兜底：<=0 返回默认 3、超过上限截断到 10）**
+  - **ApplyOverrides（runtimeconfig 持久化覆盖）**：TestApplyOverrides_OverridesPublishFields、_MissingSectionRetainsBaseline、_EmptyObjectRetainsBaseline、_CorruptJSONSkippedNotFatal、_DoesNotFreezeHiddenRecapFields、_InjectsWebDAVTombstone、**_OverridesToolsFields / _ToolsPresenceAware / _ToolsEmptyStringClears（2026-07-08 新增 tools 段：全覆盖 / nil 保留基线 / 空串清空）**、**_OverridesMCPFields / _MCPPresenceAware / _MCPClearServers（2026-07-22 新增 mcp 段：servers 全覆盖 / nil 保留基线 / 显式空数组清空 server 列表）+ TestMCPConfig_EffectiveMaxToolRounds（`EffectiveMaxToolRounds()` 兜底：<=0 返回默认 3、超过上限截断到 10）**、**_OverridesVADFields / _VADPresenceAware / _VADCorruptJSON（2026-07-27 新增 vad 段：字段全覆盖 / nil 保留基线 / 非法 JSON 跳过不 fatal）+ TestVADDefaults（`vad.enabled=true` 默认开 + 阈值/最短静音/padding/ratio 默认值）+ TestVADValidate（ThresholdDB 范围 -80~0 / MinSilenceSec>0 / PaddingSec>=0 / MinOutputRatio (0,1] / detection_mode 不校验内部固定 peak）**
   - **向后兼容**：TestLoadConfigBackcompatLiveRecordNumRemoved（旧配置含已删的 `worker.live_record_num` 字段，viper 静默忽略不报错）
 
 ## 常见问题 (FAQ)
@@ -195,12 +195,13 @@ A: `web.listen` 默认值为 `:6334`（从 `:8080` 变更），可在 YAML 中�
 ## 相关文件清单
 
 - `config.go` -- 唯一源文件
-- `config_test.go` -- 配置加载与验证测试（40 个用例）
+- `config_test.go` -- 配置加载与验证测试（45 个用例）
 
 ## 变更记录 (Changelog)
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-07-27 | 功能 | **新增 `vad` 配置段(ASR 前置 VAD 静音裁剪)**(commit `b1ba520`,branch `feat/vad-2026-07-27`)。第 9 个 runtimeconfig 段——`VADConfig`(Enabled bool / ThresholdDB int -80~0 / MinSilenceSec float64 / PaddingSec float64 / DetectionMode string 固定 "peak" / MinOutputRatio float64)+ `VADConfig.Validate()`(Config.Validate 与 handler updateVADConfig 都调,拒绝非法值避免下次启动 fatal;detection_mode 不校验因 VADProcessor 内部固定 peak)+ `VADSectionDTO`(presence-aware 指针化)+ ApplyOverrides vad case(与 tools/mcp 段同模式)。**setDefaults**:`vad.enabled=true`(默认开,实测 -40dB/2s 零真实内容损失、降 3-10% ASR 计费)、`threshold_db=-40`、`min_silence_sec=2.0`、`padding_sec=0.2`、`detection_mode=peak`、`min_output_ratio=0.3`。**DB v38 迁移**:runtime_settings 表 CHECK 白名单 `+vad`(同 v35/v36 表重建范式)。配套 handler `GET/PUT /api/config/vad`。新增 5 测试(VADDefaults/Validate + _OverridesVADFields/_VADPresenceAware/_VADCorruptJSON),config 40→**45**。详见 `AGENTS.md` 2026-07-29 changelog + `plans/plan-vad-2026-07-27.md`。 |
 | 2026-07-25 | 配置变更 | **`output_root` 默认值 `hikami-go` → `./data`**(commit `63e25db`,branch 隐含)。**触发**:`hikami-go` 作为默认输出目录与 Go module 同名,git 不会自动忽略,曾导致真实录播产物(transcript/danmaku/recap)误入暂存区(2026-07-25 隐私清理时发现)。改为 `./data`,与 `config.example.yaml` 及 README/AGENTS 引导用户复制的模板一致。**改动**:① `config.go:874` SetDefault `'hikami-go'` → `'./data'`;② 新增 `TestSetDefaults_OutputRoot`(回归防线:钉死新默认值,防止未来再次漂移),config 39→40;③ `config.full.example.yaml` + `docs/DESIGN.md` 同步当前状态描述;④ `cmd/hikami/main.go` 启动检测旧目录 `hikami-go/` 打 WARN 引导迁移(`filepath.Clean` 归一化比较,平台无关措辞,结构化日志);⑤ `.gitignore` 兜底 `hikami-go/` 与 `data/` 并列忽略。**受影响**:仅「无 config.yaml、跑默认值」的用户(README 引导复制 config.example.yaml 的用户本就不会受影响)。 |
 | 2026-07-22 | 功能 | **新增 `mcp` 配置段(MCP 搜索工具集成 Phase 2)**(commit `5b84b63`)。第 8 个 runtimeconfig 段——`MCPConfig`(Enabled + `Servers []MCPServerConfig` + `Builtin MCPBuiltinConfig` + `MaxToolRounds int`)+ `MCPServerConfig`(Name/URL/Transport stdio\|http\|sse/Command/Args/Env/Headers/TimeoutSec;2026-07-22 后 Headers 支持自定义请求头)+ `MCPBuiltinConfig`(BraveAPIKey/BraveAPIKeyEnv/TavilyAPIKey/TavilyAPIKeyEnv)+ `MCPSectionDTO`(presence-aware,Servers/Builtin 指针化,密钥只写 `*_set` bool)+ `EffectiveMaxToolRounds()` 方法(<=0 兜底默认 3、超过 10 截断,供 mcp Manager 与 glossary Discoverer 注入)+ ApplyOverrides mcp case。**DB v36 迁移**:runtime_settings 表 CHECK 白名单 `+mcp`(标准表重建范式)。配套 handler `GET/PUT /api/config/mcp`(密钥只写,PUT 后 mcpManager.Reload 热重载)。新增 4 测试(_OverridesMCPFields/_MCPPresenceAware/_MCPClearServers + EffectiveMaxToolRounds),config 35→39。详见 `AGENTS.md` 2026-07-22 changelog。 |
 | 2026-07-21 | BUG 修复 | **DashScope `asr_url`/`tasks_url` Effective 默认值兜底**(branch `fix/bug-fix-2026-07-20`,commit `61f3989` v6 + `add3b51` v7)。**触发**:实测发现 `runtime_settings` 表把 DashScope `asr_url`/`tasks_url` 持久化为空字符串,覆盖 viper SetDefault 默认值(`config.go:781-782`),导致 ASR POST 到空 URL 失败(`Post "": unsupported protocol scheme ""`)。**根因**:`dashscopeConfigToDTO` 用 `&c.ASRURL` 总是取地址,ApplyOverrides 的 nil 检查无法区分「空串指针」与「非空串指针」。**修复**(参照现有 `EffectiveBaseURL`/`EffectiveAPIKeyEnv` 模式):新增 `DefaultDashScopeASRURL`/`DefaultDashScopeTasksURL` 常量 + `EffectiveASRURL()`/`EffectiveTasksURL()` 方法(空串兜底),SetDefault 改引用常量。新增 `TestDashScopeEffectiveURLs`,config 34→35。 |

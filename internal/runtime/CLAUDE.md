@@ -78,7 +78,7 @@
 
 | 字段 | 说明 |
 |------|------|
-| `Version` | 版本标识（`embedded-minimal-7.x`，标识嵌入的是裁剪版 ffmpeg）；改 Version 会让旧用户升级后重新解包，避免用到旧缓存 |
+| `Version` | 版本标识（`embedded-minimal-7.x-vad2`，标识嵌入的裁剪版 ffmpeg，2026-07-27 起含 VAD 用的 silencedetect/atrim/concat filter + pcm_s16le encoder）；改 Version 会让旧用户升级后重新解包，避免用到旧缓存 |
 | `ArchiveURL` | 归档下载 URL |
 | `ArchiveFormat` | 归档格式（zip/txz） |
 | `FFmpegPath` | 归档内 ffmpeg 二进制相对路径 |
@@ -218,6 +218,7 @@ demuxer/muxer（flv/concat/mov/mp3）+ mp3/aac encoder，由 `scripts/build-ffmp
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-07-29 | 裁剪版 ffmpeg 补 pcm_s16le encoder | **修复 VAD Detect 100% 失效**(commit `bafa2a4`)。VAD 的 `Detect` 跑 `-f null -`(silencedetect 扫描)需要 `pcm_s16le` encoder,但裁剪版 `--enable-encoder` 白名单只列 mp3/aac → 找不到 encoder 导致 Detect 失败(虽走零回归兜底用原始音频,但降本能力丢失)。**改动**:① `scripts/build-ffmpeg-minimal.sh` `--enable-encoder` 补 `pcm_s16le`;② `ffmpeg_manifest.go` Version `embedded-minimal-7.x`→`embedded-minimal-7.x-vad2`(让旧用户升级时重新解包含 pcm_s16le 的新 zip);③ `scripts/verify-ffmpeg-minimal.sh` 新增 case 7c 裸 `-f null -` 路径检测(防未来重编又裁错 encoder);④ 替换 `assets/ffmpeg.zip`(3.29MB→3.31MB,+pcm_s16le 约 24KB);⑤ 采纳 qoder-code-review 反馈(lame 缓存 `-d`→`-f`、license 缺失显式报错、wget 重定向校验、manifest 平台注释)。未改任何解析逻辑。 |
 | 2026-07-13 | 裁剪版 ffmpeg + manifest 路径修复 | `build-windows-amd64` 嵌入的 ffmpeg 从 BtbN 完整 gpl 版(~80MB)改为裁剪版(~8-12MB)。新增 `scripts/build-ffmpeg-minimal.sh`(Docker+MinGW-w64 交叉编译,`--disable-everything` 后白名单启用 flv/concat/mov/mp3 demuxer/muxer + mp3/aac encoder,依据:录制全 `-c:a copy` 零编码器)+ `scripts/verify-ffmpeg-minimal.sh`(逐条复刻真实参数)+ `scripts/README-ffmpeg-build.md`。`ffmpeg_manifest.go` Version 改 `embedded-minimal-7.x`(新缓存目录隔离旧完整版)。`.gitignore` 白名单放行 `assets/ffmpeg.zip`(入库让 Windows 构建开箱即用)。Makefile 新增 `build-ffmpeg-minimal`/`verify-ffmpeg-minimal` target。未改任何解析逻辑(ResolveFFmpeg/installEmbeddedFFmpeg/probe.go 原样复用)。**manifest 路径同步修复**(`4a79b44`)：裁剪版 zip 顶层是 `bin/ffmpeg.exe`，但 manifest 的 `windows-amd64` 段仍写死 BtbN 完整版目录结构 `ffmpeg-master-latest-win64-gpl-shared/bin/ffmpeg.exe` → 解包后按 manifest 找不到二进制 → 启动 health check fatal（Windows 双击 exe 看似闪退）。修复：`FFmpegPath`→`bin/ffmpeg.exe`、`FFprobePath`→`bin/ffprobe.exe`、`ArchiveURL` 删除（留空防误下 80MB 完整版，`downloadAndInstallFFmpeg` 对空 URL 有显式保护兜底）。`linux-*` 不动（走系统 ffmpeg）。 |
 | 2026-06-04 | 测试补充 | 新增 ffmpeg_resolver_test.go（15 用例）：safeJoin 安全检查 4 个、executableFile 3 个、extractArchive 2 个、ffmpegVersionDir 1 个、extractZip/extractTgz 穿越拦截 2 个、cachedResolution 2 个、并发安全 1 个。总用例从 9 增至 24 |
 | 2026-06-03 | 重大更新 | 新增 FFmpeg 自动解析/下载/嵌入系统：ffmpeg_resolver.go（ResolveFFmpeg 三级回退：系统 -> 嵌入 -> 在线下载）、ffmpeg_manifest.go（三平台资源清单）、ffmpeg_embed.go（embed_ffmpeg build tag 嵌入）、ffmpeg_embed_none.go（默认空实现）；支持 zip/tar.xz 解压、SHA256 校验、路径穿越防护、原子安装、下载进度日志 |

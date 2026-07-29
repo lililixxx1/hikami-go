@@ -112,10 +112,11 @@
 | 35 | `runtime_settings` CHECK 白名单扩展 `+tools`（第 7 段，yt-dlp/rclone 路径 web 可编辑）——表重建模式 |
 | 36 | `runtime_settings` CHECK 白名单扩展 `+mcp`（第 8 段，MCP 搜索工具配置）——表重建模式（同 v35 范式） |
 | 37 | `glossary_candidates.ai_review TEXT` 列（AI 批量复核写回的核实结论文本，Phase 5 批量复核功能） |
+| 38 | `runtime_settings` CHECK 白名单扩展 `+vad`（第 9 段，ASR 前置 VAD 静音裁剪配置）——表重建模式（同 v35/v36 范式） |
 
 ## 测试与质量
 
-- `migrate_test.go`: 9 个测试用例，覆盖：
+- `migrate_test.go`: 10 个测试用例，覆盖：
   - `TestMigrateIsIdempotent`: 迁移幂等性（重复执行不报错，版本数正确）
   - `TestMigrateCreatesCoreTables`: 核心表创建验证（channels, sessions, tasks）
   - `TestMigrateCreatesAllTables`: 核心应用表创建验证（枚举 10 张：channels, sessions, tasks, secrets, glossary_entries, glossary_meta, recap_templates, bili_cookie_accounts, glossary_candidates, runtime_settings）
@@ -125,6 +126,7 @@
   - `TestMigrate_VersionSequence`: 版本号连续性验证
   - `TestMigrate_ChannelsColumns`: channels 表 10 个追加列存在性验证
   - `TestOpen_SetsFilePermissions0600`: 主数据库文件权限 0600 校验（ISS-7）
+  - `TestMigrateRuntimeSettingsAcceptsVADSection`（2026-07-27 新增）: v38 迁移后 runtime_settings 表 CHECK 白名单含 `vad` 段，INSERT `section='vad'` 不再被拒（验证表重建白名单扩展生效）
 
 ## 常见问题 (FAQ)
 
@@ -140,13 +142,14 @@ A: `recap_templates` 表中的 `system_prompt` 和 `user_format` 字段使用 `_
 ## 相关文件清单
 
 - `db.go` -- 数据库打开
-- `migrate.go` -- 迁移定义与执行（37 个版本）
-- `migrate_test.go` -- 迁移测试（9 个用例）
+- `migrate.go` -- 迁移定义与执行（38 个版本）
+- `migrate_test.go` -- 迁移测试（10 个用例）
 
 ## 变更记录 (Changelog)
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-07-27 | 重大更新 | 迁移增至 v38：v38 扩展 `runtime_settings` CHECK 白名单 `+vad`（第 9 段，ASR 前置 VAD 静音裁剪配置段，`VADSectionDTO`）——同 v35/v36 表重建模式（建 `runtime_settings_v38`→INSERT 复制→DROP→RENAME，旧库 8 段数据全量回灌无损升级）。不涉及核心表结构变更。总版本数 37→38，表数不变（10，含 `schema_migrations` 账本表）。新增 `TestMigrateRuntimeSettingsAcceptsVADSection`（验证表重建后白名单含 `vad`，INSERT `section='vad'` 不再被 CHECK 拒）。配合 ASR 前置 VAD 功能（详见 `AGENTS.md` 2026-07-29 changelog + `plans/plan-vad-2026-07-27.md`）。 |
 | 2026-07-22 | 重大更新 | 迁移增至 v37：v36 扩展 `runtime_settings` CHECK 白名单 `+mcp`（第 8 段，MCP 搜索工具配置段，`MCPSectionDTO`）；v37 新增 `glossary_candidates.ai_review TEXT`（默认 NULL，AI 批量复核 Phase 5 写回的核实结论文本）。两者均不涉及核心表结构变更：v36 同 v35 表重建模式（建 `runtime_settings_v36`→INSERT 复制→DROP→RENAME，旧库 7 段数据全量回灌）；v37 是简单 `ALTER TABLE ADD COLUMN`。总版本数 35→37，表数不变（10，含 `schema_migrations` 账本表）。配合 MCP 搜索工具集成 6 phase（详见 `AGENTS.md` 2026-07-22 changelog）。 |
 | 2026-07-08 | 重大更新 | 迁移增至 v35：v33 新增 `runtime_settings` 表（全局运行时配置覆盖，per-section JSON，CHECK 白名单 6 段：publish/asr_s3/dashscope/recap_ai/webdav/archive）；v34 新增 `tasks.bypass_fail_state INTEGER NOT NULL DEFAULT 0`（任务实例级状态旁路，重新生成回顾等非推进型任务失败不降级主状态）；v35 扩展 `runtime_settings` CHECK 白名单 `+tools`（第 7 段，yt-dlp/rclone 路径 web 可编辑）——SQLite 不支持直接改 CHECK，用标准表重建模式（建 `runtime_settings_v35`→INSERT 复制→DROP 旧表→RENAME），旧库 6 段数据全量回灌无损升级。总版本数 32→35，表数 10（含 `schema_migrations` 账本表）。`TestMigrateCreatesAllTables` 的 `expected` 清单已纳入 `runtime_settings`。 |
 | 2026-06-23 | 重大更新 | 迁移增至 v32：v31 新增 `sessions.archived_at TEXT`（发布成功后自动归档到 WebDAV 的时间戳，不推进会话主状态，由 `internal/archive` 写入）；v32 新增 `channels.auto_recap INTEGER NOT NULL DEFAULT 1`（per-channel 自动回顾开关，三态经 `resolveAutoRecap` 兜底为 true）。总版本数 30→32 |
