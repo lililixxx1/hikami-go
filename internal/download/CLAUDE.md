@@ -135,12 +135,14 @@ type Downloader interface {
 - `native_test.go`: 10 个测试用例，覆盖 native 成功下载、Cookie 缺失、非 BV、多 P 产物、seg.so 回退 XML、双失败空弹幕、无 pages、音频 URL 全失败、ffprobe/ffmpeg mock 与音频 HTTP client 独立 Transport/无超时/禁用 HTTP/2
 - `downloader_select_test.go`: 3 个测试用例，覆盖后端工厂、auto 遇 `ErrNativeUnsupported` 回退、其他错误不回退
 - `probe_test.go`: 7 个 `//go:build probe` 真实联调用例，覆盖 view/playurl/danmaku/native E2E、单 P/多 P 联调；常规测试不编译
+- `title_test.go`: 2 个测试用例（2026-07-29 新增），覆盖 `ResolveDownloadTitle` 跨调用复用同一 `viewClient` 时 BuvidStore 缓存不被击穿（httptest 计数 spi=1/view=2，钉死发现回放预览性能修复）、`NewHandler` 默认注入非 nil viewClient
 
 ## 相关文件清单
 
-- `download.go` -- Handler、Downloader 接口、YTDLPDownloader、单 P/多 P yt-dlp 下载逻辑；`ytDlpArgs` 注入 `--ffmpeg-location <dir>`（2026-07-15，`ffmpegLocationDir` helper 从 `YTDLPDownloader.FFmpeg` 推导目录，裸命令名/空值返回空保持 PATH 回退）+ `--cookies`；`singlePCid`（单 P 弹幕抓取，bvid→view API→Pages[0].CID）+ `downloadSingleP` 成功后调 `fetchDanmakuShared` 写 `raw/danmaku.xml`（2026-07-15，与 native 单 P / yt-dlp 多 P 对齐）
+- `download.go` -- Handler、Downloader 接口、YTDLPDownloader、单 P/多 P yt-dlp 下载逻辑；`ytDlpArgs` 注入 `--ffmpeg-location <dir>`（2026-07-15，`ffmpegLocationDir` helper 从 `YTDLPDownloader.FFmpeg` 推导目录，裸命令名/空值返回空保持 PATH 回退）+ `--cookies`；`singlePCid`（单 P 弹幕抓取，bvid→view API→Pages[0].CID）+ `downloadSingleP` 成功后调 `fetchDanmakuShared` 写 `raw/danmaku.xml`（2026-07-15，与 native 单 P / yt-dlp 多 P 对齐）；`ResolveDownloadTitle`（view API 取真实标题 + `CleanReplayTitle` 清洗,失败回退 sourceID,实现 `discover.TitleResolver` 接口）+ `Handler.viewClient`（**2026-07-29 长生命周期 `*biliutil.VideoClient`**,NewHandler 初始化,`ResolveDownloadTitle` 改用 `h.viewClient.Fetch` 复用 BuvidStore/WBI 缓存,修复发现回放预览性能击穿缓存）+ `SetViewClient` 测试注入 setter
 - `native.go` -- NativeDownloader 原生 B 站单 P/多 P 下载，含音频流式 `.tmp`+rename、seg.so 优先弹幕策略、ffprobe/ffmpeg 多 P 产物生成和错误定义
 - `downloader_select.go` -- NewConfiguredDownloader 与 AutoDownloader 双后端选择/fallback，复用 cfg 中已解析的 FFmpeg/FFprobe 路径
+- `title_test.go` -- `ResolveDownloadTitle` 缓存复用回归 + `NewHandler` 默认 viewClient 守卫（2026-07-29 新增,2 用例）
 - `probe_test.go` -- `//go:build probe` 真实联调探针（view/playurl/danmaku/E2E），默认不参与常规测试
 - `download_test.go` -- 既有下载 Handler 与 yt-dlp 辅助逻辑测试
 - `native_test.go` -- native 下载、错误边界、音频 client/Transport 测试
@@ -150,6 +152,7 @@ type Downloader interface {
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-07-29 | 性能修复 | **发现回放预览标题解析击穿缓存导致 30s 超时**(branch `fix/discover-title-perf-2026-07-29`,qoderclicn 计划审核 Ready with fixes + 代码审核 Ready,reasoning high)。**触发**:用户粘贴合集 URL 发现回放「发现不了」,日志显示 yt-dlp 列出 38 条回放但请求耗 29s 被前端 30s 超时砍掉。**根因**:包级 `biliutil.FetchVideoInfo` 每次调用 `vc := &VideoClient{}` 新建实例,导致 `BuvidStore`(24h)与 WBI signer(1h)缓存随实例丢弃形同虚设,每条视频重打 finger/spi + nav + view 共 3 个串行请求。**改动**:① `Handler` 加 `viewClient *biliutil.VideoClient` 字段(NewHandler 初始化,构造签名不变 → main.go 零改动)+ `SetViewClient` 测试注入 setter;② `ResolveDownloadTitle` 改用 `h.viewClient.Fetch` 复用长生命周期缓存;③ 删除 biliutil 包级 `FetchVideoInfo`(唯一调用方改实例方法后变死代码)。**测试**:download 56→58(+2:`TestResolveDownloadTitle_ReusesViewClientAcrossCalls` httptest 计数 spi=1/view=2 钉死缓存复用 + `TestNewHandler_HasViewClient`)。**回归**:零(长生命周期 client 行为等价短命 client,纯性能提升)。配合 discover 侧并发改造与前端 90s 超时兜底。详见 `plans/plan-discover-title-perf-2026-07-29.md`。 |
 | 2026-07-15 | 修复 | **4 个调查问题修复批次（download 部分）**（`a1a595d`，codex CLI 计划+执行审核 APPROVED）：① **yt-dlp `--ffmpeg-location` 注入**：`ytDlpArgs()` 原只处理 `--cookies`，未把 `YTDLPDownloader.FFmpeg` 字段转为 `--ffmpeg-location`，导致 yt-dlp 后处理（`-x` 提取音频为 m4a）找不到 hikami 解析的 ffmpeg。重写 `ytDlpArgs()` 注入 `--ffmpeg-location <dir>`，新增 `ffmpegLocationDir()` helper（裸命令名/空值返回空保持 PATH 回退）。② **单 P 弹幕抓取缺失**：`downloadSingleP` 原无弹幕抓取，导致 normalize 阶段弹幕为空、回顾显示弹幕 0 条。新增 `singlePCid()` helper（bvid → view API → Pages[0].CID），`downloadSingleP` 成功后调 `fetchDanmakuShared` 写 `raw/danmaku.xml`（与 native 单 P / yt-dlp 多 P 对齐），失败不阻断下载。新增 7 个测试（`ffmpegLocationDir` 跨平台路径用 `filepath.Join` 构造 + `TestSinglePCidNoBvid` 降级）。download 测试 49→56（运行时 60）。 |
 | 2026-06-24 | 重构 | **双重降级收敛**（`5fadea4`）：移除 `download.go` HandleTask 中冗余的 `Apply(EventTaskFailed)` 调用（1 处）。任务失败降级统一由 `worker` 处理（普通任务 `EventTaskFailed` 全局特判降级；旁路任务经 `Register(..., WithBypassFailState())` 声明后仅写 `last_error`），各业务 handler 不再自行 `Apply`，避免双写。本模块无新增对外接口，测试数无变化（仍 48） |
 | 2026-06-23 | 修复 | `escapeConcatListPath` 将写入 ffmpeg concat listfile 的分 P 音频路径绝对化并转义（`file '...'`），修复 `OutputRoot` 为相对路径时 ffmpeg 在 CWD 下二次拼接导致路径翻倍、concat 失败的问题（`6536b32`）；native 与 yt-dlp 多 P 合并共用。新增 2 个测试（相对路径绝对化 / 绝对路径保留转义）。download 46→48 |

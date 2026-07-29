@@ -89,7 +89,7 @@
 
 | 函数/方法 | 说明 |
 |-----------|------|
-| `FetchVideoInfo(ctx, bvid, cookie)` / `VideoClient.Fetch` | 调用 `/x/web-interface/view` 获取 `VideoInfo`（aid/bvid/title/pages）。2026-07-06 起接入 -352 风控对抗三件套（buvid 注入 + WBI 签名 + Origin 头），`VideoClient` 改指针语义 + 懒缓存 buvids/signers（`SetBuvidStore`/`SetSignerFactory` 测试注入桩） |
+| `(*VideoClient).Fetch(ctx, bvid, cookie)` | 调用 `/x/web-interface/view` 获取 `VideoInfo`（aid/bvid/title/pages）。2026-07-06 起接入 -352 风控对抗三件套（buvid 注入 + WBI 签名 + Origin 头），`VideoClient` 改指针语义 + 懒缓存 buvids/signers（`SetBuvidStore`/`SetSignerFactory` 测试注入桩）。**2026-07-29 删除包级 `FetchVideoInfo` 便捷函数**（唯一调用方 `download.ResolveDownloadTitle` 改持长生命周期 `Handler.viewClient` 实例方法,复用 BuvidStore/WBI 缓存,修复发现回放预览性能击穿缓存导致 30s 超时）。 |
 | `FetchPlayURL(ctx, aid, cid, bvid, cookie, signer)` / `PlayURLClient.Fetch` | 调用 WBI playurl 获取 DASH 音频流列表 |
 | `SelectBestAudioStream(streams)` | 从 `AudioStream` 列表选择 bandwidth 最高且有 URL 的音频流 |
 | `AudioStream.URLs()` | 返回 baseUrl + backupUrl 顺序列表 |
@@ -291,7 +291,7 @@ A: 从 B 站 `nav` API 的 `wbi_img.img_url` 和 `wbi_img.sub_url` 字段提取�
 - `login.go` -- QR Login 客户端、扫码会话 Store、状态映射
 - `wbi.go` -- WBI URL 签名器（WBISigner、密钥获取与缓存、MD5 签名计算）
 - `ua.go` -- B 站 User-Agent 常量
-- `video.go` -- B 站 view API 客户端（VideoClient/FetchVideoInfo/VideoInfo/VideoPage）
+- `video.go` -- B 站 view API 客户端（VideoClient/VideoInfo/VideoPage;2026-07-29 删除包级 FetchVideoInfo 便捷函数）
 - `playurl.go` -- B 站 WBI playurl API 客户端、DASH 音频流解析与选流
 - `danmaku.go` -- B 站弹幕 XML 拉取，支持 deflate/gzip 解压
 - `danmaku_seg.go` -- seg.so 弹幕 protobuf wire 解码、分页拉取与 XML 合并
@@ -318,6 +318,7 @@ A: 从 B 站 `nav` API 的 `wbi_img.img_url` 和 `wbi_img.sub_url` 字段提取�
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-07-29 | 重构 | **删除包级 `FetchVideoInfo` 便捷函数**(`video.go`,branch `fix/discover-title-perf-2026-07-29` 配套)。该函数每次调用 `vc := &VideoClient{}` 新建实例,导致 `BuvidStore`(24h)/WBI signer(1h)缓存随实例丢弃形同虚设 —— 发现回放预览时 38 条视频逐条解析空标题,每条重打 finger/spi + nav + view,耗时 29s 超前端 30s 超时。核实全项目**唯一调用方**是 `download.ResolveDownloadTitle`(改为持长生命周期 `Handler.viewClient` 实例方法后该函数变死代码),`download.go` 的 `fetchCidMapForMultiP`/`singlePCid` 与 `native.go` 本就直接 new `VideoClient{}` 调 `.Fetch()`,不走包级函数。`(*VideoClient).Fetch` 实例方法保留不变。**测试数不变(84)**:包级函数无专属测试,删除不影响。API 表 + 文件清单同步移除 FetchVideoInfo 描述。 |
 | 2026-07-06 | 功能 | 新增 `(*BuvidStore).Invalidate(cookieHeader)`：按 cookie 删除 buvid3/buvid4 缓存条目，下次 `GetBuvids` 重新拉取。用于 -352 风控重试前强制刷新指纹（与 `WBISigner.RefreshKeys` 配合，确保重试用新 buvid + 新签名）。nil-safe（nil 接收者直接返回）。配套 4 个测试（nil-safe/按 key 删除强制重拉/仅影响指定 cookie/缺失 key no-op），顺手修正 `buvid_test` 的 `readCount` 无效独立 mutex 改用 `atomic`。**调用方**：`live_record/bilibili.go` 的 `CheckLive` -352 重试路径。本轮同时补登此前漏入文档的 `cover.go`（DownloadCover，2 测试）和 `replay_title.go`（CleanReplayTitle，2 测试）。测试计数：biliutil 80→84（buvid_test 6→10、+cover 2、+replay_title 2） |
 | 2026-07-05 | 功能 | 新增 `buvid.go`：`BuvidStore`（按 cookie 24h 缓存 buvid3/buvid4，nil-safe）+ `InjectBuvids`（replace 语义注入，剔除旧同名再追加）。**目的**：统一 B 站 -352 风控对抗的设备指纹层，消除 `publisher`/`live_record` 此前两份重复的 buvid 拉取实现，并供 `channel/identify` 修复 -352 使用。关键洞察：buvid 注入是 -352 对抗的必要但不充分条件，`getInfoByRoom`/`getRoomInfoOld`/`getDanmuInfo` 端点还需 WBI 签名（探针实测：buvid only 仍 -352，buvid + WBI → 200）。测试计数：biliutil 69→80 |
 | 2026-06-18 | 功能/修复 | **seg.so 弹幕**：新增 `danmaku_seg.go`，手写 protobuf wire 解码 DmSegMobileReply，分页拉取 `segment_index` 1..200 并转 XML；**protobuf 解码健壮性**：varint overflow 保护（第 10 字节 `shift==63 && b>1` 报错）、skip 支持 fixed64/fixed32 wire type、midHash 属性级 XML 转义。测试计数：biliutil 60→64 |
