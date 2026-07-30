@@ -1,6 +1,6 @@
 <!-- web/src/features/recaps/components/RecapDrawerV10.vue -->
 <!--
-  回顾抽屉(Phase 4,L2 测试)。最复杂的组件:md 渲染 + 动作矩阵(表B)+ 部分回顾 + 术语候选 + 编辑 + 导出。
+  回顾抽屉(Phase 4,L2 测试)。最复杂的组件:md 渲染 + 动作矩阵(表B)+ 术语候选 + 编辑 + 导出。
   动作矩阵复用 sessionActions.ts 的 getDrawerActions / primaryActionType(不改状态机)。
   - .md-preview:marked + DOMPurify.sanitize(L2 测试断言渲染出 <h1>)。
   - 术语候选 pills:.suggested-term-btn 按钮,过滤 addedTerms,点击 emit add-term(L2 测试)。
@@ -33,7 +33,6 @@ const props = defineProps<{
   channels: Channel[]
   actionLoadingId: string
   addingTerm: string
-  partialLoading: boolean
   addedTerms: Set<string>
 }>()
 
@@ -42,7 +41,6 @@ const emit = defineEmits<{
   copy: []
   'run-action': [session: Session, action: PrimaryAction]
   regenerate: []
-  'partial-range': [startSeconds: number, endSeconds: number]
   'add-term': [term: string]
   saved: [sessionId: string]
 }>()
@@ -73,27 +71,6 @@ function handleAddTerm(term: string): void {
 function drawerPrimary(s: Session | null): PrimaryAction | undefined {
   if (!s) return undefined
   return getDrawerActions(s as unknown as LooseSession, props.capabilities as LooseCapabilities | null).primary
-}
-
-// ---------- 部分回顾(时间段,秒) ----------
-const rangeStart = ref<string>('')
-const rangeEnd = ref<string>('')
-
-function toSeconds(hms: string): number | null {
-  const m = hms.trim().match(/^(\d{1,2}):(\d{1,2}):(\d{1,2})$/)
-  if (!m) return null
-  const [, h, mm, s] = m
-  return Number(h) * 3600 + Number(mm) * 60 + Number(s)
-}
-
-function handlePartial(): void {
-  const start = toSeconds(rangeStart.value)
-  const end = toSeconds(rangeEnd.value)
-  if (start === null || end === null || end <= start) {
-    HMessage.warning('请输入有效的开始/结束时间(HH:MM:SS)')
-    return
-  }
-  emit('partial-range', start, end)
 }
 
 // ---------- 编辑模式 ----------
@@ -153,8 +130,6 @@ function statusLabel(s: Session): string {
 watch(
   () => props.session?.id,
   () => {
-    rangeStart.value = ''
-    rangeEnd.value = ''
     editing.value = false
   },
 )
@@ -187,28 +162,6 @@ watch(
             <span class="drawer-date">{{ formatDateTime(session.created_at) }}</span>
             <span>{{ channelName(session.channel_id) }}</span>
           </div>
-
-          <!-- 自定义时间段回顾(emit partial-range) -->
-          <details class="range-recap">
-            <summary>自定义时间段回顾</summary>
-            <div class="range-form">
-              <input
-                v-model="rangeStart"
-                class="time-input"
-                type="text"
-                placeholder="开始 HH:MM:SS"
-              >
-              <input
-                v-model="rangeEnd"
-                class="time-input"
-                type="text"
-                placeholder="结束 HH:MM:SS"
-              >
-              <HButton variant="primary" size="sm" :loading="partialLoading" @click="handlePartial">
-                生成区间回顾
-              </HButton>
-            </div>
-          </details>
 
           <template v-if="content?.available">
             <!-- 动作栏:复制 / 重新生成 / 抽屉主动作(表B) / 编辑 / 导出 -->
@@ -319,37 +272,6 @@ watch(
 .drawer-date {
   color: var(--text-muted, var(--text-secondary));
   font-size: 13px;
-}
-
-.range-recap {
-  margin-bottom: 16px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px 12px;
-}
-
-.range-recap summary {
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--text);
-}
-
-.range-form {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  align-items: center;
-  margin-top: 8px;
-}
-
-.time-input {
-  width: 130px;
-  padding: 5px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  font-size: 13px;
-  font-family: inherit;
 }
 
 .drawer-actions {

@@ -41,7 +41,8 @@ type Config struct {
 	Downloader DownloaderConfig `mapstructure:"downloader"`
 	Publish    PublishConfig    `mapstructure:"publish"`
 	MCP        MCPConfig        `mapstructure:"mcp"`
-	VAD        VADConfig        `mapstructure:"vad"` // 2026-07-27 ASR 前置静音裁剪(降 DashScope 计费)
+	VAD        VADConfig    `mapstructure:"vad"`    // 2026-07-27 ASR 前置静音裁剪(降 DashScope 计费)
+	Replay     ReplayConfig `mapstructure:"replay"` // 2026-07-30 回放类(download/import)全局自动开关
 
 	Notify NotifyConfig `mapstructure:"notify"`
 
@@ -468,6 +469,41 @@ func (v VADConfig) Validate() error {
 	return nil
 }
 
+// ReplayConfig 控制回放类视频(download/import)的全局自动链开关(2026-07-30)。
+//
+// 背景:回放类视频多归占位主播 _unassigned(三自动开关全关、主播管理页不可见),per-主播
+// 开关无法覆盖;这两个全局开关补位「全局兜底,主播优先」——主播开关为真走主播,否则回放类
+// 看全局开关,非回放类(live_record)永远不看全局开关(录播仍由 per-主播开关驱动)。
+// 只管 normalize→ASR、ASR→回顾 两步,不碰发布(回放类本就不自动发布,见 main.go recap 回调)。
+// 默认关:升级零行为变化。详见 plans/plan-replay-auto-switch-2026-07-30.md。
+type ReplayConfig struct {
+	AutoASR   bool `mapstructure:"auto_asr"   json:"auto_asr"`   // normalize 完成后自动提交 ASR
+	AutoRecap bool `mapstructure:"auto_recap" json:"auto_recap"` // ASR 完成后自动生成回顾
+}
+
+// IsReplaySourceType 判断 source_type 是否属于回放类(download/import)。
+// 抽成纯函数供 main.go 自动链判定复用,避免 config 反向依赖 session 包(只取 string)。
+func IsReplaySourceType(sourceType string) bool {
+	return sourceType == "download" || sourceType == "import"
+}
+
+// ReplayAutoEnabled 回放类视频的全局自动开关判定(全局兜底,主播优先)。
+//   - channelFlag 为真(主播自己开了该阶段开关)→ 直接 true,不看全局。
+//   - 否则:非回放类(sourceType 非回放 或 取 session 失败 sessOK=false)→ false(零回归:
+//     旧行为只看主播开关,主播关则 return,等价)。
+//   - 否则(回放类 + 主播关)→ 看 globalFlag(全局开关)。
+//
+// 纯函数,无 I/O,便于表驱动测试(qoder 审核 I-4)。
+func ReplayAutoEnabled(sourceType string, sessOK bool, channelFlag bool, globalFlag bool) bool {
+	if channelFlag {
+		return true
+	}
+	if !sessOK || !IsReplaySourceType(sourceType) {
+		return false
+	}
+	return globalFlag
+}
+
 func (c *DownloaderConfig) NativeConfigured() bool {
 	backend := strings.ToLower(strings.TrimSpace(c.Backend))
 	return backend == "" || backend == "auto" || backend == "native"
@@ -652,6 +688,13 @@ type VADSectionDTO struct {
 	MinSilenceSec  *float64 `json:"min_silence_sec,omitempty"`
 	PaddingSec     *float64 `json:"padding_sec,omitempty"`
 	MinOutputRatio *float64 `json:"min_output_ratio,omitempty"`
+}
+
+// ReplaySectionDTO 对应 updateReplayConfig 管理的回放类全局自动开关段(presence-aware,2026-07-30)。
+// 无密钥、无格式约束,直接投影。见 plans/plan-replay-auto-switch-2026-07-30.md。
+type ReplaySectionDTO struct {
+	AutoASR   *bool `json:"auto_asr,omitempty"`
+	AutoRecap *bool `json:"auto_recap,omitempty"`
 }
 
 // ApplyOverrides 用 runtime_settings 的 per-section JSON 覆盖 cfg 的对应段。
@@ -910,6 +953,18 @@ func ApplyOverrides(cfg *Config, overrides map[string]json.RawMessage) error {
 		}
 	}
 
+	// Replay 段(2026-07-30 回放类全局自动开关):presence-aware 覆盖,与 vad 段同模式。
+	if raw, ok := overrides["replay"]; ok && len(raw) > 0 {
+		var dto ReplaySectionDTO
+		apply("replay", &dto)
+		if dto.AutoASR != nil {
+			cfg.Replay.AutoASR = *dto.AutoASR
+		}
+		if dto.AutoRecap != nil {
+			cfg.Replay.AutoRecap = *dto.AutoRecap
+		}
+	}
+
 	return cfg.Validate()
 }
 
@@ -1017,6 +1072,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("vad.padding_sec", 0.2)
 	v.SetDefault("vad.detection_mode", "peak") // 固定 peak:对齐 silencedetect,不改
 	v.SetDefault("vad.min_output_ratio", 0.3)  // 裁剪后 < 30% 原始 → 视为异常回退
+	// Replay 默认关(2026-07-30):升级零行为变化,用户在回放页工具栏按需开启。
+	v.SetDefault("replay.auto_asr", false)
+	v.SetDefault("replay.auto_recap", false)
 	v.SetDefault("downloader.backend", "auto")
 	v.SetDefault("publish.enabled", false)
 	v.SetDefault("publish.mode", "draft")

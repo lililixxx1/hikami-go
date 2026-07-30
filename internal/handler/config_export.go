@@ -44,6 +44,7 @@ type ConfigExportBundle struct {
 	Archive      *config.ArchiveConfig   `json:"archive,omitempty"`
 	MCP          *MCPExportSection       `json:"mcp,omitempty"`
 	VAD          *config.VADSectionDTO   `json:"vad,omitempty"` // 2026-07-27 VAD 静音裁剪(无密钥,直接投影)
+	Replay       *config.ReplaySectionDTO `json:"replay,omitempty"` // 2026-07-30 回放类全局自动开关(无密钥,直接投影)
 	Secrets      map[string]string       `json:"secrets"`
 	Channels     []channel.UpsertInput   `json:"channels"`
 	Glossary     GlossaryExportSection   `json:"glossary"`
@@ -320,6 +321,15 @@ func (s *Server) handleExportConfig(ctx *gin.Context) {
 		MinOutputRatio: &vadRatio,
 	}
 
+	// Replay 段:无密钥,直接投影 DTO(指针+omitempty,旧 bundle 缺段为 nil,零回归,2026-07-30)。
+	replay := s.cfg.Replay
+	replayAutoASR := replay.AutoASR
+	replayAutoRecap := replay.AutoRecap
+	bundle.Replay = &config.ReplaySectionDTO{
+		AutoASR:   &replayAutoASR,
+		AutoRecap: &replayAutoRecap,
+	}
+
 	// Secrets (actual values)
 	secretList, err := s.secrets.List(ctx.Request.Context())
 	if err != nil {
@@ -469,6 +479,7 @@ func (s *Server) handleImportConfig(ctx *gin.Context) {
 	nextASRS3 := s.cfg.ASRS3
 	nextMCP := s.cfg.MCP // 基线拷贝:bundle 无 mcp 段时保持不变(零回归)
 	nextVAD := s.cfg.VAD // 基线拷贝:bundle 无 vad 段时保持不变(零回归,2026-07-27)
+	nextReplay := s.cfg.Replay // 基线拷贝:bundle 无 replay 段时保持不变(零回归,2026-07-30)
 
 	// tombstone 判定的 hasSecret helper：bundle.Secrets 是否含某 env key。
 	hasSecret := func(envKey string) bool {
@@ -563,6 +574,18 @@ func (s *Server) handleImportConfig(ctx *gin.Context) {
 		sections = append(sections, sectionDTO{"vad", dto})
 	}
 
+	if bundle.Replay != nil {
+		// Replay 段无密钥,直接走 ReplaySectionDTO + ApplyOverrides 路径(与 PUT /api/config/replay 一致)。
+		dto := *bundle.Replay
+		if dto.AutoASR != nil {
+			nextReplay.AutoASR = *dto.AutoASR
+		}
+		if dto.AutoRecap != nil {
+			nextReplay.AutoRecap = *dto.AutoRecap
+		}
+		sections = append(sections, sectionDTO{"replay", dto})
+	}
+
 	// 待写入的 secrets（剔除空值）。
 	type secretKV struct{ k, v string }
 	var newSecrets []secretKV
@@ -628,6 +651,7 @@ func (s *Server) handleImportConfig(ctx *gin.Context) {
 	s.cfg.ASRS3 = nextASRS3
 	s.cfg.MCP = nextMCP
 	s.cfg.VAD = nextVAD
+	s.cfg.Replay = nextReplay
 	// 先清理旧 env keys（overwrite 下避免残留旧密钥被读到），再 set 新值。
 	if strategy == "overwrite" {
 		for k := range oldSecretKeys {

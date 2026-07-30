@@ -1,8 +1,9 @@
 <!-- web/src/features/recaps/components/RecapToolbarV10.vue -->
 <script setup lang="ts">
 import { computed } from 'vue'
-import { HButton } from '@/components/ui'
+import { HButton, HSwitch } from '@/components/ui'
 import type { Capabilities } from '@/api/types-derived'
+import type { ReplayConfig } from '@/api/settings'
 
 const props = defineProps<{
   /** 当前子 tab:录播(live) / 回放(replay) */
@@ -13,6 +14,10 @@ const props = defineProps<{
   capabilities?: Capabilities | null
   /** 工具栏动作 loading(发现等异步中) */
   actionLoading?: boolean
+  /** 回放类全局自动开关(仅回放 tab 显示;壳拉取并持久化,组件纯展示+emit 变更) */
+  replayConfig?: ReplayConfig | null
+  /** 开关切换中的 loading(防抖动) */
+  replayLoading?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -21,6 +26,8 @@ const emit = defineEmits<{
   import: []
   download: []
   'clear-failed': []
+  /** 回放自动开关变更(auto_asr / auto_recap),壳负责调 API 持久化 */
+  'update-replay': [field: 'auto_asr' | 'auto_recap', value: boolean]
 }>()
 
 // 发现回放依赖 yt-dlp(replay_download 能力)。缺失时禁用按钮。
@@ -29,6 +36,13 @@ const tabs: { value: 'live' | 'replay'; label: string }[] = [
   { value: 'live', label: '录播' },
   { value: 'replay', label: '回放' },
 ]
+
+function onToggleAutoASR(v: boolean): void {
+  emit('update-replay', 'auto_asr', v)
+}
+function onToggleAutoRecap(v: boolean): void {
+  emit('update-replay', 'auto_recap', v)
+}
 </script>
 
 <template>
@@ -51,6 +65,15 @@ const tabs: { value: 'live' | 'replay'; label: string }[] = [
     <div class="toolbar-actions">
       <!-- 回放类(download/import)的创建入口仅在「回放」tab 显示 -->
       <template v-if="activeTab === 'replay'">
+        <!-- 回放类全局自动开关(2026-07-30):开了之后回放视频自动转写+回顾,免全程手动点 -->
+        <div v-if="replayConfig" class="replay-auto-toggles" :title="replayLoading ? '保存中…' : ''">
+          <HSwitch :model-value="replayConfig.auto_asr" :disabled="replayLoading" @update:model-value="onToggleAutoASR">
+            自动转写
+          </HSwitch>
+          <HSwitch :model-value="replayConfig.auto_recap" :disabled="replayLoading" @update:model-value="onToggleAutoRecap">
+            自动回顾
+          </HSwitch>
+        </div>
         <HButton
           variant="primary"
           size="sm"
@@ -130,6 +153,16 @@ const tabs: { value: 'live' | 'replay'; label: string }[] = [
 .btn-icon {
   margin-right: 4px;
   vertical-align: -2px;
+}
+
+.replay-auto-toggles {
+  display: inline-flex;
+  gap: 12px;
+  align-items: center;
+  padding-right: 8px;
+  margin-right: 4px;
+  border-right: 1px solid var(--border);
+  font-size: 13px;
 }
 
 .badge {

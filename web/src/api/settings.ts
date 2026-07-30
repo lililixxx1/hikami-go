@@ -163,6 +163,28 @@ export function updateVADConfig(config: VADConfigUpdate): Promise<VADConfig> {
   return put('/api/config/vad', config)
 }
 
+// Replay 回放类全局自动开关配置段(2026-07-30 回放页工具栏引入)。
+// generated.ts 尚未含此端点(spec 待补),过渡期手写;spec 补登后改走 Schema<'ReplayConfigResponse'> 派生。
+// 见 plans/plan-replay-auto-switch-2026-07-30.md。
+export interface ReplayConfig {
+  auto_asr: boolean
+  auto_recap: boolean
+}
+
+// ReplayConfig 的 PUT 请求(partial,presence-aware:nil 字段不改)。
+export interface ReplayConfigUpdate {
+  auto_asr?: boolean
+  auto_recap?: boolean
+}
+
+export function getReplayConfig(): Promise<ReplayConfig> {
+  return get('/api/config/replay')
+}
+
+export function updateReplayConfig(config: ReplayConfigUpdate): Promise<ReplayConfig> {
+  return put('/api/config/replay', config)
+}
+
 // 触发 AI 批量复核 pending 候选词(异步,返回 202)。
 export function reviewGlossaryCandidates(channelId?: string): Promise<{ ok: boolean; message: string }> {
   return post('/api/glossary/candidates/review', channelId ? { channel_id: channelId } : {})

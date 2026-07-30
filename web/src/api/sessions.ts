@@ -100,13 +100,6 @@ export function regenerateRecap(sid: string): Promise<Task> {
   return post(`/api/sessions/${encodeURIComponent(sid)}/recap/regenerate`)
 }
 
-export function generateRecapWithRange(sid: string, startTime: number, endTime: number): Promise<Task> {
-  return post(`/api/sessions/${encodeURIComponent(sid)}/recap-partial`, {
-    start_time: startTime,
-    end_time: endTime,
-  })
-}
-
 export function uploadSession(sid: string): Promise<Task> {
   return post(`/api/sessions/${encodeURIComponent(sid)}/upload`)
 }

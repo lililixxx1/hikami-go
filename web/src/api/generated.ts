@@ -558,54 +558,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/sessions/{sid}/recap-partial": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 场次 ID */
-                sid: components["parameters"]["SessionID"];
-            };
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 按时间区间生成回顾(局部)
-         * @description 按 [start_time, end_time] 区间生成回顾(秒)。
-         *     **双层守卫**同 generateRecap。返回 202 + Task。
-         */
-        post: operations["generateRecapPartial"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/sessions/{sid}/recap-with-range": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 场次 ID */
-                sid: components["parameters"]["SessionID"];
-            };
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 按时间区间生成回顾(recap-with-range 别名)
-         * @description 与 recap-partial 完全相同(内部 `s.generateRecapPartial(ctx)` 转发)。
-         *     保留两个路径是为了前端兼容。请求体/响应/守卫完全一致。
-         */
-        post: operations["generateRecapWithRange"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/sessions/{sid}/recap": {
         parameters: {
             query?: never;
@@ -3118,22 +3070,6 @@ export interface components {
             items: components["schemas"]["DiscoverExecuteItem"][];
         };
         /**
-         * @description 按时间区间生成回顾。POST /api/sessions/{sid}/recap-partial
-         *     和 POST /api/sessions/{sid}/recap-with-range 共用同一 handler。
-         */
-        RecapPartialRequest: {
-            /**
-             * Format: double
-             * @description 起始秒(≥0)
-             */
-            start_time: number;
-            /**
-             * Format: double
-             * @description 结束秒(必须 > start_time)
-             */
-            end_time: number;
-        };
-        /**
          * @description GET /api/sessions/{sid}/recap 响应。
          *     available=false 时其余字段为空串。
          */
@@ -5213,116 +5149,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Task"];
-                };
-            };
-            401: paths["/api/health/runtime"]["get"]["responses"]["401"];
-            /** @description 场次不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description 能力守卫或业务守卫失败 */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    generateRecapPartial: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 场次 ID */
-                sid: components["parameters"]["SessionID"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RecapPartialRequest"];
-            };
-        };
-        responses: {
-            /** @description 局部回顾任务已入队 */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Task"];
-                };
-            };
-            /** @description 时间区间非法(end_time 必须 > start_time,均 ≥0) */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            401: paths["/api/health/runtime"]["get"]["responses"]["401"];
-            /** @description 场次不存在 */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-            /** @description 能力守卫或业务守卫失败 */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
-    generateRecapWithRange: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description 场次 ID */
-                sid: components["parameters"]["SessionID"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RecapPartialRequest"];
-            };
-        };
-        responses: {
-            /** @description 局部回顾任务已入队 */
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Task"];
-                };
-            };
-            /** @description 时间区间非法 */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
                 };
             };
             401: paths["/api/health/runtime"]["get"]["responses"]["401"];

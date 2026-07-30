@@ -234,7 +234,10 @@ func main() {
 	asrHandler := asr.NewHandler(cfg, sessionStore, stateStore, asr.NewConfiguredTranscriber(cfg), glossaryStore, asr.NewVADProcessor(cfg))
 	normalizeHandler.SetOnSuccess(func(ctx context.Context, task worker.Task) {
 		ch, err := channelStore.Get(ctx, task.ChannelID)
-		if err != nil || !ch.AutoASR {
+		// 回放类(download/import)自动链判定(2026-07-30):全局兜底,主播优先。
+		// 取 session 判 source_type;Get 失败时 sessOK=false → 只看主播开关(等价旧行为零回归)。
+		sess, sessErr := sessionStore.Get(ctx, task.SessionID)
+		if err != nil || !config.ReplayAutoEnabled(sess.SourceType, sessErr == nil, ch.AutoASR, cfg.Replay.AutoASR) {
 			return
 		}
 		if runtimeStatus != nil && !runtimeStatus.Capabilities.ASRSubmit {
@@ -295,7 +298,9 @@ func main() {
 	}
 	asrHandler.SetOnSuccess(func(ctx context.Context, task worker.Task) {
 		ch, err := channelStore.Get(ctx, task.ChannelID)
-		if err != nil || !ch.AutoRecap {
+		// 回放类自动链判定(2026-07-30):与 normalize 回调同构,这里管 ASR→回顾。
+		sess, sessErr := sessionStore.Get(ctx, task.SessionID)
+		if err != nil || !config.ReplayAutoEnabled(sess.SourceType, sessErr == nil, ch.AutoRecap, cfg.Replay.AutoRecap) {
 			return
 		}
 		// 回顾能力判断已下沉到 recap.CreateTask（设计 4.5），读取 server 最新运行时状态，

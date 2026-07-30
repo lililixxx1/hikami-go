@@ -26,7 +26,6 @@ import DownloadByURLDrawer from '@/components/session/DownloadByURLDrawer.vue'
 import {
   fetchSession,
   generateRecap,
-  generateRecapWithRange,
   publishSession,
   regenerateRecap,
   submitASR,
@@ -40,6 +39,7 @@ import {
 } from '@/api/sessions'
 import { retryTask } from '@/api/tasks'
 import { upsertChannelEntry } from '@/api/glossary'
+import { getReplayConfig, updateReplayConfig, type ReplayConfig } from '@/api/settings'
 // V10 组件 + DiscoverPreviewDrawer 消费 generated 派生类型(optional 字段);stores/API/状态机仍消费
 // 旧手写 types.ts(全必填)。两者 TS 层不完全兼容(Phase 6 统一迁移),在 view 边界用 as unknown as 窄化,
 // 与已迁移的 HomeView/StreamersView 一致;状态机调用边界窄化转换与 V10 组件内部一致(见组件头注释)。
@@ -88,6 +88,10 @@ const discoverLoading = ref(false)
 // ---------- 动作 loading ----------
 const actionLoadingId = ref('')
 
+// ---------- 回放类全局自动开关(2026-07-30) ----------
+const replayConfig = ref<ReplayConfig | null>(null)
+const replayLoading = ref(false)
+
 // ---------- 抽屉相关 ----------
 // selectedSession/recapContent 喂给 RecapDrawerV10(派生类型);API 调用边界窄化为 loose。
 const recapDrawerVisible = ref(false)
@@ -95,7 +99,6 @@ const selectedSession = ref<DerivedSession | null>(null)
 const recapContent = ref<DerivedRecapContent | null>(null)
 const recapLoading = ref(false)
 const addingSuggestedTerm = ref('')
-const partialLoading = ref(false)
 const clearFailedLoading = ref(false)
 // 抽屉内术语「已添加」标记:API 成功后才写入(避免失败时按钮误显示已添加)
 const addedSuggestedTerms = ref<Set<string>>(new Set())
@@ -279,18 +282,6 @@ async function handleDrawerAction(session: DerivedSession, action: PrimaryAction
     await Promise.all([sessionsStore.fetchSessions(), tasksStore.fetchTasks()])
   } finally {
     actionLoadingId.value = ''
-  }
-}
-
-async function handlePartialRecap(startSeconds: number, endSeconds: number) {
-  if (!selectedSession.value) return
-  partialLoading.value = true
-  try {
-    await generateRecapWithRange(selectedSession.value.id, startSeconds, endSeconds)
-    HMessage.success('时间段回顾任务已提交')
-    await Promise.all([sessionsStore.fetchSessions(), tasksStore.fetchTasks()])
-  } finally {
-    partialLoading.value = false
   }
 }
 
@@ -511,6 +502,22 @@ async function handleClearFailed() {
   }
 }
 
+// 切换回放类全局自动开关(2026-07-30):乐观更新本地 + API 持久化,失败回滚。
+async function handleUpdateReplay(field: 'auto_asr' | 'auto_recap', value: boolean) {
+  if (!replayConfig.value || replayLoading.value) return
+  const prev = { ...replayConfig.value }
+  replayConfig.value = { ...replayConfig.value, [field]: value }
+  replayLoading.value = true
+  try {
+    replayConfig.value = await updateReplayConfig({ [field]: value })
+  } catch {
+    // 失败由 client 拦截器 toast;回滚本地状态
+    replayConfig.value = prev
+  } finally {
+    replayLoading.value = false
+  }
+}
+
 onMounted(async () => {
   // 用 fetchSessions 而非 ensureLoaded:每次进入页面都拉最新列表（避免跨路由返回时显示旧数据）。
   // fetchSessions 内部有 inflight 去重,与 ?sid watch 的 getByIdAfterLoad→ensureLoaded→fetchSessions 复用同一请求。
@@ -519,6 +526,8 @@ onMounted(async () => {
     runtimeStore.fetchRuntime(),
     sessionsStore.fetchSessions(),
     tasksStore.fetchTasks(),
+    // 回放类全局自动开关(回放 tab 工具栏展示,失败不阻断页面加载)
+    getReplayConfig().then((c) => { replayConfig.value = c }).catch(() => { /* 拦截器已 toast */ }),
   ])
 })
 </script>
@@ -530,10 +539,13 @@ onMounted(async () => {
       :failed-count="failedCount"
       :capabilities="capabilities"
       :action-loading="discoverExecuting"
+      :replay-config="replayConfig"
+      :replay-loading="replayLoading"
       @discover="openDiscover"
       @import="importDrawerVisible = true"
       @download="downloadDrawerVisible = true"
       @clear-failed="handleClearFailed"
+      @update-replay="handleUpdateReplay"
     />
 
     <SessionFiltersV10
@@ -569,12 +581,10 @@ onMounted(async () => {
       :channels="channels"
       :action-loading-id="actionLoadingId"
       :adding-term="addingSuggestedTerm"
-      :partial-loading="partialLoading"
       :added-terms="addedSuggestedTerms"
       @copy="handleCopyRecap"
       @run-action="handleDrawerAction"
       @regenerate="handleRegenerate"
-      @partial-range="handlePartialRecap"
       @add-term="handleAddSuggestedTerm"
       @saved="onRecapSaved"
     />

@@ -275,3 +275,37 @@ func TestMigrateRuntimeSettingsAcceptsVADSection(t *testing.T) {
 		t.Errorf("插入非白名单 section='bogus_section' 应被 CHECK 约束拒绝,实际成功")
 	}
 }
+
+// TestMigrateRuntimeSettingsAcceptsReplaySection 验证 v39 迁移后 runtime_settings 表
+// 的 CHECK 约束白名单包含 'replay' 段(2026-07-30 回放类全局自动开关引入)。
+// 见 plans/plan-replay-auto-switch-2026-07-30.md。
+func TestMigrateRuntimeSettingsAcceptsReplaySection(t *testing.T) {
+	database, err := Open(filepath.Join(t.TempDir(), "hikami.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer database.Close()
+	if err := Migrate(database); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	// 插入所有 10 个白名单段,都应成功
+	sections := []string{"publish", "asr_s3", "dashscope", "recap_ai", "webdav", "archive", "tools", "mcp", "vad", "replay"}
+	for _, section := range sections {
+		_, err := database.Exec(
+			"INSERT INTO runtime_settings (section, data) VALUES (?, '{}')",
+			section,
+		)
+		if err != nil {
+			t.Errorf("插入 section=%q 失败(CHECK 约束未放行): %v", section, err)
+		}
+	}
+
+	// 非白名单段应被 CHECK 拒绝
+	_, err = database.Exec(
+		"INSERT INTO runtime_settings (section, data) VALUES ('bogus_section', '{}')",
+	)
+	if err == nil {
+		t.Errorf("插入非白名单 section='bogus_section' 应被 CHECK 约束拒绝,实际成功")
+	}
+}

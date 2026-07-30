@@ -213,36 +213,6 @@ func TestHandleTaskAcceptsRegenStatuses(t *testing.T) {
 	}
 }
 
-// TestCreateTaskWithRangeBypassOnRegenStatuses 验证局部回顾(CreateTaskWithRange)在
-// recap_done/published 状态下入队带 BypassFailState=true（与重新生成同语义：覆盖式重跑，
-// 失败不降级、成功不触发自动发布）；asr_done/uploaded（主线）不带 bypass。
-// Codex 第 3 轮复审发现：recap_done 局部回顾不带 bypass 会触发自动发布。
-func TestCreateTaskWithRangeBypassOnRegenStatuses(t *testing.T) {
-	cases := []struct {
-		status     string
-		wantBypass bool
-	}{
-		{string(state.StatusASRDone), false},
-		{string(state.StatusUploaded), false},
-		{string(state.StatusRecapDone), true},
-		{string(state.StatusPublished), true},
-	}
-	for _, c := range cases {
-		t.Run(c.status, func(t *testing.T) {
-			fix := setupRecapTest(t)
-			setupRecapReadySession(t, fix, c.status)
-			h := NewHandler(fix.cfg, fix.sessions, fix.states, LocalProvider{}, fix.glossaryStore, nil, nil)
-			task, err := h.CreateTaskWithRange(context.Background(), fix.pool, "ch1_live_20260101_120000", 0, 60)
-			if err != nil {
-				t.Fatalf("CreateTaskWithRange on %s: %v", c.status, err)
-			}
-			if task.BypassFailState != c.wantBypass {
-				t.Fatalf("%s range task BypassFailState = %v, want %v", c.status, task.BypassFailState, c.wantBypass)
-			}
-		})
-	}
-}
-
 func TestCreateTaskTranscriptMissing(t *testing.T) {
 	fix := setupRecapTest(t)
 	fix.insertChannel(t, "ch1")
@@ -278,24 +248,6 @@ func TestCreateTaskLocalUnavailable(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "fetch from webdav first") {
 		t.Fatalf("error = %v, want hint to fetch from webdav", err)
-	}
-}
-
-func TestCreateTaskWithRangeLocalUnavailable(t *testing.T) {
-	fix := setupRecapTest(t)
-	fix.insertChannel(t, "ch1")
-	fix.insertSession(t, "ch1_live_20260101_120000", "live_20260101_120000", "ch1", string(state.StatusUploaded))
-	if err := fix.sessions.SetLocalAvailable(context.Background(), "ch1_live_20260101_120000", false); err != nil {
-		t.Fatalf("set local_available false: %v", err)
-	}
-
-	h := NewHandler(fix.cfg, fix.sessions, fix.states, LocalProvider{}, fix.glossaryStore, nil, nil)
-	_, err := h.CreateTaskWithRange(context.Background(), fix.pool, "ch1_live_20260101_120000", 10, 100)
-	if err == nil {
-		t.Fatalf("expected error when local files unavailable")
-	}
-	if !strings.Contains(err.Error(), ErrTranscriptMissing.Error()) {
-		t.Fatalf("error = %v, want ErrTranscriptMissing", err)
 	}
 }
 

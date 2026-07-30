@@ -163,23 +163,6 @@ RecapContent:
         type: string
       description: 建议术语列表(omitempty,仅当 suggested_terms.json 存在时出现)
 
-# 局部回顾请求(recap-partial / recap-with-range 共用)
-RecapPartialRequest:
-  type: object
-  description: |
-    按时间区间生成回顾。POST /api/sessions/{sid}/recap-partial
-    和 POST /api/sessions/{sid}/recap-with-range 共用同一 handler。
-  required: [start_time, end_time]
-  properties:
-    start_time:
-      type: number
-      format: double
-      description: 起始秒(≥0)
-    end_time:
-      type: number
-      format: double
-      description: 结束秒(必须 > start_time)
-
 # 更新回顾 markdown(PUT /api/sessions/{sid}/recap/content)
 UpdateRecapContentRequest:
   type: object

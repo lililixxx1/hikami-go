@@ -897,3 +897,100 @@ func TestImportConfigOldBundleLeavesVADUntouched(t *testing.T) {
 		t.Errorf("旧 bundle 写入 vad section(应零回归): %s", got)
 	}
 }
+
+// TestExportBundleReplaySectionPresent 验证 replay 段序列化 round-trip(2026-07-30)。
+func TestExportBundleReplaySectionPresent(t *testing.T) {
+	autoASR := true
+	autoRecap := false
+	bundle := ConfigExportBundle{
+		Version: "1",
+		Replay: &config.ReplaySectionDTO{
+			AutoASR:   &autoASR,
+			AutoRecap: &autoRecap,
+		},
+	}
+	data, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	body := string(data)
+	if !strings.Contains(body, `"replay"`) {
+		t.Errorf("replay section not serialized: %s", body)
+	}
+	if !strings.Contains(body, `"auto_asr":true`) {
+		t.Errorf("auto_asr not in output: %s", body)
+	}
+
+	// 反序列化回来,replay 段字段保留
+	var back ConfigExportBundle
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.Replay == nil {
+		t.Fatal("replay section lost after round-trip")
+	}
+	if back.Replay.AutoASR == nil || !*back.Replay.AutoASR {
+		t.Errorf("Replay.AutoASR not preserved")
+	}
+}
+
+// TestExportBundleReplayOmittable 验证 replay 段为 nil 时被 omitempty 省略(旧备份兼容)。
+func TestExportBundleReplayOmittable(t *testing.T) {
+	bundle := ConfigExportBundle{Version: "1"} // Replay 为 nil
+	data, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), "replay") {
+		t.Errorf("nil Replay should be omitted by omitempty: %s", string(data))
+	}
+}
+
+// TestImportConfigReplayRoundTrip 验证 replay 段导入 round-trip(merge 策略)。
+func TestImportConfigReplayRoundTrip(t *testing.T) {
+	server := newTestServer(t)
+	body := `{
+		"version":"1",
+		"replay":{"auto_asr":true,"auto_recap":true}
+	}`
+	resp := performRequest(server, http.MethodPost, "/api/config/import?strategy=merge", body)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("import status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	server.publishMu.RLock()
+	defer server.publishMu.RUnlock()
+	if !server.cfg.Replay.AutoASR {
+		t.Errorf("Replay.AutoASR = false, want true (imported)")
+	}
+	if !server.cfg.Replay.AutoRecap {
+		t.Errorf("Replay.AutoRecap = false, want true (imported)")
+	}
+
+	if got := runtimeSettingsSection(t, server, "replay"); got == "" {
+		t.Errorf("replay section not persisted to runtime_settings")
+	}
+}
+
+// TestImportConfigOldBundleLeavesReplayUntouched 旧 bundle(无 replay 段)导入不应改 replay 配置(零回归)。
+func TestImportConfigOldBundleLeavesReplayUntouched(t *testing.T) {
+	server := newTestServer(t)
+	server.publishMu.Lock()
+	server.cfg.Replay.AutoASR = true
+	server.cfg.Replay.AutoRecap = true
+	server.publishMu.Unlock()
+
+	// 不含 replay 段的最小 bundle
+	minimal := `{"version":"1","publish":{"mode":"draft","category_id":15}}`
+	resp := performRequest(server, http.MethodPost, "/api/config/import?strategy=merge", minimal)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("import status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	server.publishMu.RLock()
+	defer server.publishMu.RUnlock()
+	if !server.cfg.Replay.AutoASR || !server.cfg.Replay.AutoRecap {
+		t.Errorf("旧 bundle 破坏了 replay 配置: %+v", server.cfg.Replay)
+	}
+	if got := runtimeSettingsSection(t, server, "replay"); got != "" {
+		t.Errorf("旧 bundle 写入 replay section(应零回归): %s", got)
+	}
+}

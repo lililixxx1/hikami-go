@@ -2903,3 +2903,45 @@ func TestVADConfigRoundTrip(t *testing.T) {
 		t.Fatalf("vad section not persisted in runtime_settings: %v", err)
 	}
 }
+
+// TestReplayConfigRoundTrip 验证 GET/PUT /api/config/replay 的读写一致 + presence-aware + 持久化。
+// 见 plans/plan-replay-auto-switch-2026-07-30.md。
+func TestReplayConfigRoundTrip(t *testing.T) {
+	server := newTestServer(t)
+
+	// 1. GET 初始值(默认 false)
+	getRec := performRequest(server, http.MethodGet, "/api/config/replay", "")
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("GET replay status = %d, body=%s", getRec.Code, getRec.Body.String())
+	}
+	if !strings.Contains(getRec.Body.String(), `"auto_asr":false`) || !strings.Contains(getRec.Body.String(), `"auto_recap":false`) {
+		t.Fatalf("default replay should be all false, got: %s", getRec.Body.String())
+	}
+
+	// 2. PUT auto_asr=true → 200
+	putRec := performRequest(server, http.MethodPut, "/api/config/replay", `{"auto_asr":true}`)
+	if putRec.Code != http.StatusOK {
+		t.Fatalf("PUT replay status = %d, body=%s", putRec.Code, putRec.Body.String())
+	}
+	if !strings.Contains(putRec.Body.String(), `"auto_asr":true`) {
+		t.Fatalf("PUT response should show auto_asr=true, got: %s", putRec.Body.String())
+	}
+
+	// 3. GET 回读一致
+	getRec2 := performRequest(server, http.MethodGet, "/api/config/replay", "")
+	if !strings.Contains(getRec2.Body.String(), `"auto_asr":true`) {
+		t.Fatalf("GET after PUT should reflect persisted auto_asr=true, got: %s", getRec2.Body.String())
+	}
+
+	// 4. presence-aware:auto_recap 保持 false(未传)
+	if !strings.Contains(getRec2.Body.String(), `"auto_recap":false`) {
+		t.Fatalf("auto_recap should retain false (presence-aware), got: %s", getRec2.Body.String())
+	}
+
+	// 5. runtime_settings 表持久化了 replay section
+	var sec string
+	err := server.runtimeCfg.DB().QueryRow("SELECT section FROM runtime_settings WHERE section='replay'").Scan(&sec)
+	if err != nil {
+		t.Fatalf("replay section not persisted in runtime_settings: %v", err)
+	}
+}

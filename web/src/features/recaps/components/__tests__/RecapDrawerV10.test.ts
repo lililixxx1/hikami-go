@@ -30,7 +30,7 @@ describe('RecapDrawerV10', () => {
   it('renders markdown content', () => {
     const wrapper = mount(RecapDrawerV10, {
       props: { visible: true, session, content, loading: false, capabilities: caps,
-        isExpert: false, channels: [], actionLoadingId: '', addingTerm: '', partialLoading: false,
+        isExpert: false, channels: [], actionLoadingId: '', addingTerm: '',
         addedTerms: new Set<string>() },
     })
     expect(wrapper.find('.md-preview').html()).toContain('<h1')  // marked 渲染
@@ -39,7 +39,7 @@ describe('RecapDrawerV10', () => {
   it('shows suggested term pills when present', () => {
     const wrapper = mount(RecapDrawerV10, {
       props: { visible: true, session, content, loading: false, capabilities: caps,
-        isExpert: false, channels: [], actionLoadingId: '', addingTerm: '', partialLoading: false,
+        isExpert: false, channels: [], actionLoadingId: '', addingTerm: '',
         addedTerms: new Set<string>() },
     })
     expect(wrapper.text()).toContain('术语A')
@@ -48,7 +48,7 @@ describe('RecapDrawerV10', () => {
   it('emits add-term when suggested term pill clicked', async () => {
     const wrapper = mount(RecapDrawerV10, {
       props: { visible: true, session, content, loading: false, capabilities: caps,
-        isExpert: false, channels: [], actionLoadingId: '', addingTerm: '', partialLoading: false,
+        isExpert: false, channels: [], actionLoadingId: '', addingTerm: '',
         addedTerms: new Set<string>() },
     })
     const pills = wrapper.findAll('.suggested-term-btn')
@@ -58,7 +58,7 @@ describe('RecapDrawerV10', () => {
   it('upload button emits run-action for recap_done status', () => {
     const wrapper = mount(RecapDrawerV10, {
       props: { visible: true, session, content, loading: false, capabilities: caps,
-        isExpert: false, channels: [], actionLoadingId: '', addingTerm: '', partialLoading: false,
+        isExpert: false, channels: [], actionLoadingId: '', addingTerm: '',
         addedTerms: new Set<string>() },
     })
     // recap_done → upload 是主动作;getDrawerActions 返回 upload
@@ -69,7 +69,7 @@ describe('RecapDrawerV10', () => {
     mockUpdateRecapContent.mockResolvedValueOnce(undefined)
     const wrapper = mount(RecapDrawerV10, {
       props: { visible: true, session, content, loading: false, capabilities: caps,
-        isExpert: false, channels: [], actionLoadingId: '', addingTerm: '', partialLoading: false,
+        isExpert: false, channels: [], actionLoadingId: '', addingTerm: '',
         addedTerms: new Set<string>() },
     })
 
@@ -103,7 +103,7 @@ describe('RecapDrawerV10', () => {
     mockUpdateRecapContent.mockRejectedValueOnce(new Error('server error'))
     const wrapper = mount(RecapDrawerV10, {
       props: { visible: true, session, content, loading: false, capabilities: caps,
-        isExpert: false, channels: [], actionLoadingId: '', addingTerm: '', partialLoading: false,
+        isExpert: false, channels: [], actionLoadingId: '', addingTerm: '',
         addedTerms: new Set<string>() },
     })
 

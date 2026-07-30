@@ -432,36 +432,6 @@ func (h *Handler) CreateTask(ctx context.Context, pool *worker.Pool, sessionID s
 	return pool.Enqueue(ctx, worker.CreateInput{ChannelID: sessionInfo.ChannelID, SessionID: sessionInfo.ID, Type: TaskType, Payload: "{}"})
 }
 
-func (h *Handler) CreateTaskWithRange(ctx context.Context, pool *worker.Pool, sessionID string, startSec float64, endSec float64) (worker.Task, error) {
-	if startSec < 0 || endSec <= startSec {
-		return worker.Task{}, fmt.Errorf("%w: invalid recap time range", ErrSessionNotReady)
-	}
-	sessionInfo, err := h.sessions.Get(ctx, sessionID)
-	if err != nil {
-		return worker.Task{}, err
-	}
-	if err := h.validateRecapPreconditions(ctx, pool, sessionInfo, canCreateRangeRecap,
-		"status must be asr_done or later"); err != nil {
-		return worker.Task{}, err
-	}
-	payload, err := json.Marshal(taskPayload{StartTime: &startSec, EndTime: &endSec})
-	if err != nil {
-		return worker.Task{}, err
-	}
-	// recap_done/published 状态下的局部回顾是覆盖式重跑（非主线推进），与重新生成同语义：
-	// 失败不降级主状态、成功不触发自动发布（BypassFailState 在 onSuccess 早退）。
-	// asr_done/uploaded 的局部回顾是主线流程，保留自动发布，不加 bypass。
-	bypass := sessionInfo.Status == string(state.StatusRecapDone) || sessionInfo.Status == string(state.StatusPublished)
-	return pool.Enqueue(ctx, worker.CreateInput{ChannelID: sessionInfo.ChannelID, SessionID: sessionInfo.ID, Type: TaskType, Payload: string(payload), BypassFailState: bypass})
-}
-
-func canCreateRangeRecap(status string) bool {
-	return status == string(state.StatusASRDone) ||
-		status == string(state.StatusRecapDone) ||
-		status == string(state.StatusUploaded) ||
-		status == string(state.StatusPublished)
-}
-
 // canCreateRegen 报告是否允许"重新生成"整场回顾。
 // 仅 recap_done/published 允许——这两个状态本地回顾 md 已存在，重生成是覆盖式重跑（非状态推进）。
 // asr_done/uploaded 走 CreateTask（首次生成，会推进状态）；published 重新生成专栏不变（B站手动管理）。
@@ -472,7 +442,6 @@ func canCreateRegen(status string) bool {
 // canHandleRecap 报告 HandleTask 是否允许执行回顾生成。
 // 接受 asr_done/uploaded（首次生成）和 recap_done/published（重新生成）——后者覆盖本地 md
 // 不推进状态（HandleTask 成功路径的 Apply 守卫只认 asr_done/uploaded，对 recap_done/published 不动）。
-// 注意：局部回顾（CreateTaskWithRange）也经此守卫，canCreateRangeRecap 已含 recap_done/published。
 func canHandleRecap(status string) bool {
 	return status == string(state.StatusASRDone) ||
 		status == string(state.StatusUploaded) ||
@@ -481,8 +450,7 @@ func canHandleRecap(status string) bool {
 }
 
 // validateRecapPreconditions 校验回顾任务的公共前置条件：能力、本地可用、转写文件存在、无并发任务。
-// statusGuard 由调用方传入，区分"首次生成"(asr_done/uploaded)、"局部回顾"(canCreateRangeRecap)、
-// "重新生成"(canCreateRegen) 三种状态语义。
+// statusGuard 由调用方传入，区分"首次生成"(asr_done/uploaded)、"重新生成"(canCreateRegen) 两种状态语义。
 func (h *Handler) validateRecapPreconditions(ctx context.Context, pool *worker.Pool, sessionInfo session.Session, statusGuard func(string) bool, statusDesc string) error {
 	if !statusGuard(sessionInfo.Status) {
 		return fmt.Errorf("%w: %s, got %s", ErrSessionNotReady, statusDesc, sessionInfo.Status)

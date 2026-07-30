@@ -242,6 +242,19 @@ ALTER TABLE channels ADD COLUMN publish_topics TEXT NOT NULL DEFAULT '';`,
 	`INSERT INTO runtime_settings_v38 (section, data, updated_at) SELECT section, data, updated_at FROM runtime_settings;`,
 	`DROP TABLE runtime_settings;`,
 	`ALTER TABLE runtime_settings_v38 RENAME TO runtime_settings;`,
+	// v39: runtime_settings 表 CHECK 约束扩展 +replay 段(回放类全局自动开关)。
+	// 同 v35/v36/v37/v38 表重建范式:临时表→复制→DROP→建新表→回灌→DROP 临时表。
+	// 新表 CHECK 白名单扩到 10 段,旧数据全量回灌(9 段无损)。
+	// 见 plans/plan-replay-auto-switch-2026-07-30.md。
+	`CREATE TABLE runtime_settings_v39 (
+			section TEXT NOT NULL CHECK (section IN ('publish','asr_s3','dashscope','recap_ai','webdav','archive','tools','mcp','vad','replay')),
+			data TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(data)),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+			PRIMARY KEY (section)
+		);`,
+	`INSERT INTO runtime_settings_v39 (section, data, updated_at) SELECT section, data, updated_at FROM runtime_settings;`,
+	`DROP TABLE runtime_settings;`,
+	`ALTER TABLE runtime_settings_v39 RENAME TO runtime_settings;`,
 }
 
 func Migrate(database *sql.DB) error {

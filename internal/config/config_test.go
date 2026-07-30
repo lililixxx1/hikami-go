@@ -954,3 +954,66 @@ func TestApplyOverrides_VADCorruptJSON(t *testing.T) {
 		t.Errorf("corrupt VAD JSON should leave baseline intact, got %+v", cfg.VAD)
 	}
 }
+
+// TestReplayDefaults 验证 replay 段默认值(两者皆 false,升级零行为变化)。
+func TestReplayDefaults(t *testing.T) {
+	cfg := baseCfg()
+	if cfg.Replay.AutoASR || cfg.Replay.AutoRecap {
+		t.Fatalf("replay defaults must be false, got auto_asr=%v auto_recap=%v", cfg.Replay.AutoASR, cfg.Replay.AutoRecap)
+	}
+}
+
+// TestApplyOverrides_ReplayPresenceAware 验证 replay 段 presence-aware 覆盖(nil 字段保留基线)。
+func TestApplyOverrides_ReplayPresenceAware(t *testing.T) {
+	cfg := baseCfg()
+	// 基线为 false,只传 AutoASR=true,AutoRecap=nil → 只改 AutoASR
+	autoASR := true
+	overrides := map[string]json.RawMessage{
+		"replay": rawJSON(t, ReplaySectionDTO{AutoASR: &autoASR}),
+	}
+	if err := ApplyOverrides(cfg, overrides); err != nil {
+		t.Fatalf("ApplyOverrides: %v", err)
+	}
+	if !cfg.Replay.AutoASR {
+		t.Errorf("AutoASR should be true after override")
+	}
+	// AutoRecap 保留基线 false
+	if cfg.Replay.AutoRecap {
+		t.Errorf("AutoRecap = %v, want baseline false (presence-aware)", cfg.Replay.AutoRecap)
+	}
+}
+
+// TestReplayAutoEnabled 表驱动测试 helper(qoder 审核 I-4):覆盖「主播优先 + 全局兜底」全部分支。
+func TestReplayAutoEnabled(t *testing.T) {
+	cases := []struct {
+		name        string
+		sourceType  string
+		sessOK      bool
+		channelFlag bool
+		globalFlag  bool
+		want        bool
+	}{
+		// 主播优先:channelFlag=true 短路,不看 source_type/全局
+		{"channel_on_shortcircuits_replay", "download", true, true, false, true},
+		{"channel_on_shortcircuits_live", "live_record", true, true, true, true},
+		{"channel_on_even_when_sess_fetch_failed", "", false, true, true, true},
+		// 主播关 + 非回放类 → false(录播自动链靠主播开关,不受全局影响)
+		{"live_channel_off_global_on", "live_record", true, false, true, false},
+		// 主播关 + 取 session 失败 → false(零回归:按非回放处理)
+		{"sess_fetch_failed", "download", false, false, true, false},
+		// 主播关 + 回放类 + 全局开 → true(全局兜底)
+		{"replay_global_on", "import", true, false, true, true},
+		{"replay_download_global_on", "download", true, false, true, true},
+		// 主播关 + 回放类 + 全局关 → false
+		{"replay_global_off", "import", true, false, false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := ReplayAutoEnabled(c.sourceType, c.sessOK, c.channelFlag, c.globalFlag)
+			if got != c.want {
+				t.Errorf("ReplayAutoEnabled(%q, sessOK=%v, channel=%v, global=%v) = %v, want %v",
+					c.sourceType, c.sessOK, c.channelFlag, c.globalFlag, got, c.want)
+			}
+		})
+	}
+}

@@ -320,8 +320,6 @@ func (s *Server) routes() {
 	p.POST("/api/sessions/:sid/asr/submit", s.submitASR)
 	p.POST("/api/sessions/:sid/recap/generate", s.generateRecap)
 	p.POST("/api/sessions/:sid/recap/regenerate", s.regenerateRecap)
-	p.POST("/api/sessions/:sid/recap-partial", s.generateRecapPartial)
-	p.POST("/api/sessions/:sid/recap-with-range", s.generateRecapWithRange)
 	p.GET("/api/sessions/:sid/recap", s.getRecapContent)
 	p.PUT("/api/sessions/:sid/recap/content", s.handleUpdateRecapContent)
 	p.POST("/api/sessions/:sid/upload", s.uploadSession)
@@ -362,6 +360,8 @@ func (s *Server) routes() {
 	p.PUT("/api/config/mcp", s.updateMCPConfig)
 	p.GET("/api/config/vad", s.getVADConfig)
 	p.PUT("/api/config/vad", s.updateVADConfig)
+	p.GET("/api/config/replay", s.getReplayConfig)
+	p.PUT("/api/config/replay", s.updateReplayConfig)
 	p.GET("/api/config/export", s.handleExportConfig)
 	p.POST("/api/config/import", s.handleImportConfig)
 
@@ -1289,39 +1289,6 @@ func (s *Server) regenerateRecap(ctx *gin.Context) {
 		return
 	}
 	task, err := s.recaps.CreateRegenTask(ctx.Request.Context(), s.workerPool, ctx.Param("sid"))
-	if err != nil {
-		writeError(ctx, err)
-		return
-	}
-	ctx.JSON(http.StatusAccepted, task)
-}
-
-func (s *Server) generateRecapWithRange(ctx *gin.Context) {
-	s.generateRecapPartial(ctx)
-}
-
-func (s *Server) generateRecapPartial(ctx *gin.Context) {
-	status := s.currentRuntimeStatus()
-	if status != nil && !status.Capabilities.RecapGenerate {
-		ctx.JSON(http.StatusConflict, gin.H{
-			"error":  "recap capability unavailable",
-			"reason": status.Capabilities.Reason,
-		})
-		return
-	}
-	var input struct {
-		StartTime float64 `json:"start_time"`
-		EndTime   float64 `json:"end_time"`
-	}
-	if err := ctx.ShouldBindJSON(&input); err != nil {
-		writeBadRequest(ctx, "invalid json body")
-		return
-	}
-	if input.StartTime < 0 || input.EndTime <= input.StartTime {
-		writeBadRequest(ctx, "end_time must be greater than start_time")
-		return
-	}
-	task, err := s.recaps.CreateTaskWithRange(ctx.Request.Context(), s.workerPool, ctx.Param("sid"), input.StartTime, input.EndTime)
 	if err != nil {
 		writeError(ctx, err)
 		return
@@ -3387,6 +3354,62 @@ func (s *Server) updateVADConfig(ctx *gin.Context) {
 	}
 	s.cfg.VAD = next
 	resp := newVADConfigResponse(*s.cfg)
+	s.bumpConfigGen()
+	s.publishMu.Unlock()
+	ctx.JSON(http.StatusOK, resp)
+}
+
+// --- Replay config handlers (回放类全局自动开关, 2026-07-30) ---
+// 与 vad 段同模式(runtimeconfig 持久化,presence-aware 覆盖)。无密钥、无格式约束,无需 Validate。
+// 保存后无需 refreshRuntimeStatus(replay 无 runtime 探测)。见 plans/plan-replay-auto-switch-2026-07-30.md。
+
+type replayConfigResponse struct {
+	AutoASR   bool `json:"auto_asr"`
+	AutoRecap bool `json:"auto_recap"`
+}
+
+func newReplayConfigResponse(cfg config.Config) replayConfigResponse {
+	return replayConfigResponse{
+		AutoASR:   cfg.Replay.AutoASR,
+		AutoRecap: cfg.Replay.AutoRecap,
+	}
+}
+
+func (s *Server) getReplayConfig(ctx *gin.Context) {
+	s.publishMu.RLock()
+	resp := newReplayConfigResponse(*s.cfg)
+	s.publishMu.RUnlock()
+	ctx.JSON(http.StatusOK, resp)
+}
+
+func (s *Server) updateReplayConfig(ctx *gin.Context) {
+	var input config.ReplaySectionDTO
+	if err := ctx.ShouldBindJSON(&input); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid json body"})
+		return
+	}
+	s.publishMu.Lock()
+	next := s.cfg.Replay // 基线拷贝
+	if input.AutoASR != nil {
+		next.AutoASR = *input.AutoASR
+	}
+	if input.AutoRecap != nil {
+		next.AutoRecap = *input.AutoRecap
+	}
+	dto := config.ReplaySectionDTO{
+		AutoASR:   &next.AutoASR,
+		AutoRecap: &next.AutoRecap,
+	}
+	if err := runtimeconfig.WithTx(ctx.Request.Context(), s.runtimeCfg.DB(), func(tx *sql.Tx) error {
+		return s.persistSectionTx(ctx.Request.Context(), tx, "replay", dto)
+	}); err != nil {
+		s.publishMu.Unlock()
+		slog.Warn("persist replay config failed", "error", err)
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist replay config"})
+		return
+	}
+	s.cfg.Replay = next
+	resp := newReplayConfigResponse(*s.cfg)
 	s.bumpConfigGen()
 	s.publishMu.Unlock()
 	ctx.JSON(http.StatusOK, resp)
