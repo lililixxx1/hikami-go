@@ -42,15 +42,15 @@
 
 ## 数据模型
 
-**`runtime_settings` 表** (DB schema v36,定义见 `internal/db/migrate.go`):
+**`runtime_settings` 表** (DB schema v39,定义见 `internal/db/migrate.go`):
 
 | 列 | 类型 | 约束 | 说明 |
 |----|------|------|------|
-| `section` | TEXT | `NOT NULL`, `CHECK(section IN ('publish','asr_s3','dashscope','recap_ai','webdav','archive','tools','mcp'))`, `PRIMARY KEY` | 配置段名(白名单 8 个全局段) |
+| `section` | TEXT | `NOT NULL`, `CHECK(section IN ('publish','asr_s3','dashscope','recap_ai','webdav','archive','tools','mcp','vad','replay'))`, `PRIMARY KEY` | 配置段名(白名单 10 个全局段) |
 | `data` | TEXT | `NOT NULL DEFAULT '{}'`, `CHECK(json_valid(data))` | 该段 DTO 的 JSON(`presence-aware`,指针字段,不含隐藏字段/密钥) |
 | `updated_at` | TEXT | `NOT NULL DEFAULT (datetime('now'))` | 最后更新时间 |
 
-**Section 白名单(8 个全局段)**,与 `internal/config` 的 `*SectionDTO` 一一对应:
+**Section 白名单(10 个全局段)**,与 `internal/config` 的 `*SectionDTO` 一一对应:
 
 | section | 对应 DTO | 管理 handler | 走 secrets 的密钥字段 |
 |---------|----------|--------------|----------------------|
@@ -62,6 +62,8 @@
 | `archive` | `ArchiveSectionDTO` | `updateArchiveConfig` | — |
 | `tools` | `ToolsSectionDTO` | `updateToolsConfig` | — (yt-dlp/rclone 路径,非密钥;2026-07-08 v35 新增) |
 | `mcp` | `MCPSectionDTO` | `updateMCPConfig` | Builtin.BraveAPIKey/TavilyAPIKey + Servers Headers Authorization(经 config_export bundle 走 secrets;2026-07-22 v36 新增) |
+| `vad` | `VADSectionDTO` | `updateVADConfig` | — (无密钥直接投影;2026-07-27 v38 新增) |
+| `replay` | `ReplaySectionDTO` | `updateReplayConfig` | — (无密钥直接投影;2026-07-30 v39 新增,回放类全局自动开关) |
 
 > 每个 `SectionDTO` 只含对应 handler 实际管理的字段(指针、`presence-aware`),**不含**完整 config struct 的隐藏字段(如 `RecapAIConfig.CLIPath`/`GlossaryFile`),避免冻结手工改 yaml 的字段。密钥字段不进 DTO(走 secrets 表),WebDAV/ASRS3 通过 `*_managed` tombstone 标记接管状态。
 
@@ -99,6 +101,8 @@ A: `ApplyOverrides` 逐段 unmarshal,损坏段 `slog.Error` + 跳过(不致命),
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-07-30 | 功能 | **`replay` section 纳入白名单**(回放类全局自动开关)。DB v39 迁移:CHECK 白名单 `+replay`(同 v35/v36/v37/v38 表重建范式,10 段旧数据无损回灌)。配套 `ReplaySectionDTO`(presence-aware,无密钥直接投影)在 `internal/config`,ApplyOverrides replay case 落盘。语义「全局兜底,主播优先」:回放类(download/import)场次看全局,非回放类永远不看全局,主播开关为真走主播。**注:store_test 未新增**——replay section 走标准 SaveTx 路径,已被 `TestSaveRejectsUnknownSection`(反向)+ 现有往返测试覆盖,replay 段写入由 `internal/db` 的 `TestMigrateRuntimeSettingsAcceptsReplaySection`(db 10→11)钉死白名单生效。本轮 `/init` 补登表格第 66 行 + 正文段(此前 07-30 已同步,仅 changelog 漏登)。 |
+| 2026-07-27 | 功能 | **`vad` section 纳入白名单**(ASR 前置 VAD 静音裁剪配置)。DB v38 迁移:CHECK 白名单 `+vad`(同表重建范式,9 段旧数据无损回灌)。配套 `VADSectionDTO`(presence-aware,无密钥直接投影)在 `internal/config`,ApplyOverrides vad case 落盘。**store_test 未新增**(vad 走标准 SaveTx 路径,白名单由 `internal/db` 的 `TestMigrateRuntimeSettingsAcceptsVADSection` 覆盖,与 07-30 replay 同范式)。本轮 `/init` 补登 changelog(07-27 当时漏登,表格第 65 行已同步)。 |
 | 2026-07-22 | 功能 | **`mcp` section 纳入白名单(MCP 集成 Phase 2)**(commit `5b84b63`)。**DB v36 迁移**:runtime_settings 表 CHECK 约束白名单 `+mcp`(SQLite 不支持改 CHECK,走标准表重建范式:建 v36 临时表→INSERT 复制→DROP 旧表→RENAME,7 段旧数据无损回灌)。配套 `MCPSectionDTO`(presence-aware)在 `internal/config`,ApplyOverrides mcp case 落盘。新增 `TestSaveAcceptsMCPSection` 验证白名单生效,store_test 9→10。注:`tools` section 早在 2026-07-08 v35 已加(本轮文档一并补登表格)。 |
 | 2026-07-08 | 功能 | **`tools` section 纳入白名单**(commit `dfe7d23`)。DB v35 迁移:CHECK 白名单 `+tools`(yt-dlp/rclone 路径 web 可编辑,非密钥)。新增 `ToolsSectionDTO`。此前文档表格漏登,本轮一并补齐。 |
 | 2026-07-01 | 初始化 | 首次生成模块文档(配合 `feat(config): 全局运行时配置持久化到 SQLite`,DB v33)。 |

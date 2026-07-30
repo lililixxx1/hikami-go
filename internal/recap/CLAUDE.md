@@ -17,13 +17,12 @@
 |------|------|
 | `NewHandler(cfg, sessions, states, provider, glossaryStore, templateStore)` | 创建 Handler（注入 templateStore） |
 | `CreateTask(ctx, pool, sessionID)` | 校验前置条件并创建任务 |
-| `CreateTaskWithRange(ctx, pool, sessionID, startSec, endSec)` | 创建指定时间段回顾任务 |
 | `CreateRegenTask(ctx, pool, sessionID)` | 重新生成整场回顾（覆盖本地 md，不碰 B站）；守卫 recap_done/published；入队带 `BypassFailState=true`，失败不降级主状态 |
 | `Register(pool)` | 注册 recap 任务处理器 |
 | `SetNotifyManager(m)` | 注入通知管理器，回顾完成发送 `recap_done` |
 | `SetGlossaryDiscoverer(d)` | 注入术语发现器，回顾完成后自动术语发现 |
 | `SetOnSuccess(fn)` | 注入成功回调 |
-| `SetCapabilityChecker(c)` | 注入运行时能力检查器（设计 4.5）；`CreateTask`/`CreateTaskWithRange` 据此判定回顾能力，不可用时返回 `ErrRecapUnavailable`。未注入时不校验（向后兼容） |
+| `SetCapabilityChecker(c)` | 注入运行时能力检查器（设计 4.5）；`CreateTask` 据此判定回顾能力，不可用时返回 `ErrRecapUnavailable`。未注入时不校验（向后兼容） |
 
 **接口：**
 
@@ -170,11 +169,11 @@ type Provider interface {
 
 ## 测试与质量
 
-- **测试总数**: 115（`grep -c "^func Test"` 函数口径：recap_test.go 76 + template_test.go 27 + 2 个真实 API 端到端 + anthropic_tools_test.go 5 + provider_tools_test.go 5；运行时表驱动展开更多）
+- **测试总数**: 113（`grep -c "^func Test"` 函数口径：recap_test.go 74 + template_test.go 27 + 2 个真实 API 端到端 + anthropic_tools_test.go 5 + provider_tools_test.go 5；运行时表驱动展开更多）
 
 > **2026-07-22 MCP 工具感知(Phase 1/4)**:`handler.go` 的 `generateRecap` 是回顾生成的 AI 调用入口,根据是否配置 MCP 工具选择路径——有 MCP 工具 + provider 实现 `aiprovider.ToolCapableProvider`→走 `runToolsAwareGenerate`(默认调 `mcp.RunWithTools` agent loop,模型可主动联网查证术语/人名/游戏名),否则普通 `provider.Generate` 零回归(空 tools 等价于 Generate,有契约测试保护)。包级函数变量 `RunToolsAwareGenerate` 由 `main.go` 注入,规避 recap→mcp 反向导入。tool-calling 基础设施(OpenAI/Anthropic provider 的 `GenerateWithTools` 实现与请求体 tools/tool_choice 解析)虽属 `aiprovider`,但其测试文件置于本包(recap 是首要消费方)。
 
-- `recap_test.go`: 76 个测试用例，覆盖：
+- `recap_test.go`: 74 个测试用例，覆盖：
   - CreateTask: 成功、状态错误、文件缺失、活跃冲突、场次不存在
   - Provider: LocalProvider（正常/空 prompt/system prompt）
   - 辅助函数: firstParagraph、safeName、parseChatCompletionContent、parseAnthropicResult
@@ -206,7 +205,7 @@ type Provider interface {
 
 ## 相关文件清单
 
-- `handler.go` -- Handler、CreateTask、CreateTaskWithRange、Register、HandleTask 主流程、`generateRecap`（2026-07-22 MCP 工具感知入口：有工具 + ToolCapableProvider→RunWithTools，否则普通 Generate 零回归）、`runToolsAwareGenerate`（默认调 mcp.RunWithTools，可由 main.go 包级变量注入覆盖）
+- `handler.go` -- Handler、CreateTask、Register、HandleTask 主流程、`generateRecap`（2026-07-22 MCP 工具感知入口：有工具 + ToolCapableProvider→RunWithTools，否则普通 Generate 零回归）、`runToolsAwareGenerate`（默认调 mcp.RunWithTools，可由 main.go 包级变量注入覆盖）。**2026-07-30 删除 `CreateTaskWithRange`/`canCreateRangeRecap`**(自定义时间段回顾功能下线)
 - `provider_util.go` -- Provider 接口、LocalProvider、NewConfiguredProvider
 - `provider_openai.go` -- OpenAICompatibleProvider 实现
 - `anthropic.go` -- AnthropicProvider 实现
@@ -231,6 +230,8 @@ type Provider interface {
 - `anthropic_tools_test.go` -- Anthropic provider tool-calling 测试（5 个用例，2026-07-22 新增）
 
 ## 变更记录 (Changelog)
+
+- 2026-07-30(四):**删除自定义时间段回顾功能**(branch `feat/replay-auto-switch-2026-07-30`)。核实关键事实:`recap-partial` 与 `with-range` 是同一功能两个 URL 别名(都调 `recap.CreateTaskWithRange`),前端 UI 删除后该功能无任何消费方;`CreateTaskWithRange` 无其他调用方;续写 continuation 是 HandleTask 内部独立逻辑不受影响。**删除**:`CreateTaskWithRange`(handler.go)+ `canCreateRangeRecap`(只被它用)+ 清理 `canHandleRecap`/`validateRecapPreconditions` 注释引用;`recap_test.go` 删 2 个 `TestCreateTaskWithRange*` 测试(BypassOnRegenStatuses/LocalUnavailable)。同步 handler 删 recap-partial/recap-with-range 端点 + OpenAPI spec 删 path/孤儿 schema。recap 测试 115→**113**(recap_test.go 76→74)。零回归(删除无消费方功能)。详见 `AGENTS.md` 2026-07-30 changelog + `plans/plan-replay-auto-switch-2026-07-30.md`。
 
 - 2026-07-22(二):**MCP 搜索工具集成 Phase 1/4**(commit `5b84b63`)。① **`generateRecap` MCP 工具感知**(`handler.go`):回顾生成的 AI 调用入口根据是否配置 MCP 工具选择路径——有 MCP 工具 + provider 实现 `aiprovider.ToolCapableProvider`→走 `runToolsAwareGenerate`(默认调 `mcp.RunWithTools` agent loop,模型可主动联网查证术语/人名/游戏名),否则普通 `provider.Generate` 零回归。包级函数变量 `RunToolsAwareGenerate` 由 `main.go` 注入,规避 recap→mcp 反向导入。② **Phase 1 tool-calling 测试**(虽属 `aiprovider` 但测试文件置于本包):新增 `provider_tools_test.go`(5:OpenAI GenerateWithTools 请求体构造 + parseChatCompletionResult tool_calls 解析含 finish_reason 缺失回填 + **空 tools 等价 Generate 零回归契约**)+ `anthropic_tools_test.go`(5:Anthropic GenerateWithTools + tool_use 解析 + 纯文本向后兼容 + **空 tools 等价契约**)。recap 测试 105→115。降级保证:未配置/CLI provider(claude_cli/codex_cli 不实现 ToolCapableProvider)/工具失败→静默降级普通 Generate,行为与无 MCP 完全一致。详见 `AGENTS.md` 2026-07-22 changelog。
 
