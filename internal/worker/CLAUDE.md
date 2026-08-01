@@ -142,7 +142,7 @@
 
 ## 测试与质量
 
-- `worker_test.go`: 37 个测试用例，覆盖：
+- `worker_test.go`: 40 个测试用例，覆盖：
   - Store CRUD: Create（成功、缺 channel_id、缺 type、默认 payload）、Get（未找到）、List（空、排序）
   - Store 生命周期: pending->running->succeeded、pending->failed、running->failed、非 running 不能 MarkSucceeded
   - Store 高级: 非 failed 不能 Retry、UpdateProgress（成功、越界）、ActiveBySessionAndType（有/无）、ResetToPending
@@ -151,6 +151,7 @@
   - Hub: SubscribeBroadcast（广播接收）、Unsubscribe（取消订阅）、StopClosesChannels
   - Helpers: parsePIDFromMessage、isProcessAlive
   - **syncSessionState attempt 校验（2026-07-21 新增 2 个）**：`TestSyncSessionState_StaleAttempt_Discarded`（retry 复用同一 task ID 只递增 attempt，旧 attempt 的延迟 callback 重查 DB 当前 attempt 不匹配则丢弃）、`TestSyncSessionState_FreshAttempt_Proceeds`（当前 attempt 匹配则正常处理）
+  - **recoverRunning 状态同步（2026-08-01 新增 3 个）**：`TestRecoverRunningASRSyncsSessionState`（asr 分支崩溃恢复调 `syncSessionState` 同步 session 状态）、`TestRecoverRunningASRPollSyncsSessionState`（asr_poll 分支同理）、`TestRecoverRunningUploadBypassesState`（upload 为旁路任务，仅 `ResetToPending` 重排不同步主状态）
 
 - `task_test.go`: 7 个测试用例，覆盖：
   - Task Store 生命周期: pending->running->progress->succeeded
@@ -162,17 +163,18 @@
 
 ## 相关文件清单
 
-- `worker.go` -- Pool 实现、worker 循环、任务恢复（running 类型分发 + pending 孤儿重入队）、session 状态同步、BatchRetry、SetNotifyManager、**Register/WithBypassFailState/bypassFailState（状态旁路任务元数据，设计 4.3）**
+- `worker.go` -- Pool 实现、worker 循环、任务恢复（running 类型分发 + pending 孤儿重入队）、session 状态同步、BatchRetry、SetNotifyManager、**Register/WithBypassFailState/bypassFailState（状态旁路任务元数据，设计 4.3）**、**recoverRunning 的 asr/asr_poll/upload 分支补 syncSessionState（2026-08-01，对齐 live_record/default 分支）**
 - `task.go` -- Task 结构体、Store 实现、SQL 常量、PID 解析工具、RecentFailedTasks、TaskSummary、ListRunning/ListPending（共用 `listByStatus`）
 - `hub.go` -- Hub 广播实现
 - `errors.go` -- 友好错误映射（GetFriendlyError、FriendlyError、errorMapping、friendlyErrorMappings）
-- `worker_test.go` -- 单元+集成测试（37 个用例）
+- `worker_test.go` -- 单元+集成测试（40 个用例）
 - `task_test.go` -- 单元+集成测试（7 个用例）
 
 ## 变更记录 (Changelog)
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-08-01 | BUG 修复 | **recoverRunning asr/asr_poll/upload 分支补齐 session 状态同步**(branch `fix/recover-running-asr-stuck-2026-08-01`,codex 四阶段审核 r7/r8/r9/r10 APPROVED)。**触发**:用户反馈「昨天的直播没有录播」,7-31 灰泽满 Hazel 一场 71 分钟直播在 ASR 转写阶段被系统 OOM Killer 杀死,录播原始文件完好但 session 卡在 `asr_submitted`、状态变 `failed`。**根因**:`Pool.recoverRunning`(`worker.go:301`)的 `case "asr","asr_poll","upload":` 分支崩溃恢复时只调 `ResetToPending` 重排任务,**未像 `live_record`/`default` 分支那样调 `syncSessionState` 同步 session 状态** → session 卡 `asr_submitted`;重排任务重入 `HandleTask` 再次 `Apply(EventASRSubmitted)` → 状态机查 `asr_submitted -> asr_submitted` 无此自环 → `ErrInvalidTransition` → 任务失败 → session 进 `failed`。**修复**:三分支补 `syncSessionState` 调用(按 task type 映射到正确的 session 状态)。worker_test.go 37→40(+`TestRecoverRunningASRSyncsSessionState`/`TestRecoverRunningASRPollSyncsSessionState`/`TestRecoverRunningUploadBypassesState`),worker 总测试 44→47。**回归**:零(默认路径不经 recoverRunning running 列表,改动只在崩溃恢复时触发)。详见 `docs/KNOWN_ISSUES.md` ISSUE-006 与 `AGENTS.md` 2026-08-01 changelog。 |
 | 2026-07-21 | BUG 修复 | **`syncSessionState` 加 attempt 校验**(branch `fix/bug-fix-2026-07-20`,commit `61f3989` v6)。**触发**:配合 session `ResetFailedSession` 的「ASR 失败可 reset」恢复链——reset 后,旧的延迟 ASR callback 可能在 reset 后才到达,需要避免它用旧 task ID/旧 attempt 覆盖新的 session 状态。**修复**:retry 复用同一 task ID 只递增 attempt,旧 attempt 的延迟 callback 到达时重查 DB 当前 attempt,不匹配则丢弃(配合 state.go 的 CAS 防御 + ResetFailedSession active task 原子守卫两层防御;v7 回退了 state.go CAS,改为容忍策略 + worker.go attempt 校验 + active task 守卫)。worker_test.go 35→37（+`TestSyncSessionState_StaleAttempt_Discarded`/`TestSyncSessionState_FreshAttempt_Proceeds`），worker 总测试 42→44。 |
 | 2026-07-06 | 修复 | **异常 #1：重启后孤儿 pending 任务死锁**（`3ae2435`）。`recoverRunning` 新增阶段二：服务重启后内存队列清空，但 DB 里 pending 的 task 不会被 `loop()` 消费，导致 session 卡在 `discovered` → scheduler `ActiveLiveForChannel` 误判 active → 死锁跳过该主播。修复：`Store.ListPending`（与 `ListRunning` 共用 `listByStatus`）查出 pending 任务，未超 `maxAttempts` 的直接 `enqueueID` 重新入队（**不递增 attempt**、从未被消费），超限的 `MarkFailed` + `syncSessionState` 同步 session 状态。同时明确 live_record 的 running 恢复走 `Manager.Adopt` 接管在跑的 ffmpeg 进程。worker_test.go 33→35（+`TestRecoverRunningReEnqueuesOrphanPending`/`TestRecoverRunningOrphanPendingAttemptsExhausted`/`TestRecoverRunningLiveRecordAdopts`），task_test.go 5→6（`TestCreateBypassFailStateRoundTrip` 此前已加但文档漏登），worker 总测试 38→41 |
 | 2026-06-23 | 功能 | 自动触发链加固（设计 4.3）：`Register(taskType, handler, opts...)` 新增可变选项，`WithBypassFailState()` 标记状态旁路任务（`registeredHandler.bypassFailState`）；`bypassFailState(taskType)` 查询旁路属性，替代原先对 upload/archive 的硬编码 task.Type 特判；`FailSessionStateFunc` 签名新增 `bypassState bool` 参数，旁路任务仅写 `last_error` 不降级主状态。各业务 handler 内冗余的 `Apply(EventTaskFailed)` 移除，失败降级统一由 worker 处理。worker_test.go 30→33（新增 Register/WithBypassFailState/bypassFailState 用例），worker 总测试数 36→38 |
