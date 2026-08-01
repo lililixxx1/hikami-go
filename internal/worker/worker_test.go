@@ -770,6 +770,241 @@ func TestRecoverRunningOrphanPendingAttemptsExhausted(t *testing.T) {
 	}
 }
 
+// TestRecoverRunningASRSyncsSessionState 验证 ASR 任务崩溃恢复时同步 session 状态
+// （修复 asr_submitted -> asr_submitted 非法转换卡死）。OOM 等崩溃会让 session 停在
+// asr_submitted（Apply 已执行、transcribe 未完成），recoverRunning 重排任务后必须把 session
+// 降到 failed，否则重入 HandleTask 的 Apply(EventASRSubmitted) 会因无 asr_submitted 自环而失败。
+// 关键：传 recovered（ResetToPending 已 attempt+1）而非旧 task，否则 stale 守卫丢弃。
+// mock failSessionState 内部模拟 main.go 真实行为（EventTaskFailed → UPDATE status=failed），
+// 验证最终业务不变量：session 真的从 asr_submitted 降为 failed。
+func TestRecoverRunningASRSyncsSessionState(t *testing.T) {
+	database := setupDB(t)
+	insertChannel(t, database)
+	store := NewStore(database)
+	hub := NewHub()
+	ctx := context.Background()
+
+	// session 停在 asr_submitted（模拟崩溃时 Apply 已执行、transcribe 未返回）。
+	if _, err := database.ExecContext(ctx,
+		`INSERT INTO sessions (id, slug, channel_id, source_type, source_id, title, status)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"sess_asr_stuck", "slug_asr", "test_ch", "live_record", "src_asr", "Test", "asr_submitted"); err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+	created, err := store.Create(ctx, CreateInput{
+		ChannelID: "test_ch",
+		Type:      "asr",
+		SessionID: "sess_asr_stuck",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := store.MarkRunning(ctx, created.ID); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+
+	pool := NewPool(store, hub, 1, &config.Config{Worker: config.WorkerConfig{MaxRetryAttempts: 3}})
+	go hub.Run()
+	defer hub.Stop()
+
+	var gotTask Task
+	var gotTaskValid bool
+	var syncCallCount int32
+	// mock 模拟 main.go 的 failSessionState：对非 bypass 的 asr 任务，UPDATE session 到 failed。
+	pool.SetFailSessionStateFn(func(ctx context.Context, task Task, event, taskID, msg string, bypass bool) error {
+		gotTask = task
+		gotTaskValid = true
+		atomic.AddInt32(&syncCallCount, 1)
+		if bypass {
+			return nil // upload 旁路：只写 last_error，不改 status
+		}
+		_, err := database.ExecContext(ctx, "UPDATE sessions SET status = ?, last_error = ?, updated_at = ? WHERE id = ?",
+			"failed", msg, time.Now().Format(time.RFC3339), task.SessionID)
+		return err
+	})
+
+	if err := pool.recoverRunning(ctx); err != nil {
+		t.Fatalf("recoverRunning: %v", err)
+	}
+
+	// task 被重排为 pending 且 attempt+1。
+	got, err := store.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusPending {
+		t.Errorf("task status = %q, want pending (re-enqueued)", got.Status)
+	}
+	if got.Attempt != 2 {
+		t.Errorf("task attempt = %d, want 2 (ResetToPending increments)", got.Attempt)
+	}
+	// syncSessionState 必须被调用，且传入的是 recovered（新 attempt=2），不是旧 task（attempt=1）。
+	if atomic.LoadInt32(&syncCallCount) == 0 {
+		t.Fatalf("syncSessionState not called: session would stay stuck in asr_submitted")
+	}
+	if !gotTaskValid {
+		t.Fatalf("syncSessionState called but task not captured")
+	}
+	if gotTask.Attempt != 2 {
+		t.Errorf("syncSessionState received task attempt = %d, want 2 (must be recovered, not stale task)", gotTask.Attempt)
+	}
+	if gotTask.ID != created.ID {
+		t.Errorf("syncSessionState task id = %q, want %q", gotTask.ID, created.ID)
+	}
+	// 业务不变量：session 真的从 asr_submitted 降为 failed（mock 模拟真实 EventTaskFailed）。
+	var finalStatus string
+	if err := database.QueryRowContext(ctx, "SELECT status FROM sessions WHERE id = ?", "sess_asr_stuck").Scan(&finalStatus); err != nil {
+		t.Fatalf("query final session status: %v", err)
+	}
+	if finalStatus != "failed" {
+		t.Errorf("session status = %q, want failed (must be downgraded so rerun Apply(EventASRSubmitted) succeeds)", finalStatus)
+	}
+}
+
+// TestRecoverRunningUploadBypassesState 验证 upload 任务恢复时 bypass 生效：
+// upload 注册时声明 WithBypassFailState（设计 4.3），syncSessionState → failSessionState
+// 收到 bypass=true，生产代码（main.go）据此只写 last_error 不降级已 uploaded 的主状态。
+// 测试必须显式注册 upload handler + WithBypassFailState，否则 bypass 元数据缺失会误判。
+// TestRecoverRunningUploadBypassesState 验证 upload 任务恢复时 bypass 生效（Medium#3）：
+// upload 注册时声明 WithBypassFailState（设计 4.3），syncSessionState → failSessionState
+// 收到 bypass=true，生产代码（main.go）据此只写 last_error 不降级已 uploaded 的主状态。
+// 关键：必须用 WithBypassFailState 注册，否则 bypassFailState("upload") 返回 false 误降级。
+func TestRecoverRunningUploadBypassesState(t *testing.T) {
+	database := setupDB(t)
+	insertChannel(t, database)
+	store := NewStore(database)
+	hub := NewHub()
+	ctx := context.Background()
+
+	// session 已 uploaded（上传成功，upload 任务崩溃在收尾）。
+	if _, err := database.ExecContext(ctx,
+		`INSERT INTO sessions (id, slug, channel_id, source_type, source_id, title, status)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"sess_up_stuck", "slug_up", "test_ch", "live_record", "src_up", "Test", "uploaded"); err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+	created, err := store.Create(ctx, CreateInput{
+		ChannelID: "test_ch",
+		Type:      "upload",
+		SessionID: "sess_up_stuck",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := store.MarkRunning(ctx, created.ID); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+
+	pool := NewPool(store, hub, 1, &config.Config{Worker: config.WorkerConfig{MaxRetryAttempts: 3}})
+	// 关键：必须带 WithBypassFailState，模拟生产 upload.Register（upload.go:107）。
+	// 缺了它，bypassFailState("upload") 返回 false，syncSessionState 会算 bypass=false。
+	pool.Register("upload", func(ctx context.Context, task Task, reporter Reporter) error {
+		return nil
+	}, WithBypassFailState())
+	go hub.Run()
+	defer hub.Stop()
+
+	var gotBypass bool
+	var bypassCaptured bool
+	// mock 模拟 main.go 的 bypass 分支：只写 last_error，不改 status（设计 4.3）。
+	pool.SetFailSessionStateFn(func(ctx context.Context, task Task, event, taskID, msg string, bypass bool) error {
+		gotBypass = bypass
+		bypassCaptured = true
+		if !bypass {
+			return nil
+		}
+		_, err := database.ExecContext(ctx, "UPDATE sessions SET last_error = ?, updated_at = ? WHERE id = ?",
+			msg, time.Now().Format(time.RFC3339), task.SessionID)
+		return err
+	})
+
+	if err := pool.recoverRunning(ctx); err != nil {
+		t.Fatalf("recoverRunning: %v", err)
+	}
+
+	if !bypassCaptured {
+		t.Fatalf("syncSessionState not called for upload")
+	}
+	if !gotBypass {
+		t.Errorf("syncSessionState bypass = false, want true (upload must be bypass via WithBypassFailState)")
+	}
+	// 业务不变量：bypass 模式下 session 状态必须保持 uploaded（只写 last_error，未降级）。
+	var finalStatus string
+	if err := database.QueryRowContext(ctx, "SELECT status FROM sessions WHERE id = ?", "sess_up_stuck").Scan(&finalStatus); err != nil {
+		t.Fatalf("query final session status: %v", err)
+	}
+	if finalStatus != "uploaded" {
+		t.Errorf("session status = %q, want uploaded (bypass must not downgrade upload failures)", finalStatus)
+	}
+}
+
+// TestRecoverRunningASRPollSyncsSessionState 验证历史遗留类型 asr_poll 也走同样的状态同步路径
+// （Medium#2：asr_poll 无 handler 注册，但 recoverRunning 分支仍兼容它；恢复后入队，handler 未注册
+// 会在执行时失败再降级——但状态同步本身必须发生，否则 session 卡在 asr_submitted）。
+func TestRecoverRunningASRPollSyncsSessionState(t *testing.T) {
+	database := setupDB(t)
+	insertChannel(t, database)
+	store := NewStore(database)
+	hub := NewHub()
+	ctx := context.Background()
+
+	if _, err := database.ExecContext(ctx,
+		`INSERT INTO sessions (id, slug, channel_id, source_type, source_id, title, status)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"sess_poll_stuck", "slug_poll", "test_ch", "live_record", "src_poll", "Test", "asr_submitted"); err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+	created, err := store.Create(ctx, CreateInput{
+		ChannelID: "test_ch",
+		Type:      "asr_poll",
+		SessionID: "sess_poll_stuck",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := store.MarkRunning(ctx, created.ID); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+
+	pool := NewPool(store, hub, 1, &config.Config{Worker: config.WorkerConfig{MaxRetryAttempts: 3}})
+	go hub.Run()
+	defer hub.Stop()
+
+	var syncCalled int32 // 用 int32 而非 atomic.Value，避免未 Store 时 Load().(bool) panic（Low#4）
+	pool.SetFailSessionStateFn(func(ctx context.Context, task Task, event, taskID, msg string, bypass bool) error {
+		atomic.AddInt32(&syncCalled, 1)
+		if bypass {
+			return nil
+		}
+		_, err := database.ExecContext(ctx, "UPDATE sessions SET status = ?, last_error = ?, updated_at = ? WHERE id = ?",
+			"failed", msg, time.Now().Format(time.RFC3339), task.SessionID)
+		return err
+	})
+
+	if err := pool.recoverRunning(ctx); err != nil {
+		t.Fatalf("recoverRunning: %v", err)
+	}
+
+	if atomic.LoadInt32(&syncCalled) == 0 {
+		t.Errorf("syncSessionState not called for asr_poll: session would stay stuck in asr_submitted")
+	}
+	got, err := store.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != StatusPending {
+		t.Errorf("task status = %q, want pending (re-enqueued)", got.Status)
+	}
+	// asr_poll 与 asr 同属完成态集合，session=asr_submitted 未超越 → 走重跑 + 真实降级。
+	var finalStatus string
+	if err := database.QueryRowContext(ctx, "SELECT status FROM sessions WHERE id = ?", "sess_poll_stuck").Scan(&finalStatus); err != nil {
+		t.Fatalf("query final session status: %v", err)
+	}
+	if finalStatus != "failed" {
+		t.Errorf("session status = %q, want failed (asr_poll rerun path must downgrade)", finalStatus)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // 3. Pool
 // ---------------------------------------------------------------------------

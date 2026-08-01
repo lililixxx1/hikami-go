@@ -41,8 +41,8 @@ type Config struct {
 	Downloader DownloaderConfig `mapstructure:"downloader"`
 	Publish    PublishConfig    `mapstructure:"publish"`
 	MCP        MCPConfig        `mapstructure:"mcp"`
-	VAD        VADConfig    `mapstructure:"vad"`    // 2026-07-27 ASR 前置静音裁剪(降 DashScope 计费)
-	Replay     ReplayConfig `mapstructure:"replay"` // 2026-07-30 回放类(download/import)全局自动开关
+	VAD        VADConfig        `mapstructure:"vad"`    // 2026-07-27 ASR 前置静音裁剪(降 DashScope 计费)
+	Replay     ReplayConfig     `mapstructure:"replay"` // 2026-07-30 回放类(download/import)全局自动开关
 
 	Notify NotifyConfig `mapstructure:"notify"`
 
@@ -365,6 +365,12 @@ type ArchiveConfig struct {
 
 type DownloaderConfig struct {
 	Backend string `mapstructure:"backend"`
+	// PerURLStallSeconds 控制 native 单 URL 的「无进度超时」：持续收到字节即重置，
+	// 连续 N 秒无字节才切 backupUrl。<=0 用默认（60s）。
+	// 2026-07-31 修正：取代原固定 5 分钟总时长超时（误掐长视频长传输）。
+	PerURLStallSeconds int `mapstructure:"per_url_stall_seconds"`
+	// PerURLMaxMinutes 控制 native 单 URL 的「总时长兜底」：<0=不限，0=用默认（4h），>0=对应分钟数。
+	PerURLMaxMinutes int `mapstructure:"per_url_max_minutes"`
 }
 
 // MCPConfig 控制 MCP(Model Context Protocol)搜索工具集成。
@@ -1076,6 +1082,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("replay.auto_asr", false)
 	v.SetDefault("replay.auto_recap", false)
 	v.SetDefault("downloader.backend", "auto")
+	v.SetDefault("downloader.per_url_stall_seconds", 60)
+	v.SetDefault("downloader.per_url_max_minutes", 240)
 	v.SetDefault("publish.enabled", false)
 	v.SetDefault("publish.mode", "draft")
 	v.SetDefault("publish.category_id", 15)
