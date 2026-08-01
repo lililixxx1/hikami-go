@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"hikami-go/internal/biliutil"
 )
@@ -599,7 +601,205 @@ func TestFetchDanmakuShared(t *testing.T) {
 	t.Run("both_fail_writes_empty", func(t *testing.T) {
 		got := fetchDanmakuShared(context.Background(), newDoer(t, segOK, true, true), "https://bili.test", "https://bili.test", cid, "")
 		if string(got) != "<i></i>" {
-			t.Fatalf("got %q, want empty <i></i>", got)
+			t.Fatalf("got %q, want empty <i></i>", string(got))
 		}
 	})
+}
+
+// slowReader 按指定间隔分批产出数据,模拟慢速但有进度的下载流。
+type slowReader struct {
+	chunks [][]byte
+	delay  time.Duration
+	idx    int
+	closed bool
+}
+
+func (s *slowReader) Read(p []byte) (int, error) {
+	if s.idx >= len(s.chunks) {
+		return 0, io.EOF
+	}
+	time.Sleep(s.delay)
+	n := copy(p, s.chunks[s.idx])
+	s.idx++
+	return n, nil
+}
+
+// TestWriteSuccessfulBodyStallProgressNeverTimesOut 验证核心修复:
+// 只要持续有数据流入(即使总时长远超 stall 阈值),就不该超时。
+// 关键场景:stall=80ms,每 20ms 写一块(间隔 < 阈值,持续有进度),8 块总耗时 ~160ms > 80ms。
+// 若用旧的"固定总时长"逻辑必然超时;新逻辑应因持续进度而成功(Codex #5:真正覆盖此场景)。
+func TestWriteSuccessfulBodyStallProgressNeverTimesOut(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		flusher, _ := w.(http.Flusher)
+		// 20ms 间隔产出 8 个 1KB 块:单次间隔 20ms < stall 80ms(有进度),
+		// 总耗时 ~160ms > stall 80ms(超过阈值)——这才是要验证的场景。
+		reader := &slowReader{
+			chunks: [][]byte{
+				make([]byte, 1024), make([]byte, 1024), make([]byte, 1024), make([]byte, 1024),
+				make([]byte, 1024), make([]byte, 1024), make([]byte, 1024), make([]byte, 1024),
+			},
+			delay: 20 * time.Millisecond,
+		}
+		// 分块写入并逐块 Flush,确保 client 能分多次 Read(而非一次性缓冲)。
+		buf := make([]byte, 1024)
+		for {
+			n, err := reader.Read(buf)
+			if n > 0 {
+				w.Write(buf[:n])
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+			if err != nil {
+				break
+			}
+		}
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("http get: %v", err)
+	}
+	tmpPath := filepath.Join(t.TempDir(), "audio.m4a.tmp")
+	targetPath := filepath.Join(t.TempDir(), "audio.m4a")
+	// stall=80ms,总传输 ~160ms > 80ms,但每 20ms 有进度 → 不超时。
+	err = writeSuccessfulBody(resp, tmpPath, targetPath, 80*time.Millisecond, func() {})
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("writeSuccessfulBody with steady progress (total > stall) should not time out, got err = %v", err)
+	}
+	info, _ := os.Stat(targetPath)
+	if info.Size() == 0 {
+		t.Fatalf("target file is empty, want non-zero bytes")
+	}
+}
+
+// TestWriteSuccessfulBodyStallTriggersOnNoProgress 验证无进度超时:
+// body 发完一小块后长期不再产数据 → 超过 stall 阈值 → 返回 errStalled 并触发 onCancel。
+// handler 不能永久阻塞(否则 srv.Close 会 hang),改用 abort channel 在 stall 后主动唤醒退出。
+func TestWriteSuccessfulBodyStallTriggersOnNoProgress(t *testing.T) {
+	abort := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		// 发一小块让 header 写出去,然后卡住(模拟节点 hang),直到 stall 触发或客户端断开
+		w.Write(make([]byte, 100))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		select {
+		case <-abort: // stall 已触发,onCancel 会断开连接,这里主动退出避免 goroutine 泄漏
+		case <-r.Context().Done():
+		}
+	}))
+	defer func() {
+		close(abort) // 确保 handler goroutine 退出,再关 server
+		srv.Close()
+	}()
+
+	resp, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("http get: %v", err)
+	}
+	tmpPath := filepath.Join(t.TempDir(), "audio.m4a.tmp")
+	targetPath := filepath.Join(t.TempDir(), "audio.m4a")
+
+	cancelled := make(chan struct{})
+	// 模拟产品代码:reqCtx cancel 会中断底层 body 读取。
+	// 测试里直接关 resp.Body 达到同样效果(强制 Read 返回 read on closed connection)。
+	onCancel := func() {
+		close(cancelled)
+		resp.Body.Close()
+	}
+
+	start := time.Now()
+	err = writeSuccessfulBody(resp, tmpPath, targetPath, 100*time.Millisecond, onCancel)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, errStalled) {
+		t.Fatalf("err = %v, want errStalled", err)
+	}
+	if elapsed > 1*time.Second {
+		t.Fatalf("stall triggered too late: %v (stall=100ms)", elapsed)
+	}
+	if _, err := os.Stat(targetPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("target should not exist on stall, stat err = %v", err)
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("onCancel was not invoked on stall")
+	}
+}
+
+// TestDownloadAudioStallTimeoutConfigured 验证配置字段真正进入 downloadAudio 生效
+// (与默认值有可观察差异):配 stall=1s,卡住 body,断言约 1 秒内返回 errStalled。
+// 若配置未生效走默认 stall=60s,会远超 3s 上限 → 测试失败,从而证明字段被读取。
+func TestDownloadAudioStallTimeoutConfigured(t *testing.T) {
+	abort := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte("x"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		select {
+		case <-abort:
+		case <-r.Context().Done():
+		}
+	}))
+	defer func() {
+		close(abort)
+		srv.Close()
+	}()
+
+	targetPath := filepath.Join(t.TempDir(), "audio.m4a")
+	// 配 stall=1s:若配置生效,约 1s 触发 stall;若配置被忽略走默认 60s,会被下面的
+	// context 3s 超时打断(返回 deadline 而非 errStalled),从而让测试快速失败而非卡 60s。
+	d := NativeDownloader{PerURLStallSeconds: 1, PerURLMaxMinutes: -1}
+	// 用 3s 超时兜底:配置生效时 stall 约 1s 触发(<< 3s);配置失效走默认 60s 时,
+	// 3s 后 context deadline 打断下载,返回 DeadlineExceeded 而非 errStalled,测试明确失败。
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	start := time.Now()
+	err := d.downloadAudio(ctx, []string{srv.URL}, "", targetPath)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, errStalled) {
+		t.Fatalf("err = %v, want errStalled (config stall=1s not effective, or hit 3s guard timeout)", err)
+	}
+	// 耗时合理区间:≥800ms(stall≈1s,非误立即触发)、<3s(未走默认 60s)。
+	if elapsed < 800*time.Millisecond || elapsed > 3*time.Second {
+		t.Fatalf("stall elapsed %v out of expected [800ms, 3s] range", elapsed)
+	}
+}
+
+// TestEffectiveStallAndMaxTimeouts 验证配置值的解析逻辑(表驱动)。
+func TestEffectiveStallAndMaxTimeouts(t *testing.T) {
+	tests := []struct {
+		name      string
+		stallSecs int
+		maxMins   int
+		wantStall time.Duration
+		wantMax   time.Duration
+	}{
+		{"zero_uses_defaults", 0, 0, defaultPerURLStallTimeout, defaultPerURLMaxTimeout},
+		{"explicit_values", 30, 120, 30 * time.Second, 120 * time.Minute},
+		{"max_negative_means_unlimited", 0, -1, defaultPerURLStallTimeout, 0},
+		// 上界保护(Codex #7):极大值截断,防 int→Duration 溢出为负。
+		{"stall_clamped_to_1h", 9_999_999, 0, 3600 * time.Second, defaultPerURLMaxTimeout},
+		{"max_clamped_to_30d", 0, 9_999_999, defaultPerURLStallTimeout, 30 * 24 * 60 * time.Minute},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := NativeDownloader{PerURLStallSeconds: tt.stallSecs, PerURLMaxMinutes: tt.maxMins}
+			if got := d.effectiveStallTimeout(); got != tt.wantStall {
+				t.Errorf("effectiveStallTimeout = %v, want %v", got, tt.wantStall)
+			}
+			if got := d.effectiveMaxTimeout(); got != tt.wantMax {
+				t.Errorf("effectiveMaxTimeout = %v, want %v", got, tt.wantMax)
+			}
+		})
+	}
 }
