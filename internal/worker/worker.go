@@ -299,14 +299,33 @@ func (p *Pool) recoverRunning(ctx context.Context) error {
 	for _, task := range tasks {
 		switch task.Type {
 		case "asr", "asr_poll", "upload":
+			// 注（已知遗留，见 docs/KNOWN_ISSUES.md ISSUE-006）：此处无条件把进行中态 session 降到
+			// failed 再重跑，若崩溃恰好发生在任务状态推进事件已 Apply 但 worker MarkSucceeded 之前
+			// （如 ASR 已 Apply(EventASRSucceeded) 让 session 进 asr_done），会把已完成的工作降级并
+			// 重新执行远端付费操作（ASR 重新提交 DashScope）。该"崩溃恢复幂等性"问题需要统一的
+			// dashscope_task_id 持久化 + 下游任务幂等创建设计，超出本次热修范围。本次确定性修复：
+			// 消除"session 卡在 asr_submitted 导致重入 Apply 失败"的卡死（用户报告的实际问题）。
 			recovered, recoverErr := p.store.ResetToPending(ctx, task.ID)
 			if recoverErr != nil {
 				slog.Error("failed to recover task, marking as failed",
 					"task_id", task.ID, "type", task.Type, "error", recoverErr)
-				_, _ = p.store.MarkFailed(ctx, task.ID, "interrupted by service restart, recovery failed", recoverErr)
-				p.hub.Broadcast(task)
+				failed, failErr := p.store.MarkFailed(ctx, task.ID, "interrupted by service restart, recovery failed", recoverErr)
+				if failErr != nil {
+					slog.Error("mark task failed failed", "task_id", task.ID, "error", failErr)
+					failed = task // 退而广播恢复前快照（task 可能仍是 running）
+				}
+				p.hub.Broadcast(failed)
+				// 让 session 经 EventTaskFailed 降级，避免卡在 asr_submitted/uploaded 等进行中态。
+				// 注：MarkFailed 失败时 failed=旧 task（旧 attempt），可能被 stale 守卫丢弃——
+				// 此为恢复失败的异常路径，best-effort 同步，session 残留状态可由用户 reset。
+				p.syncSessionState(ctx, failed, "interrupted by service restart, recovery failed")
 				continue
 			}
+			// 关键：必须在 enqueueID 前同步 session 状态。ResetToPending 已 attempt+1，传 recovered
+			// （新 attempt）让 stale 守卫放行；把进行中态（如 asr_submitted）经 EventTaskFailed 降到
+			// failed，重排任务重入 HandleTask 时 Apply(EventASRSubmitted) 走合法转换 failed→asr_submitted。
+			// upload 因注册时 WithBypassFailState，failSessionState 只写 last_error 不降级（设计 4.3）。
+			p.syncSessionState(ctx, recovered, "interrupted by service restart, re-enqueued")
 			p.enqueueID(recovered.ID)
 			p.hub.Broadcast(recovered)
 			slog.Info("recovered task, re-enqueued",

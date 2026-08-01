@@ -2,13 +2,45 @@
 
 > 本文件收集已发现但尚未修复的问题。每条记录发现日期、严重程度、根因、影响、建议修复方案。
 > 修复完成后将对应条目移至「已修复」小节并标注修复日期。
-> 最后更新：2026-07-23
+> 最后更新：2026-08-01
 
 ---
 
 ## 待修复
 
-（暂无活跃待修复问题。）
+### ISSUE-006：崩溃恢复可能重复执行远端付费任务（ASR 重新提交 DashScope）
+
+- **发现日期**：2026-08-01
+- **严重程度**：中（需极窄崩溃时机 + 重复付费，无数据损坏）
+- **发现途径**：codex 四阶段代码审核（r7/r8/r9/r10，session `019fbacf-5a77-7ae0-a653-e64c87bb9ab2`）
+
+#### 触发条件
+
+进程崩溃（如 OOM Kill）恰好发生在某任务的状态推进事件已 `Apply` 但 worker `MarkSucceeded` 之前的窗口。典型路径（ASR）：
+
+1. `asr.go:210` `Apply(EventASRSucceeded)` 成功 → session 进 `asr_done`
+2. `asr.go:213-214` `h.onSuccess` 创建 recap task（自动链）
+3. `worker.go:251` `MarkSucceeded` 把 task 标记 succeeded
+
+若崩溃在 1 之后、3 之前，重启后 `recoverRunning`（worker.go:301 `case "asr","asr_poll","upload"`）会无条件把 session 从 `asr_done` 经 `EventTaskFailed` 降到 `failed`，再 `ResetToPending` 重跑 ASR —— 重新提交 DashScope 远端付费任务。
+
+#### 当前缓解
+
+`worker.go` 的 `case "asr"...` 分支有显式注释标注此遗留。本次（2026-08-01）的实际崩溃发生在 VAD 阶段（`asr.go:151-172`，transcribe 之前），DashScope 任务根本未提交，**本次未触发重复付费**。
+
+#### 为什么没修
+
+这是"崩溃恢复幂等性"的深层问题，需要系统设计，跨 asr/worker/recap 三包：
+
+- **状态分流**（曾尝试，r8/r9 已回退）：读 session 当前状态，若已超越任务阶段则跳过重跑。但引入更严重的回归——ASR 成功后 `onSuccess`（recap 自动链）的崩溃窗口（`asr.go:210` 后、`213` 前）会导致 recap 永不创建，自动流水线静默断裂。
+- **正解方向**：① `dashscope_task_id` 持久化到 `task.payload`（需新增 `store.UpdatePayload` 接口），恢复时优先 `TranscribeWithTaskID` 轮询已有远端任务而非重新提交；② 下游任务创建幂等化（`recap.CreateTask` 当前对已存在活跃 task 返回 `ErrTaskConflict` 非幂等，`handler.go:473`）；③ 可选的任务检查点机制。
+
+塞进 2026-08-01 的热修会引入比原 bug（session 卡死）更复杂的问题，故降级为已知遗留，留独立计划处理。
+
+#### 相关
+
+- 本次热修（`recoverRunning` 补 `syncSessionState`）修复了用户报告的"录播卡死"（session 停在 `asr_submitted`，重入 `Apply` 因无自环失败）。审核记录见 `reviews/main--r7.md` ~ `main--r10.md`。
+- OOM 治本（systemd `MemoryMax` / VAD ffmpeg 内存峰值）是独立运维任务。
 
 ---
 
