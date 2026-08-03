@@ -644,10 +644,18 @@ func TestHandleTaskReconnectExhaustedReturnsError(t *testing.T) {
 	}
 }
 
-// TestHandleTaskCleanEOFLiveReconnectExhaustedReturnsSentinel 验证 r5 Medium 3：
-// 首段 clean EOF + 仍开播，但重连段也 clean EOF + 仍开播 → 重连额度耗尽时返回哨兵错误
-// （而不是误判成功）。三次 CheckLive：preflight=true、首段 EOF 后=true、重连段 EOF 后=true。
-func TestHandleTaskCleanEOFLiveReconnectExhaustedReturnsSentinel(t *testing.T) {
+// TestHandleTaskCleanEOFLiveReconnectExhaustedPreservesAudio 验证 2026-08-03 修复：
+// 首段 + 重连段都 clean EOF（录到了有效音频）+ 仍开播 → 重连额度耗尽时**保留已录音频走成功收尾**，
+// 而非丢弃内容返回哨兵错误。
+//
+// 真实场景（2026-08-02 灰泽满那场）：主播已下播但 B 站 live 探测有滞后/缓存仍返回 live:true，
+// 触发重连后全是 404（CDN 已撤流）耗尽。此时 audio.part.N 完整录下了主体内容，旧代码因
+// afterRecordReconnect 耗尽分支无 hasRecordedAudio 守卫（与 afterRecordProbeFailReconnect 不对称）
+// 直接 err=carryErr 整场判 failed，2h21m 音频白录、回顾流水线一次没跑。
+//
+// 修复后：有已录分段 → err=nil，经 finalizeAudioSegments 合并 + enqueueNormalize 送下游。
+// 三次 CheckLive：preflight=true、首段 EOF 后判定=true、重连段 EOF 后判定=true（仍"开播"）。
+func TestHandleTaskCleanEOFLiveReconnectExhaustedPreservesAudio(t *testing.T) {
 	manager, _, pool := newTestManager(t)
 	defer pool.Stop()
 	manager.cfg.LiveRecord.AutoReconnect = true
@@ -662,11 +670,23 @@ func TestHandleTaskCleanEOFLiveReconnectExhaustedReturnsSentinel(t *testing.T) {
 
 	running := mustCreateRunningTask(t, pool)
 	err := manager.HandleTask(context.Background(), running, noopReporter{})
-	if err == nil {
-		t.Fatalf("handle task err = nil, want sentinel after clean-EOF-while-live exhausted")
+	if err != nil {
+		t.Fatalf("handle task: %v, want nil (recorded audio preserved on reconnect exhaustion)", err)
 	}
-	if !errors.Is(err, errStreamEndedWhileLive) {
-		t.Fatalf("handle task err = %v, want errors.Is(errStreamEndedWhileLive)", err)
+
+	// 成功收尾应合并分段为 audio.m4a 并保留两段内容。
+	rawDir := filepath.Join(manager.cfg.OutputRoot, "huize", "live_20260427_120000", "raw")
+	audioPath := filepath.Join(rawDir, "audio.m4a")
+	content, readErr := os.ReadFile(audioPath)
+	if readErr != nil {
+		t.Fatalf("read finalized audio: %v", readErr)
+	}
+	if string(content) != "segment-1\nsegment-2\n" {
+		t.Fatalf("audio content = %q, want two concatenated segments preserved", string(content))
+	}
+	// 首段 audioPath + 1 次重连段后额度（MaxReconnect=1）耗尽，recorder 恰被调用 2 次。
+	if len(recorder.outputs) != 2 {
+		t.Fatalf("recorder outputs = %+v, want 2 (first segment + 1 reconnect before exhaustion)", recorder.outputs)
 	}
 }
 
@@ -2019,10 +2039,16 @@ func TestHandleTaskCDNRetryThenCleanEOFGoesThroughDecideAfterRecord(t *testing.T
 
 	running := mustCreateRunningTask(t, pool)
 	err := manager.HandleTask(context.Background(), running, noopReporter{})
-	// 因 CheckLive 总 live=true 且 maxReconnect=1,最终应耗尽返回 errStreamEndedWhileLive,
-	// 而非 nil(说明 clean EOF 没被误判为成功完成)。
-	if err == nil {
-		t.Fatalf("handle task err = nil, want non-nil (clean EOF 应走 decideAfterRecord,不应误判成功)")
+	// 时序：首段 CDN 404(call 1)→ CDN 重试段 clean EOF(call 2)→ decideAfterRecord(live=true)→
+	// 重连段 clean EOF(call 3)→ decideAfterRecord(live=true)→ maxReconnect=1 耗尽。
+	// clean EOF 没被当成首次成功直接退出（否则只调 2 次：首段 CDN 404 + CDN 重试段）；
+	// 第 2、3 段都录到有效字节，
+	// 按 2026-08-03 修复(afterRecordReconnect 耗尽 + hasRecordedAudio → 保留)，应成功收尾。
+	if err != nil {
+		t.Fatalf("handle task err = %v, want nil (recorded audio preserved on exhaustion)", err)
+	}
+	if recorder.calls != 3 {
+		t.Fatalf("recorder calls = %d, want 3 (CDN 404 + clean EOF reconnect + exhausted reconnect)", recorder.calls)
 	}
 }
 

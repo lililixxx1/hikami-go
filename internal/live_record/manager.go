@@ -930,10 +930,28 @@ reconnect:
 			err = carryErr
 			break reconnect
 		case afterRecordReconnect:
-			// 想重连但额度耗尽：退出并保留错误。
+			// 想重连但额度耗尽。
 			// clean-EOF + 仍 live 耗尽时 carryErr 是 errStreamEndedWhileLive（已失败路径是原 wantErr）。
 			if attemptsUsed >= maxReconnect {
-				err = carryErr
+				// 收尾路径取决于是否已录到有效音频（与 afterRecordProbeFailReconnect 对称，
+				// 见 manager.go:948-957）：
+				//   - 有有效分段：走成功收尾保留已录音频(err=nil)，让 normalize/recap 流水线继续。
+				//     典型场景：主播已下播但 B 站 live 探测有滞后/缓存，仍返回 live:true，
+				//     触发重连后全是 404(CDN 已撤流)耗尽——此时主体内容往往已完整录下，
+				//     丢弃会让用户看到"失败"而非"转写中"(2026-08-02 灰泽满那场即此:录满 2h21m
+				//     却因下播瞬间重连耗尽被整场判 failed，audio.part.3 完好但流水线没跑)。
+				//   - 无有效分段：走失败路径，不送 normalize（避免空音频污染回顾；
+				//     finalizeAudioSegments 对空 segments 返回 nil，否则 succeeded + enqueue normalize
+				//     会成实质性回归）。
+				if hasRecordedAudio(audioSegments) {
+					slog.Info("reconnect budget exhausted, finishing with recorded audio preserved",
+						"channel_id", task.ChannelID, "room_id", payload.RoomID, "segments", len(audioSegments))
+					err = nil
+				} else {
+					slog.Warn("reconnect budget exhausted with no valid audio, finishing with error",
+						"channel_id", task.ChannelID, "room_id", payload.RoomID, "carry_error", carryErr)
+					err = carryErr
+				}
 				break reconnect
 			}
 			err = carryErr
