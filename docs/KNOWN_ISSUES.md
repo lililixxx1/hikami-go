@@ -398,3 +398,34 @@ async function onRecapSaved() {
 GET（`server.go:1271`）用 `safeRecapName("直播回顾_" + slug)` 清洗路径，PUT（`:3696-3697`）直接用 raw slug。由于 `session.sanitizeSlug`（`session.go:518-535`）在创建时已把 slug 限制为 `[a-z0-9_-]`，`safeRecapName` 的替换（`/ \ space` → `_`）是 no-op，两条路径产出相同文件名。但如果未来有其他入口创建未清洗的 slug，会读不到刚写的文件。建议 PUT 也统一用 `safeRecapName`。
 
 > **已修复（2026-07-11）**：PUT 路径已改用 `safeRecapName`，与 GET 一致。新增 `TestRecapContentRoundTrip` 测试覆盖含空格 slug 的读写一致性。
+
+### ISSUE-007：recap provider 偶发返回空 content，错误丢失原始响应难以诊断
+
+- **发现日期**：2026-08-03
+- **严重程度**：中（间歇性，重试通常成功，但失败时无诊断信息）
+- **发现途径**：救回 8-2 场（`bili_1298779265_live_20260802_204346`）时实测
+
+#### 触发条件
+
+DeepSeek（`openai_compatible` provider）偶发返回 HTTP 200 但 `choices[0].message.content` 为空字符串的响应。`provider_openai.go:46-48` 判定 `result.Content == "" && len(result.ToolCalls) == 0` 后返回 `fmt.Errorf("recap provider response missing content")`。
+
+#### 现象
+
+- recap 任务失败，`task.error = "recap provider response missing content"`，session 回到 `failed`。
+- **关键诊断缺陷**：错误返回时 `GenerateResult.Raw`（DeepSeek 原始 JSON 响应）已在 `provider_openai.go:47` 设置，但 `handler.go:690-692` 的 `if err != nil { return err }` **丢弃了 result（含 Raw）**，既不写日志也不存 DB。导致无法判断 DeepSeek 为何返回空 content（模型 `deepseek-v4-pro` 不存在？token 超限 `finish_reason=length`？content 以 null 返回？API 限流？）。
+- 本次实测：同配置重跑（attempt 2）成功生成完整回顾，说明是**间歇性**而非配置错误。
+
+#### 当前缓解
+
+- recap 任务有 `attempt` 重试机制（worker 池），间歇失败时重试通常能成功。
+- 本次救场：把 session 从 `failed` 重置回 `asr_done`（ASR 数据真实有效）+ recap task 重置 pending + 重启 → attempt 2 成功。
+- **注意 `canHandleRecap`（`handler.go:445`）状态守卫**：recap HandleTask 只接受 `asr_done`/`uploaded`/`recap_done`/`published`，**拒绝 `failed`**。所以 recap 失败后不能直接重置 recap task 重跑，必须先把 session 推回 `asr_done`（`failed → EventASRSucceeded → asr_done` 状态机合法）。
+
+#### 为什么没修（2026-08-03）
+
+- **间歇性 + 重试通常成功**：本次仅一次失败，重试即成功，优先级低于本次的 live_record 重连 bug 修复。
+- **根因不明**：在拿到 DeepSeek 失败响应的原始 JSON 之前无法定位是 provider 端问题还是代码解析问题。曾尝试加临时诊断日志（`handler.go:691` 记录 `result.Raw`）重跑，但重跑成功未触发，未捕获到失败响应样本。
+- **建议治本方向**（待后续）：
+  1. 永久保留「recap 失败时记录原始响应」的可观测性改进（`handler.go` 错误分支补 `slog.ErrorContext(..., "raw_response", result.Raw)`），下次失败即捕获样本。
+  2. `parseChatCompletionResult`（`provider_openai.go:176`）记录 `finish_reason`，空 content 时结合 finish_reason 判断（`length` = token 截断，`content_filter` = 内容过滤，`stop` = 模型异常）。
+  3. 确认 `deepseek-v4-pro` 是否为 DeepSeek 官方有效模型名（官方文档标准名为 `deepseek-chat`/`deepseek-reasoner`）；若非官方名，考虑 `EffectiveModel` 兜底或配置校正。

@@ -229,6 +229,24 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
 
 ## 变更记录
 
+- 2026-08-03(一):**live_record 重连耗尽补「已录音频保留」守卫,修复下播瞬间重连误判致整场失败**(systematic-debugging 四阶段;manager.go +22/-3、manager_test.go 改 2 测试)。**触发**:用户反馈「昨天晚上(8-2)的直播没有发回顾文档」。经日志+DB+代码三层定位,发现 8-2 灰泽满 Hazel 一场 2h21m 直播(`bili_1298779265_live_20260802_204346`)在 live_record 阶段被判 `failed`,但 `audio.part.3.m4a`(221MB / 8492s,完整)完好地躺在 raw 目录——**音频录到了,但流水线一次没跑**。
+
+  **根因**:`internal/live_record/manager.go` 重连循环的 `afterRecordReconnect` 分支(明确仍开播的重连)额度耗尽时(`:932-937` 旧代码)**无条件 `err = carryErr; break`——没有 `hasRecordedAudio` 守卫**。与**下方** `afterRecordProbeFailReconnect` 分支(`:941-959`)形成**不对称**:后者耗尽时检查 `hasRecordedAudio(audioSegments)`,有音频就 `err=nil` 保留送 normalize。两条本质都是「重连耗尽但有已录音频」的收尾路径,一条有守卫、一条漏了。
+
+  **8-2 那场时序**:① `20:44` ffmpeg 开始录 `audio.part.3.m4a`,录到 `23:05:43` 收到上游 EOF **干净退出**(2h21m 主体内容完整);② `23:05:44` `decideAfterRecord` 探测仍 `live:true`(B 站下播有滞后/缓存)→ 走 `afterRecordReconnect`(carryErr=`errStreamEndedWhileLive`);③ 此后所有重连全是 `http status 404`(主播真下播,CDN 已撤流),`cdnRetryBudget=5` + `maxReconnect` 两预算耗尽;④ 命中无守卫分支 → 整场判 failed,**221MB 音频白录**。
+
+  **修复**(对称补守卫,零回归):`afterRecordReconnect` 耗尽分支补 `hasRecordedAudio` 判定——有已录分段→`err=nil` 走成功收尾(`finalizeAudioSegments` 合并 + `enqueueNormalize`),与 probe-error 分支对称;无分段→`err=carryErr` 失败(不送 normalize,避免空音频污染回顾)。负向分支(无音频→失败)已有 `TestHandleTaskReconnectExhaustedReturnsError`(`alwaysFailingRecorder`)覆盖。
+
+  **测试改动**(钉死行为):① `TestHandleTaskCleanEOFLiveReconnectExhaustedReturnsSentinel`→改名 `...PreservesAudio`,断言从「期望 errStreamEndedWhileLive 哨兵」翻转成「期望 nil + audio.m4a 合并两段保留」——该测试的 `cleanEOFRecorder` 本就写了有效字节(segment-N),旧断言钉的正是 bug 行为;② `TestHandleTaskCDNRetryThenCleanEOFGoesThroughDecideAfterRecord` 断言同步翻转(CDN 404→cleanEOF→重连耗尽,有音频→成功,recorder 调用 3 次)。两测试核心价值(「clean EOF 走 decideAfterRecord 重连,不直接误判首次成功」)不变,只翻转了耗尽收尾的结论。
+
+  **验证**:`go test ./internal/live_record/...` 全过(88s)、`go vet` 干净、`gofmt` 合规、embedded_web 编译成功(27MB)、state/session 包测试全过(救场 `failed→media_ready` 转换仍合法)。**回归**:零(默认路径不经耗尽分支;改动只在重连耗尽时触发,且新行为 = 保留音频送下游,比丢弃更安全)。
+
+  **救回 8-2 场(运维,非代码)**:因 `ResetFailedSession` 守卫只接受 ASR 失败(`session.go:459-477` 要求 current_task 类型=asr + `asr/audio.asr.mp3` 存在),reset API 走不通;走「插 pending normalize 任务 + 重启」路径——① `cp audio.part.3.m4a audio.m4a`(保留 part.3 备份,走 normalize 首选路径 `findRawAudio` 避免排序歧义);② INSERT 一条 `type=normalize,status=pending` 任务关联该 session/payload `{}`(normalize 不解析 payload);③ 重编 `./hikami` + `systemctl restart hikami` → `recoverRunning` 第二段(worker.go:374-405)扫 pending 任务重新入队。**流水线自动续到 recap**:normalize succeeded(failed→media_ready)→ auto_asr=1 自动 ASR(1907 段/98116 字/VAD 重映射,3 分钟转完)→ auto_recap=1 自动 recap。内存充足(swap 83M,非 8-1 那次 2.9G 告急),未重蹈 OOM 覆辙。
+
+  **recap 间歇失败(独立问题,非本次根因)**:auto recap 第一次失败 `recap provider response missing content`(DeepSeek 返回 200 但 content 空,间歇性)。因 `canHandleRecap`(`handler.go:445`)状态守卫只接受 asr_done/uploaded/recap_done/published、**拒绝 failed**,recap 失败后不能直接重置 recap task 重跑——需先把 session 从 `failed` UPDATE 回 `asr_done`(ASR 数据真实有效,`failed→EventASRSucceeded` 状态机合法),再重置 recap task 为 pending + 重启 → attempt 2 成功生成 259 行完整回顾 → publish → archive。**最终 session=`published`,回顾文档 `直播回顾_live_20260802_204346.md` 已交付**(2026-08-03 09:12:23)。详见 `docs/KNOWN_ISSUES.md` ISSUE-007(含诊断缺陷:错误分支丢弃 DeepSeek 原始响应 Raw,致无法定位空 content 根因)。
+
+  **与 8-1 修复的区分**:8-1 修的是 `recoverRunning` 的 **session 状态同步遗漏**(worker 包,asr 阶段 OOM 崩溃后 session 卡 asr_submitted);本次修的是 live_record 的 **重连耗尽收尾守卫遗漏**(live_record 包,下播瞬间重连误判)。两个 bug 症状相似(「昨天的直播没有回顾」)但根因、包、代码位置完全不同。recap 间歇失败是第三个独立问题(ISSUE-007),本次未修。
+
 - 2026-08-01(五):**recoverRunning 崩溃恢复补齐 session 状态同步,修复 ASR 阶段 OOM 后录播卡死**(branch `fix/recover-running-asr-stuck-2026-08-01`,codex 四阶段审核 r7/r8/r9/r10 APPROVED,路由 pppzzz→kedaya,session `019fbacf-5a77-7ae0-a653-e64c87bb9ab2`)。**触发**:用户反馈「昨天的直播没有录播」。经日志+DB+代码三层定位(systematic-debugging),发现 7-31 灰泽满 Hazel 一场 71 分钟直播(`bili_1298779265_live_20260731_224912`)在 ASR 转写阶段被系统 OOM Killer 杀死(journald:`Failed with result 'oom-kill'`),录播原始文件完好(`audio.m4a` 56M)但 session 卡在 `asr_submitted`、状态变 `failed`,用户在界面看到"失败"而非"转写中"。
 
   **根因**:`Pool.recoverRunning`(`internal/worker/worker.go:301`)的 `case "asr","asr_poll","upload":` 分支崩溃恢复时只调 `ResetToPending` 重排任务,**未像 `live_record`(:339)/`default`(:351)分支那样调 `syncSessionState` 同步 session 状态** → session 卡在 `asr_submitted`;重排任务重入 `HandleTask` 再次 `Apply(EventASRSubmitted)`(`asr.go:137`)→ 状态机查 `asr_submitted -> asr_submitted`(`state.go:216-218` 无此自环,与 downloading/recording/importing 允许自环不一致)→ `ErrInvalidTransition` → 任务失败 → session 进 `failed`。
