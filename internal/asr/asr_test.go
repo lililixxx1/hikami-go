@@ -24,7 +24,10 @@ import (
 
 func setupDB(t *testing.T) *sql.DB {
 	t.Helper()
-	database, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "hikami.db"))
+	// 必须用 db.Open 而非 sql.Open:前者设置 PRAGMA busy_timeout=5000 + WAL +
+	// SetMaxOpenConns(1)。TestCreateTaskActiveConflict 等并发写场景下,缺少这些 PRAGMA
+	// 会在 CI(Linux)上偶发 SQLITE_BUSY,而非返回期望的 ErrTaskConflict。
+	database, err := db.Open(filepath.Join(t.TempDir(), "hikami.db"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
 	}
