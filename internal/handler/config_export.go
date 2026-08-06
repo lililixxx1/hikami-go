@@ -34,22 +34,22 @@ import (
 // （见 internal/config/config.go 中 ASRS3SectionDTO 的注释）。这里只导出非密钥字段。
 // dashscope/archive 不含明文密钥，直接嵌 config 结构体。
 type ConfigExportBundle struct {
-	Version      string                  `json:"version"`
-	ExportedAt   string                  `json:"exported_at"`
-	RecapAI      *config.RecapAIConfig   `json:"recap_ai,omitempty"`
-	Publish      *config.PublishConfig   `json:"publish,omitempty"`
-	WebDAV       *WebDAVExportSection    `json:"webdav,omitempty"`
-	ASRS3        *ASRS3ExportSection     `json:"asr_s3,omitempty"`
-	DashScope    *config.DashScopeConfig `json:"dashscope,omitempty"`
-	Archive      *config.ArchiveConfig   `json:"archive,omitempty"`
-	MCP          *MCPExportSection       `json:"mcp,omitempty"`
-	VAD          *config.VADSectionDTO   `json:"vad,omitempty"` // 2026-07-27 VAD 静音裁剪(无密钥,直接投影)
+	Version      string                   `json:"version"`
+	ExportedAt   string                   `json:"exported_at"`
+	RecapAI      *config.RecapAIConfig    `json:"recap_ai,omitempty"`
+	Publish      *config.PublishConfig    `json:"publish,omitempty"`
+	WebDAV       *WebDAVExportSection     `json:"webdav,omitempty"`
+	ASRS3        *ASRS3ExportSection      `json:"asr_s3,omitempty"`
+	DashScope    *config.DashScopeConfig  `json:"dashscope,omitempty"`
+	Archive      *config.ArchiveConfig    `json:"archive,omitempty"`
+	MCP          *MCPExportSection        `json:"mcp,omitempty"`
+	VAD          *config.VADSectionDTO    `json:"vad,omitempty"`    // 2026-07-27 VAD 静音裁剪(无密钥,直接投影)
 	Replay       *config.ReplaySectionDTO `json:"replay,omitempty"` // 2026-07-30 回放类全局自动开关(无密钥,直接投影)
-	Secrets      map[string]string       `json:"secrets"`
-	Channels     []channel.UpsertInput   `json:"channels"`
-	Glossary     GlossaryExportSection   `json:"glossary"`
-	Templates    TemplateExportSection   `json:"templates"`
-	BiliAccounts []BiliAccountExportItem `json:"bili_accounts"`
+	Secrets      map[string]string        `json:"secrets"`
+	Channels     []channel.UpsertInput    `json:"channels"`
+	Glossary     GlossaryExportSection    `json:"glossary"`
+	Templates    TemplateExportSection    `json:"templates"`
+	BiliAccounts []BiliAccountExportItem  `json:"bili_accounts"`
 }
 
 // WebDAVExportSection 是 WebDAV 配置的导出投影：剔除 Password 明文，密钥随 Secrets 段走。
@@ -477,8 +477,8 @@ func (s *Server) handleImportConfig(ctx *gin.Context) {
 	nextArchive := s.cfg.Archive
 	nextWebDAV := s.cfg.WebDAV
 	nextASRS3 := s.cfg.ASRS3
-	nextMCP := s.cfg.MCP // 基线拷贝:bundle 无 mcp 段时保持不变(零回归)
-	nextVAD := s.cfg.VAD // 基线拷贝:bundle 无 vad 段时保持不变(零回归,2026-07-27)
+	nextMCP := s.cfg.MCP       // 基线拷贝:bundle 无 mcp 段时保持不变(零回归)
+	nextVAD := s.cfg.VAD       // 基线拷贝:bundle 无 vad 段时保持不变(零回归,2026-07-27)
 	nextReplay := s.cfg.Replay // 基线拷贝:bundle 无 replay 段时保持不变(零回归,2026-07-30)
 
 	// tombstone 判定的 hasSecret helper：bundle.Secrets 是否含某 env key。

@@ -127,7 +127,7 @@ func TestRunWithTools_MaxRoundsExceeded(t *testing.T) {
 		loops[i] = aiprovider.GenerateResult{
 			Content:      "循环中",
 			FinishReason: "tool_calls",
-			ToolCalls:     []aiprovider.ToolCall{{ID: "c", Name: "echo", Arguments: "{}"}},
+			ToolCalls:    []aiprovider.ToolCall{{ID: "c", Name: "echo", Arguments: "{}"}},
 		}
 	}
 	p := &fakeToolProvider{results: loops}
@@ -218,8 +218,8 @@ func TestRunWithTools_ContextCancel(t *testing.T) {
 // TestEstimateChars 验证字符估算。
 func TestEstimateChars(t *testing.T) {
 	msgs := []aiprovider.Message{
-		{Role: aiprovider.RoleUser, Content: "中文测试"},     // 4 rune
-		{Role: aiprovider.RoleTool, Content: "结果"},         // 2 rune
+		{Role: aiprovider.RoleUser, Content: "中文测试"}, // 4 rune
+		{Role: aiprovider.RoleTool, Content: "结果"},   // 2 rune
 		{Role: aiprovider.RoleAssistant, ToolCalls: []aiprovider.ToolCall{
 			{Name: "web_search", Arguments: `{"q":"辉子版"}`}, // name 10 + args 16
 		}},
