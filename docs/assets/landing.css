@@ -188,9 +188,10 @@ section { padding: 88px 0; }
 .section-subtitle {
   font-size: 18px;
   color: var(--text-secondary);
-  max-width: 640px;
+  max-width: 820px;
   margin: 0 auto 56px;
   line-height: 1.6;
+  white-space: nowrap;
 }
 
 .text-center { text-align: center; }
@@ -334,10 +335,11 @@ section { padding: 88px 0; }
   50% { box-shadow: 0 0 0 6px rgba(26, 122, 92, 0.12); }
 }
 .hero h1 {
-  font-size: clamp(34px, 6vw, 58px);
+  font-size: clamp(26px, 5vw, 48px);
   margin-bottom: 20px;
   letter-spacing: -0.025em;
   line-height: 1.08;
+  white-space: nowrap;
 }
 .hero h1 .accent {
   background: linear-gradient(135deg, var(--accent) 0%, var(--blue-400) 100%);
@@ -346,11 +348,14 @@ section { padding: 88px 0; }
   -webkit-text-fill-color: transparent;
 }
 .hero .lead {
-  font-size: clamp(17px, 2.2vw, 21px);
+  font-size: clamp(14px, 1.7vw, 16px);
   color: var(--text-secondary);
-  max-width: 640px;
+  max-width: 820px;
   margin: 0 auto 36px;
   line-height: 1.6;
+}
+.hero .lead .lead-line {
+  white-space: nowrap;
 }
 .hero-ctas {
   display: flex;
@@ -527,6 +532,8 @@ section { padding: 88px 0; }
 .shot:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
 .shot img {
   width: 100%;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
   border-radius: var(--radius-md);
   border: 1px solid var(--border-light);
 }
