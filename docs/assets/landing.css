@@ -528,6 +528,170 @@ section { padding: 80px 0; }
   .hero-ctas .btn { width: 100%; }
 }
 
+/* ===== 文档页专用(docs/usage.html) ===== */
+.docs-layout {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 48px;
+  max-width: var(--max-w);
+  margin: 0 auto;
+  padding: 40px 24px 80px;
+}
+.docs-toc {
+  position: sticky;
+  top: calc(var(--nav-h) + 24px);
+  align-self: start;
+  max-height: calc(100vh - var(--nav-h) - 48px);
+  overflow-y: auto;
+  font-size: 14.5px;
+}
+.docs-toc h4 {
+  font-family: var(--font-display);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin: 0 0 12px;
+  padding-left: 12px;
+}
+.docs-toc ul { list-style: none; padding: 0; margin: 0; }
+.docs-toc li { margin: 0; }
+.docs-toc a {
+  display: block;
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  border-left: 2px solid transparent;
+  line-height: 1.4;
+}
+.docs-toc a:hover { background: var(--surface); color: var(--accent); }
+.docs-toc a.active {
+  color: var(--accent);
+  background: var(--accent-bg);
+  border-left-color: var(--accent);
+  font-weight: 600;
+}
+.docs-toc .toc-sub a { padding-left: 28px; font-size: 13.5px; }
+
+.docs-content { min-width: 0; }
+.docs-content section { padding: 0 0 48px; scroll-margin-top: 84px; }
+.docs-content section:last-child { padding-bottom: 0; }
+.docs-content h2 {
+  font-size: 28px;
+  margin: 0 0 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.docs-content h3 {
+  font-size: 19px;
+  margin: 28px 0 12px;
+  color: var(--text);
+}
+.docs-content p,
+.docs-content li { font-size: 15.5px; color: var(--text); line-height: 1.75; }
+.docs-content ul, .docs-content ol { padding-left: 22px; }
+.docs-content li { margin-bottom: 8px; }
+.docs-content img {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  margin: 16px 0;
+  box-shadow: var(--shadow-sm);
+}
+
+/* 文档页:步骤卡 */
+.step-list { list-style: none; padding: 0; counter-reset: step; }
+.step-list > li {
+  position: relative;
+  padding: 14px 0 14px 52px;
+  border-bottom: 1px solid var(--border-light);
+}
+.step-list > li:last-child { border-bottom: none; }
+.step-list > li::before {
+  counter-increment: step;
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: 14px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 15px;
+  display: grid;
+  place-items: center;
+}
+
+/* 文档页:提示框 */
+.callout {
+  padding: 16px 20px;
+  border-radius: var(--radius-md);
+  margin: 20px 0;
+  border-left: 4px solid var(--accent);
+  background: var(--accent-bg);
+  font-size: 14.5px;
+  line-height: 1.65;
+}
+.callout.tip { border-left-color: var(--success); background: var(--success-bg); }
+.callout.warn { border-left-color: var(--warning); background: var(--warning-bg); }
+.callout strong { display: inline-block; margin-right: 6px; }
+
+/* 文档页:选项卡表 */
+.opt-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  font-size: 14.5px;
+}
+.opt-table th, .opt-table td {
+  padding: 11px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.opt-table th {
+  background: var(--surface-warm);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.opt-table code { background: var(--surface-warm); }
+.opt-table td code { font-size: 13px; }
+
+/* 顶部 page-header(各文档页通用) */
+.page-header {
+  background: linear-gradient(180deg, var(--surface), var(--canvas));
+  border-bottom: 1px solid var(--border);
+  padding: 56px 0 40px;
+  text-align: center;
+}
+.page-header h1 {
+  font-size: clamp(30px, 5vw, 44px);
+  margin: 0 0 12px;
+}
+.page-header p {
+  font-size: 18px;
+  color: var(--text-secondary);
+  max-width: 620px;
+  margin: 0 auto;
+}
+
+@media (max-width: 900px) {
+  .docs-layout { grid-template-columns: 1fr; gap: 0; padding: 32px 24px 64px; }
+  .docs-toc {
+    position: static;
+    max-height: none;
+    margin-bottom: 24px;
+    padding: 16px;
+    background: var(--surface);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+  }
+}
+
 /* ===== 无障碍:尊重减少动效偏好 ===== */
 @media (prefers-reduced-motion: reduce) {
   * {
