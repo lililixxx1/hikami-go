@@ -607,13 +607,12 @@ section { padding: 88px 0; }
   transform: translateY(-2px);
   border-color: var(--blue-200);
 }
-/* 推荐卡:跨 2 列、左色条、实心蓝 CTA 按钮(variant 区分) */
+/* 推荐卡:左色条、实心蓝 CTA 按钮(variant 区分,与其他卡同列宽,2×2 排列) */
 .dl-card.recommended {
-  grid-column: 1 / -1;
   border-color: var(--accent);
   background: linear-gradient(135deg, var(--accent-bg) 0%, var(--canvas) 60%);
   box-shadow: var(--shadow-accent);
-  padding: 28px 32px;
+  padding: 22px 24px;
   position: relative;
   overflow: hidden;
 }
