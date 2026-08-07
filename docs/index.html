@@ -57,11 +57,22 @@
       <a href="usage.html" class="btn btn-secondary btn-lg">📖 使用指南</a>
     </div>
     <div class="hero-trust">
-      <span>🪟 单文件 exe,双击就用</span>
-      <span class="sep">·</span>
-      <span>🔒 本地运行,数据不上传</span>
-      <span class="sep">·</span>
-      <span>📜 GPL-3.0 开源</span>
+      <span class="pill">🪟 单文件 exe,双击就用</span>
+      <span class="pill">🔒 本地运行,数据不上传</span>
+      <span class="pill">📜 GPL-3.0 开源</span>
+    </div>
+  </div>
+
+  <!-- 产品视觉锚点:浏览器 mockup 框 + 主界面截图 -->
+  <div class="hero-shot reveal">
+    <div class="browser-mock">
+      <div class="browser-bar">
+        <span class="browser-dot r"></span>
+        <span class="browser-dot y"></span>
+        <span class="browser-dot g"></span>
+        <span class="browser-url">127.0.0.1:6334</span>
+      </div>
+      <img src="screenshots/04-recap-detail.png" alt="你好神管理界面预览 · AI 回顾详情页" loading="eager">
     </div>
   </div>
 </header>
@@ -74,46 +85,52 @@
       <h2 class="section-title">从录直播到发专栏,一站搞定</h2>
       <p class="section-subtitle">不用手动剪辑、不用手写回顾、不用多个软件来回倒腾。下面这些事,你配好一次,以后全自动。</p>
     </div>
-    <div class="features-grid">
-      <div class="feature-card reveal">
+
+    <!-- 2 个主特性:大卡,带渐变图标 + 详细描述 -->
+    <div class="features-featured">
+      <div class="feature-card featured reveal">
         <div class="feature-icon warm">🎙️</div>
         <h3>自动录直播</h3>
-        <p>直播一开始就自动录音频和弹幕。错过直播也不怕,支持断线重连、风控冷却、空文件自动收尾。</p>
+        <p>直播一开始就自动录音频和弹幕。错过直播也不怕 —— 支持断线重连、风控冷却、0 字节僵尸分段自动收尾。主播下播后自动进入转写流程,你什么都不用做。</p>
       </div>
+      <div class="feature-card featured reveal">
+        <div class="feature-icon">✍️</div>
+        <h3>AI 写回顾</h3>
+        <p>结合弹幕氛围,AI 自动写出一篇结构完整的直播回顾:概要 / 高光时刻 / 详细内容 / 精彩语录 / 观看建议。配好模型,点一下就能生成,直接发或编辑后发都行。</p>
+      </div>
+    </div>
+
+    <!-- 6 个辅助特性:小卡,一句话 -->
+    <div class="features-grid">
       <div class="feature-card reveal">
         <div class="feature-icon">📥</div>
         <h3>存回放</h3>
-        <p>自动发现并下载 B 站回放(单 P / 多 P 都行)。本地音频文件能手动导入,粘贴链接也能直接下载。</p>
+        <p>自动发现并下载 B 站回放,单 P / 多 P 都行。</p>
       </div>
       <div class="feature-card reveal">
         <div class="feature-icon green">🔤</div>
         <h3>AI 转文字</h3>
-        <p>把录音自动转成带时间轴的字幕,作为回顾的素材。转写前还会先剪掉长长的静音段,省下不少费用。</p>
-      </div>
-      <div class="feature-card reveal">
-        <div class="feature-icon">✍️</div>
-        <h3>AI 写回顾</h3>
-        <p>结合弹幕氛围,AI 自动写出概要、高光时刻、详细内容、精彩语录、观看建议,结构完整可直接发。</p>
+        <p>录音自动转成带时间轴字幕,先剪静音省费用。</p>
       </div>
       <div class="feature-card reveal">
         <div class="feature-icon green">🌐</div>
         <h3>AI 联网查证</h3>
-        <p>写回顾时 AI 能自己上网查证术语、人名、事件,减少胡编乱造。内置两大搜索引擎,按需开启。</p>
+        <p>写回顾时 AI 自己上网核实术语、人名、事件。</p>
       </div>
       <div class="feature-card reveal">
         <div class="feature-icon warm">📚</div>
         <h3>主播术语表</h3>
-        <p>给每个主播单独维护一份术语表(人名、游戏术语不再转错)。AI 还能自动发现新词,你来确认。</p>
+        <p>每个主播单独维护术语表,转写不再转错字。</p>
       </div>
       <div class="feature-card reveal">
         <div class="feature-icon">📤</div>
         <h3>一键发专栏</h3>
-        <p>点一下就把回顾发到 B 站专栏。支持草稿、自定义封面、分区、文集。下载和发布能用不同账号。</p>
+        <p>点一下发到 B 站专栏,支持草稿、封面、文集。</p>
       </div>
       <div class="feature-card reveal">
         <div class="feature-icon green">🗂️</div>
         <h3>自动存网盘</h3>
-        <p>录音文件能自动归档到你的 WebDAV 网盘,不占本地硬盘空间。归档完成后自动清理本地副本。</p>
+        <p>录音自动归档 WebDAV 网盘,不占本地空间。</p>
       </div>
     </div>
   </div>
