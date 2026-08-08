@@ -836,7 +836,9 @@ reconnect:
 		// 异常 #2 优先:CDN 瞬时错误(404 等)用独立 cdnRetryBudget + 指数退避,绕过 maxReconnect。
 		if m.cfg.LiveRecord.AutoReconnect && err != nil && isCDNTransientError(err) {
 			if cdnRetryBudget <= 0 {
-				// CDN 预算耗尽:放弃。
+				// CDN 预算耗尽:与 afterRecordReconnect/afterRecordProbeFailReconnect 对称，
+				// 由 finishWithAudioIfAny 统一收口（有已录音频→成功保留，无音频→失败）。
+				err = finishWithAudioIfAny("cdn", task.ChannelID, payload.RoomID, audioSegments, err)
 				break reconnect
 			}
 			cdnRetryBudget--
@@ -877,6 +879,9 @@ reconnect:
 		if selectFailedPending {
 			selectFailedPending = false
 			if attemptsUsed >= maxReconnect {
+				// selectStream 重连预算耗尽:由 finishWithAudioIfAny 统一收口（与 CDN /
+				// afterRecordReconnect / afterRecordProbeFailReconnect 对称）。
+				err = finishWithAudioIfAny("select-stream", task.ChannelID, payload.RoomID, audioSegments, err)
 				break reconnect
 			}
 			_ = reporter.Progress(ctx, 15+attemptsUsed*5, fmt.Sprintf("reconnecting after stream select failure (attempt %d/%d)", attemptsUsed+1, maxReconnect))
@@ -933,46 +938,24 @@ reconnect:
 			// 想重连但额度耗尽。
 			// clean-EOF + 仍 live 耗尽时 carryErr 是 errStreamEndedWhileLive（已失败路径是原 wantErr）。
 			if attemptsUsed >= maxReconnect {
-				// 收尾路径取决于是否已录到有效音频（与 afterRecordProbeFailReconnect 对称，
-				// 见 manager.go:948-957）：
-				//   - 有有效分段：走成功收尾保留已录音频(err=nil)，让 normalize/recap 流水线继续。
-				//     典型场景：主播已下播但 B 站 live 探测有滞后/缓存，仍返回 live:true，
-				//     触发重连后全是 404(CDN 已撤流)耗尽——此时主体内容往往已完整录下，
-				//     丢弃会让用户看到"失败"而非"转写中"(2026-08-02 灰泽满那场即此:录满 2h21m
-				//     却因下播瞬间重连耗尽被整场判 failed，audio.part.3 完好但流水线没跑)。
-				//   - 无有效分段：走失败路径，不送 normalize（避免空音频污染回顾；
-				//     finalizeAudioSegments 对空 segments 返回 nil，否则 succeeded + enqueue normalize
-				//     会成实质性回归）。
-				if hasRecordedAudio(audioSegments) {
-					slog.Info("reconnect budget exhausted, finishing with recorded audio preserved",
-						"channel_id", task.ChannelID, "room_id", payload.RoomID, "segments", len(audioSegments))
-					err = nil
-				} else {
-					slog.Warn("reconnect budget exhausted with no valid audio, finishing with error",
-						"channel_id", task.ChannelID, "room_id", payload.RoomID, "carry_error", carryErr)
-					err = carryErr
-				}
+				// 收尾由 finishWithAudioIfAny 统一收口（有已录音频→成功保留，无音频→失败）。
+				// 典型场景：主播已下播但 B 站 live 探测有滞后/缓存，仍返回 live:true，
+				// 触发重连后全是 404(CDN 已撤流)耗尽——此时主体内容往往已完整录下，
+				// 丢弃会让用户看到"失败"而非"转写中"(2026-08-02 灰泽满那场即此:录满 2h21m
+				// 却因下播瞬间重连耗尽被整场判 failed，audio.part.3 完好但流水线没跑)。
+				err = finishWithAudioIfAny("after-record", task.ChannelID, payload.RoomID, audioSegments, carryErr)
 				break reconnect
 			}
 			err = carryErr
 			_ = reporter.Progress(ctx, 15+attemptsUsed*5, fmt.Sprintf("reconnecting (attempt %d/%d)", attemptsUsed+1, maxReconnect))
 		case afterRecordProbeFailReconnect:
 			// 异常 #10:探测失败型重连用独立 probeErrorBudget。耗尽则收尾,
-			// **但收尾路径取决于是否已录到有效音频**(codex v1 Critical #1):
-			//   - 有有效分段(len(audioSegments)>0):走成功收尾,保留已录音频(err=nil);
-			//   - 无有效分段(所有 recordAudio 都失败,0 字节):走失败路径,不送 normalize
-			//     (避免空音频污染回顾;finalizeAudioSegments 对空 segments 返回 nil,
-			//      会把 succeeded 状态 + enqueue normalize 推下游 —— 实质性回归)。
+			// 收尾同样由 finishWithAudioIfAny 统一收口（与 afterRecordReconnect/CDN/selectFail 对称）。
+			// 无有效分段时返回 carryErr 走失败，不送 normalize（避免空音频污染回顾；
+			// finalizeAudioSegments 对空 segments 返回 nil，否则 succeeded + enqueue normalize
+			// 会成实质性回归）。
 			if probeErrorBudget <= 0 {
-				if hasRecordedAudio(audioSegments) {
-					slog.Info("probe-error budget exhausted, finishing with recorded audio preserved",
-						"channel_id", task.ChannelID, "room_id", payload.RoomID, "segments", len(audioSegments))
-					err = nil
-				} else {
-					slog.Warn("probe-error budget exhausted with no valid audio, finishing with error",
-						"channel_id", task.ChannelID, "room_id", payload.RoomID, "carry_error", carryErr)
-					err = carryErr
-				}
+				err = finishWithAudioIfAny("probe-error", task.ChannelID, payload.RoomID, audioSegments, carryErr)
 				break reconnect
 			}
 			probeErrorBudget--
@@ -1202,6 +1185,34 @@ func audioFileExists(path string) bool {
 // 用于 probeErrorBudget 耗尽时决定走成功收尾（保留已录音频）还是失败路径（不送 normalize）。
 // audioSegments 已在 addAudioSegment 里用 audioFileExists（Size()>0）过滤，这里只需判空。
 func hasRecordedAudio(segments []string) bool { return len(segments) > 0 }
+
+// finishWithAudioIfAny 是「重试预算耗尽」类退出的统一收口判定（2026-08-08 codex 更根本方案）：
+//   - 有已录音频 → 返回 nil（走成功收尾：finalizeAudioSegments 合并分段 + enqueueNormalize，
+//     让下游 ASR/recap 流水线继续，避免录满整场却因下播瞬间重连耗尽被判 failed、音频白录）。
+//   - 无音频 → 维持原 carryErr（走失败路径，不送 normalize，避免空音频污染回顾）。
+//
+// 仅用于「我想继续但额度用完了」语义的退出。**不可**用于：
+//   - 风控中止（handleSelectStreamRiskControl 返回 true，858/893/997）——保留音频会掩盖风控；
+//   - afterRecordFinishError（931，decideAfterRecord 明确判失败，如已下播且有录制错误）；
+//   - ctx.Canceled（828/922，循环外 1040-1054 已有专门的成功收尾特例）。
+//
+// 2026-08-07 灰泽满那场（bili_1298779265_live_20260807_225255）即命中 CDN 分支无守卫的遗漏：
+// part.4 录满 36.7MB/1535s，但下播后重连全 404，CDN 预算耗尽裸 break → 循环外 return err 丢弃音频。
+// 2026-08-03 的 commit 5504d09 只补了 switch 内两条（afterRecordReconnect/afterRecordProbeFailReconnect），
+// 漏了循环顶部的 CDN 分支（838-840）和 selectFailedPending 分支（879-881），本次统一收口。
+//
+// scenario 参数用于在日志中区分预算类型（"cdn"/"select-stream"/"after-record"/"probe-error"），
+// channelID/roomID 用于生产排查定位（恢复 helper 抽取前各调用点内联 slog 携带的上下文字段）。
+func finishWithAudioIfAny(scenario, channelID string, roomID int64, audioSegments []string, carryErr error) error {
+	if hasRecordedAudio(audioSegments) {
+		slog.Info("reconnect budget exhausted, finishing with recorded audio preserved",
+			"scenario", scenario, "channel_id", channelID, "room_id", roomID, "segments", len(audioSegments))
+		return nil
+	}
+	slog.Warn("reconnect budget exhausted with no valid audio, finishing with error",
+		"scenario", scenario, "channel_id", channelID, "room_id", roomID, "carry_error", carryErr)
+	return carryErr
+}
 
 // isCDNTransientError 判定错误是否为 CDN 瞬时错误(异常 #2):B 站 CDN 节点切换瞬间,
 // selectStream 拿到的流地址在 Go http.Get 时返回 404,或连接被重置。这类错误值得用
