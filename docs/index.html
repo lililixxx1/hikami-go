@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>你好神 · B 站直播 AI 回顾生成工具</title>
+  <meta name="description" content="帮你把 B 站主播的直播音频录下来、转成文字、再自动写成一篇回顾文章,发到 B 站专栏。从直播结束到专栏发布,全流程在一个本地网页里点几下就能完成。">
+  <meta property="og:title" content="你好神 · B 站直播 AI 回顾生成工具">
+  <meta property="og:description" content="录直播、转文字、AI 写回顾、发专栏 —— 一个本地网页全搞定。">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="screenshots/04-recap-detail.png">
+
+  <!-- Sora 字体(本地嵌入,与产品界面一致;OFL-1.1,许可证见页脚) -->
+  <style>
+    @font-face {
+      font-family: 'Sora';
+      src: url('assets/sora-latin.woff2') format('woff2');
+      font-weight: 500 700;
+      font-display: swap;
+    }
+  </style>
+  <link rel="stylesheet" href="assets/landing.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%230066cc'/><text x='50' y='70' font-size='56' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='bold'>神</text></svg>">
+</head>
+<body>
+
+<!-- ===== 顶部导航 ===== -->
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="#" class="brand">
+      <span class="brand-mark">神</span>
+      <span>Hikami-Go</span>
+    </a>
+    <div class="nav-links">
+      <a href="#features">功能</a>
+      <a href="#showcase">界面</a>
+      <a href="usage.html">使用</a>
+      <a href="#download">下载</a>
+      <a href="https://github.com/lililixxx1/hikami-go" target="_blank" rel="noopener" class="btn btn-secondary">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ===== Hero ===== -->
+<header class="hero">
+  <div class="hero-inner">
+    <span class="hero-badge"><span class="dot"></span> v0.1.0 正式版已发布</span>
+    <h1>Hikami-Go — 你好神！<span class="accent">直播AI回顾生成工具</span></h1>
+    <p class="lead">
+      <span class="lead-line">直播音频录播 → ASR 语音转文字 → AI 直播回顾生成 → B 站专栏投稿 → WebDAV 文件存档,<span style="color:var(--text)">全流程一条龙</span>。</span><br>
+      帮你不错过主播的精彩内容;也能当作直播切片的辅助工具,快速定位精彩时刻。
+    </p>
+    <div class="hero-ctas">
+      <a href="https://github.com/lililixxx1/hikami-go/releases/latest" target="_blank" rel="noopener" class="btn btn-primary btn-lg" data-cta="download">
+        <span data-cta-text>⬇ Windows 下载</span>
+      </a>
+      <a href="usage.html" class="btn btn-secondary btn-lg">📖 使用指南</a>
+    </div>
+    <div class="hero-trust">
+      <span class="pill">🪟 单文件 exe,双击就用</span>
+      <span class="pill">🔒 本地运行,数据不上传</span>
+      <span class="pill">📜 GPL-3.0 开源</span>
+    </div>
+  </div>
+
+  <!-- 产品视觉锚点:浏览器 mockup 框 + 主界面截图 -->
+  <div class="hero-shot reveal">
+    <div class="browser-mock">
+      <div class="browser-bar">
+        <span class="browser-dot r"></span>
+        <span class="browser-dot y"></span>
+        <span class="browser-dot g"></span>
+        <span class="browser-url">127.0.0.1:6334</span>
+      </div>
+      <img src="screenshots/04-recap-detail.png" alt="你好神管理界面预览 · AI 回顾详情页" loading="eager">
+    </div>
+  </div>
+</header>
+
+<!-- ===== 八大特性 ===== -->
+<section id="features">
+  <div class="container">
+    <div class="text-center">
+      <span class="section-eyebrow">核心能力</span>
+      <h2 class="section-title">从录直播到发专栏,一站搞定</h2>
+      <p class="section-subtitle">不用手动剪辑、不用手写回顾、不用多个软件来回倒腾。下面这些事,你配好一次,以后全自动。</p>
+    </div>
+
+    <!-- 2 个主特性:大卡,带渐变图标 + 详细描述 -->
+    <div class="features-featured">
+      <div class="feature-card featured reveal">
+        <div class="feature-icon warm">🎙️</div>
+        <h3>自动录直播</h3>
+        <p>直播一开始就自动录音频和弹幕。错过直播也不怕 —— 支持断线重连、风控冷却、0 字节僵尸分段自动收尾。主播下播后自动进入转写流程,你什么都不用做。</p>
+      </div>
+      <div class="feature-card featured reveal">
+        <div class="feature-icon">✍️</div>
+        <h3>AI 写回顾</h3>
+        <p>结合弹幕氛围,AI 自动写出一篇结构完整的直播回顾:概要 / 高光时刻 / 详细内容 / 精彩语录 / 观看建议。配好模型,点一下就能生成,直接发或编辑后发都行。</p>
+      </div>
+    </div>
+
+    <!-- 6 个辅助特性:小卡,一句话 -->
+    <div class="features-grid">
+      <div class="feature-card reveal">
+        <div class="feature-icon">📥</div>
+        <h3>存回放</h3>
+        <p>自动发现并下载 B 站回放,单 P / 多 P 都行。</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon green">🔤</div>
+        <h3>AI 转文字</h3>
+        <p>录音自动转成带时间轴字幕,先剪静音省费用。</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon green">🌐</div>
+        <h3>AI 联网查证</h3>
+        <p>写回顾时 AI 自己上网核实术语、人名、事件。</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon warm">📚</div>
+        <h3>主播术语表</h3>
+        <p>每个主播单独维护术语表,转写不再转错字。</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon">📤</div>
+        <h3>一键发专栏</h3>
+        <p>点一下发到 B 站专栏,支持草稿、封面、文集。</p>
+      </div>
+      <div class="feature-card reveal">
+        <div class="feature-icon green">🗂️</div>
+        <h3>自动存网盘</h3>
+        <p>录音自动归档 WebDAV 网盘,不占本地空间。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== 界面截图 ===== -->
+<section id="showcase" class="showcase">
+  <div class="container">
+    <div class="text-center">
+      <span class="section-eyebrow">界面预览</span>
+      <h2 class="section-title">打开网页就能用,不用碰命令行</h2>
+      <p class="section-subtitle">所有操作都在一个清爽的后台界面里完成。选中一场直播,点按钮一步步往下走,全程实时进度。</p>
+    </div>
+    <div class="showcase-grid">
+      <figure class="shot reveal">
+        <img src="screenshots/01-home.png?v=2" alt="首页 · 直播状态与系统就绪情况总览" loading="lazy">
+        <figcaption>🏠 首页 · 直播状态 / 最近回顾 / 系统能力 / 统计仪表板</figcaption>
+      </figure>
+      <figure class="shot reveal">
+        <img src="screenshots/02-streamers.png" alt="主播管理 · 每个主播独立配置" loading="lazy">
+        <figcaption>👥 主播管理 · 每个主播独立配置录制 / 转写 / 发布</figcaption>
+      </figure>
+      <figure class="shot reveal">
+        <img src="screenshots/03-recaps-list.png?v=2" alt="回顾列表 · 录播与回放双视图" loading="lazy">
+        <figcaption>📋 回顾列表 · 录播 / 回放双 tab · 失败场次一键重试</figcaption>
+      </figure>
+      <figure class="shot reveal">
+        <img src="screenshots/04-recap-detail.png" alt="AI 回顾详情 · Markdown 源码可编辑" loading="lazy">
+        <figcaption>📖 AI 回顾 · Markdown 源码可直接编辑</figcaption>
+      </figure>
+      <figure class="shot wide reveal">
+        <img src="screenshots/05-settings.png" alt="设置 · 流水线配置、账号、备份、AI 搜索" loading="lazy">
+        <figcaption>⚙️ 设置 · 流水线配置 / 账号 / 备份 / 高级(AI 搜索)</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- ===== 工作流程 ===== -->
+<section id="flow">
+  <div class="container">
+    <div class="text-center">
+      <span class="section-eyebrow">工作流程</span>
+      <h2 class="section-title">四步走完一场直播</h2>
+      <p class="section-subtitle">配好之后,从直播结束到专栏发布,你只需要看着进度条往前走。</p>
+    </div>
+    <div class="flow-steps">
+      <div class="flow-step reveal">
+        <div class="flow-num">1</div>
+        <h4>直播 / 回放</h4>
+        <p>自动录制直播,或下载、导入已有的回放音频</p>
+        <span class="flow-arrow">→</span>
+      </div>
+      <div class="flow-step reveal">
+        <div class="flow-num">2</div>
+        <h4>自动转文字</h4>
+        <p>AI 把录音转成带时间轴的字幕,顺手剪掉静音</p>
+        <span class="flow-arrow">→</span>
+      </div>
+      <div class="flow-step reveal">
+        <div class="flow-num">3</div>
+        <h4>AI 写回顾</h4>
+        <p>结合弹幕,生成结构完整的回顾文章</p>
+        <span class="flow-arrow">→</span>
+      </div>
+      <div class="flow-step reveal">
+        <div class="flow-num">4</div>
+        <h4>发到专栏</h4>
+        <p>一键发布到 B 站专栏,录音自动归档网盘</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== 下载 ===== -->
+<section id="download" class="download">
+  <div class="container">
+    <div class="text-center">
+      <span class="section-eyebrow">立即开始</span>
+      <h2 class="section-title">下载并运行</h2>
+      <p class="section-subtitle">Windows 用户直接下载 exe,双击运行,无需命令行。Linux / 命令行用户请见下方源码编译。</p>
+    </div>
+
+    <div class="dl-grid">
+      <div class="dl-card recommended reveal">
+        <div class="dl-icon">🖥️</div>
+        <div class="dl-body">
+          <h4>桌面版 · 内嵌 ffmpeg <span class="dl-tag">推荐</span></h4>
+          <p>自己电脑日常挂着录直播。双击运行,托盘图标 + 无黑窗,自带 ffmpeg,开箱即用。</p>
+        </div>
+        <a class="dl-link" href="https://github.com/lililixxx1/hikami-go/releases/latest/download/hikami-windows-amd64-desktop-ffmpeg.exe" target="_blank" rel="noopener">下载 →</a>
+      </div>
+
+      <div class="dl-card reveal">
+        <div class="dl-icon">🖥️</div>
+        <div class="dl-body">
+          <h4>桌面版 · 精简</h4>
+          <p>同上,但你的机器已经装好了 ffmpeg。比推荐版少 3M,其余完全一样。</p>
+        </div>
+        <a class="dl-link" href="https://github.com/lililixxx1/hikami-go/releases/latest/download/hikami-windows-amd64-desktop.exe" target="_blank" rel="noopener">下载 →</a>
+      </div>
+
+      <div class="dl-card reveal">
+        <div class="dl-icon">⬛</div>
+        <div class="dl-body">
+          <h4>命令行版 · 内嵌 ffmpeg</h4>
+          <p>服务器 / 后台跑、命令行操作。普通控制台程序,自带 ffmpeg,日志打 stdout。</p>
+        </div>
+        <a class="dl-link" href="https://github.com/lililixxx1/hikami-go/releases/latest/download/hikami-windows-amd64-ffmpeg.exe" target="_blank" rel="noopener">下载 →</a>
+      </div>
+
+      <div class="dl-card reveal">
+        <div class="dl-icon">⬛</div>
+        <div class="dl-body">
+          <h4>命令行版 · 精简</h4>
+          <p>同上,但服务器已装 ffmpeg。最精简的控制台版本。</p>
+        </div>
+        <a class="dl-link" href="https://github.com/lililixxx1/hikami-go/releases/latest/download/hikami-windows-amd64.exe" target="_blank" rel="noopener">下载 →</a>
+      </div>
+    </div>
+
+    <details class="details-collapse">
+      <summary>命令行用户 / Linux · 从源码编译</summary>
+      <div class="details-collapse-body">
+        <p style="margin-bottom:12px;color:var(--text-secondary)">需要 Go 1.25+、Node 20+(构建前端)、ffmpeg / ffprobe(运行时调用)。</p>
+<pre><code># 拉取源码
+git clone https://github.com/lililixxx1/hikami-go.git
+cd hikami-go
+
+# 构建前端 + 编译(完整产物,内嵌前端)
+make build
+
+# Linux 交叉编译
+make build-linux-amd64
+
+# 配置并启动
+cp config.example.yaml config.yaml
+# 编辑 config.yaml,至少填 output_root(录播存哪)
+make run</code></pre>
+        <p style="margin:12px 0 0;color:var(--text-secondary)">启动后浏览器打开 <code>http://127.0.0.1:6334</code> 即管理界面。详细说明见 <a href="https://github.com/lililixxx1/hikami-go#readme" target="_blank" rel="noopener">README</a>。</p>
+      </div>
+    </details>
+  </div>
+</section>
+
+<!-- ===== 页脚 ===== -->
+<footer class="footer">
+  <div class="container">
+    <div class="footer-grid">
+      <div>
+        <div class="brand" style="margin-bottom:12px">
+          <span class="brand-mark">神</span>
+          <span style="color:#fff">Hikami-Go</span>
+        </div>
+        <p style="font-size:14.5px;line-height:1.7;max-width:380px;margin:0">
+          中文名「你好神」取自 Hi-kami(Hi=你好,kami=神)的双关。
+          一个帮你把 B 站直播自动变成回顾文章的本地工具。
+        </p>
+      </div>
+      <div>
+        <h4>资源</h4>
+        <ul>
+          <li><a href="usage.html">📖 使用指南</a></li>
+          <li><a href="https://github.com/lililixxx1/hikami-go" target="_blank" rel="noopener">GitHub 仓库</a></li>
+          <li><a href="https://github.com/lililixxx1/hikami-go/releases/latest" target="_blank" rel="noopener">最新版本</a></li>
+          <li><a href="https://github.com/lililixxx1/hikami-go/issues" target="_blank" rel="noopener">问题反馈</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>文档</h4>
+        <ul>
+          <li><a href="https://github.com/lililixxx1/hikami-go/blob/main/docs/FRONTEND_ARCHITECTURE.md" target="_blank" rel="noopener">前端架构</a></li>
+          <li><a href="https://github.com/lililixxx1/hikami-go/blob/main/docs/BUSINESS_FLOW.md" target="_blank" rel="noopener">业务流程</a></li>
+          <li><a href="https://github.com/lililixxx1/hikami-go/blob/main/docs/data-flow.md" target="_blank" rel="noopener">数据流</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <span>GPL-3.0 许可证 · © 2026 Hikami-Go</span>
+      <span>界面字体 <a href="assets/SORA-OFL-LICENSE.txt" target="_blank">Sora (OFL 1.1)</a> · 由 ZCode 制作</span>
+    </div>
+  </div>
+</footer>
+
+<script src="assets/landing.js"></script>
+</body>
+</html>

@@ -13,6 +13,14 @@ import (
 	"hikami-go/internal/db"
 )
 
+// 固定本地时区为 +08:00,使时区断言在 UTC CI runner(如 GitHub Actions Linux)上
+// 也成立:写入端 Go time.Now() 会产出 "+08:00" 后缀,而 SQLite datetime('now') 产出 "Z",
+// 后缀差异是时区回归保护的核心。若不固定,UTC 系统下两者字符串相同,断言无法区分。
+// 本包其他测试(cookie/wbi/buvid)只用 time.Now().Unix() 或相对 .Add(),与时区无关,固定安全。
+func init() {
+	time.Local = time.FixedZone("CST", 8*60*60)
+}
+
 // mustBeLocalRFC3339 断言 got 是本地时区 RFC3339 字符串(非 UTC "Z" 后缀)。
 // 回归:见 2026-07-04 DB 时间字段统一本地时区修复。
 func mustBeLocalRFC3339(t *testing.T, got string) {

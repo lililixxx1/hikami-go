@@ -224,7 +224,7 @@ func (t *DashScopeTranscriber) cleanupRemote(ctx context.Context, remotePath str
 
 func (t *DashScopeTranscriber) submit(ctx context.Context, publicURL string, vocabulary map[string]int) (string, map[string]any, error) {
 	body := buildDashScopeSubmitBody(&t.cfg.DashScope, publicURL, vocabulary)
-		raw, err := t.doJSONWithRetry(ctx, http.MethodPost, t.cfg.DashScope.EffectiveASRURL(), body)
+	raw, err := t.doJSONWithRetry(ctx, http.MethodPost, t.cfg.DashScope.EffectiveASRURL(), body)
 	if err != nil {
 		return "", nil, err
 	}

@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>使用指南 · 你好神</title>
+  <meta name="description" content="Hikami-Go 使用指南:从下载安装到日常使用,手把手教你把 B 站直播自动变成回顾文章。">
+  <style>
+    @font-face {
+      font-family: 'Sora';
+      src: url('assets/sora-latin.woff2') format('woff2');
+      font-weight: 500 700;
+      font-display: swap;
+    }
+  </style>
+  <link rel="stylesheet" href="assets/landing.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%230066cc'/><text x='50' y='70' font-size='56' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='bold'>神</text></svg>">
+</head>
+<body>
+
+<!-- ===== 顶部导航(与 landing 一致,多一个高亮的"使用"链接) ===== -->
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="index.html" class="brand">
+      <span class="brand-mark">神</span>
+      <span>你好神</span>
+    </a>
+    <div class="nav-links">
+      <a href="index.html#features">功能</a>
+      <a href="index.html#showcase">界面</a>
+      <a href="usage.html" style="color:var(--accent);font-weight:600">使用</a>
+      <a href="index.html#download">下载</a>
+      <a href="https://github.com/lililixxx1/hikami-go" target="_blank" rel="noopener" class="btn btn-secondary">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ===== 页头 ===== -->
+<header class="page-header">
+  <div class="container">
+    <h1>使用指南</h1>
+    <p>从下载安装到日常使用,大约 10 分钟读完。跟着做,你就能让直播自动变成回顾文章。</p>
+  </div>
+</header>
+
+<!-- ===== 左侧目录 + 右侧正文 ===== -->
+<div class="docs-layout">
+  <aside class="docs-toc" id="toc">
+    <h4>目录</h4>
+    <ul>
+      <li><a href="#prepare">一、准备工作</a></li>
+      <li><a href="#install">二、下载与安装</a></li>
+      <li><a href="#first-run">三、首次启动</a></li>
+      <li class="toc-sub"><a href="#onboarding">　引导向导</a></li>
+      <li class="toc-sub"><a href="#config-ai">　填 AI 配置</a></li>
+      <li class="toc-sub"><a href="#add-streamer">　添加主播</a></li>
+      <li><a href="#record-live">四、自动录直播</a></li>
+      <li><a href="#import-replay">五、处理回放</a></li>
+      <li class="toc-sub"><a href="#discover">　发现回放</a></li>
+      <li class="toc-sub"><a href="#download-url">　链接下载</a></li>
+      <li class="toc-sub"><a href="#import-local">　导入本地文件</a></li>
+      <li><a href="#generate-recap">六、生成回顾</a></li>
+      <li><a href="#publish">七、发布到专栏</a></li>
+      <li><a href="#glossary">八、术语表</a></li>
+      <li><a href="#network-disk">九、网盘归档</a></li>
+      <li><a href="#troubleshoot">十、常见问题</a></li>
+      <li><a href="#advanced">十一、进阶配置</a></li>
+    </ul>
+  </aside>
+
+  <main class="docs-content">
+
+    <!-- 一、准备工作 -->
+    <section id="prepare">
+      <h2>一、准备工作</h2>
+      <p>开始之前,你需要准备几样东西:</p>
+      <ul>
+        <li><strong>一台 Windows 电脑</strong>(或 Linux 服务器)。推荐 Windows,双击即用。</li>
+        <li><strong>ffmpeg / ffprobe</strong>。如果你下载带 <code>-ffmpeg</code> 后缀的版本,程序自带裁剪版 ffmpeg,无需另装。否则需要自己装 ffmpeg 并加入 PATH。</li>
+        <li><strong>AI 服务密钥</strong>(转写和写回顾要用):
+          <ul>
+            <li><strong>转写</strong>:阿里云 <a href="https://dashscope.console.aliyun.com/" target="_blank" rel="noopener">DashScope(通义听悟)</a> API Key</li>
+            <li><strong>写回顾</strong>:任意一个 —— DeepSeek、通义千问、OpenAI / Claude / 任何 OpenAI 兼容接口</li>
+          </ul>
+        </li>
+        <li><strong>一个 B 站账号</strong>(用于登录扫码、发布专栏)。粉丝/切片员建议用自己的小号发布,避免主号风控。</li>
+      </ul>
+      <div class="callout tip">
+        <strong>💡 小提示:</strong>如果你暂时没有 AI 密钥,也可以先装好、先体验录制和回放下载功能,等需要转写回顾时再配置 AI。
+      </div>
+    </section>
+
+    <!-- 二、下载与安装 -->
+    <section id="install">
+      <h2>二、下载与安装</h2>
+      <p>到 <a href="https://github.com/lililixxx1/hikami-go/releases/latest" target="_blank" rel="noopener">Releases 页面</a> 下载,有 4 个 Windows 版本可选:</p>
+      <table class="opt-table">
+        <thead>
+          <tr><th>版本</th><th>适合谁</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>hikami-windows-amd64-desktop-ffmpeg.exe</code> ✨</td>
+            <td>自己电脑日常挂着录直播</td>
+            <td>双击运行,<strong>托盘图标 + 无黑窗</strong>,自带 ffmpeg,开箱即用</td>
+          </tr>
+          <tr>
+            <td><code>hikami-windows-amd64-desktop.exe</code></td>
+            <td>同上,但机器已装 ffmpeg</td>
+            <td>比上面少 3M,其余完全一样</td>
+          </tr>
+          <tr>
+            <td><code>hikami-windows-amd64-ffmpeg.exe</code></td>
+            <td>服务器 / 命令行操作</td>
+            <td>普通控制台程序,自带 ffmpeg,日志打 stdout</td>
+          </tr>
+          <tr>
+            <td><code>hikami-windows-amd64.exe</code></td>
+            <td>同上,但已装 ffmpeg</td>
+            <td>最精简的控制台版本</td>
+          </tr>
+        </tbody>
+      </table>
+      <p><strong>命名约定</strong>:<code>-ffmpeg</code> = 内嵌 ffmpeg(开箱即用);<code>-desktop</code> = 托盘 + 隐藏黑窗(双击运行)。不确定就选第一个 <code>desktop-ffmpeg</code>。</p>
+
+      <h3 id="run-desktop">双击运行(desktop 版)</h3>
+      <ol class="step-list">
+        <li>下载 exe,放到一个<strong>固定目录</strong>(别放桌面/下载文件夹,因为程序会在 exe 同目录创建 <code>data/</code> 和 <code>hikami.db</code>)。</li>
+        <li>双击运行。任务栏右下角出现一个"神"图标,防火墙可能询问是否允许联网 —— 选"允许"。</li>
+        <li>右键托盘图标 → <strong>「打开管理界面」</strong>,浏览器自动打开;或手动访问 <code>http://127.0.0.1:6334</code>。</li>
+        <li>关闭程序:右键托盘图标 → 「退出」。日志文件在 <code>%LOCALAPPDATA%\Hikami-Go\hikami.log</code>。</li>
+      </ol>
+
+      <div class="callout warn">
+        <strong>⚠️ 无显示器服务器注意:</strong>如果是 Windows Server Core / 以系统服务方式跑,<strong>请用非 desktop 版</strong>。desktop 版依赖系统托盘(Win32 Shell_NotifyIcon),没有桌面会话时托盘图标无法创建,关闭流程走不通。非 desktop 版走信号监听,能被服务管理器优雅关闭。
+      </div>
+
+      <h3 id="run-cli">命令行运行 / 后台服务(非 desktop 版)</h3>
+      <pre><code># 命令行直接跑(日志打到终端)
+hikami-windows-amd64-ffmpeg.exe
+
+# 想开机自启 + 崩溃重启?用 NSSM 包装成 Windows Service:
+# 1. 下载 NSSM(https://nssm.cc/)
+# 2. nssm install hikami
+# 3. 填 exe 路径,启动类型选"自动"
+# 4. 之后用 services.msc / sc start hikami 管理</code></pre>
+    </section>
+
+    <!-- 三、首次启动 -->
+    <section id="first-run">
+      <h2>三、首次启动</h2>
+      <p>第一次打开管理界面,你会看到<strong>引导向导</strong>(如果 AI 还没配置),带你走完三步。也可以跳过向导,按下面的步骤手动配。</p>
+
+      <h3 id="onboarding">引导向导(推荐)</h3>
+      <ol class="step-list">
+        <li><strong>系统就绪检查</strong> —— 显示 ffmpeg / yt-dlp 等工具是否探测到。绿色勾表示 OK。</li>
+        <li><strong>填写 API 密钥</strong> —— 输入 DashScope 和回顾 AI 的 key,点保存。</li>
+        <li><strong>添加第一个主播</strong> —— 粘贴主播的 B 站主页 URL(如 <code>https://space.bilibili.com/12345678</code>),程序会自动识别主播名和 UID。</li>
+      </ol>
+      <p>向导完成后跳转到首页,你应该看到一个已就绪的系统。</p>
+
+      <h3 id="config-ai">手动配置 AI(如果跳过了向导)</h3>
+      <p>点左侧菜单 <strong>「设置」</strong>,找到下面这些卡片:</p>
+      <table class="opt-table">
+        <thead>
+          <tr><th>设置卡片</th><th>填什么</th><th>必填?</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>DashScope</strong>(通义听悟)</td>
+            <td>阿里云 DashScope 的 API Key;ASR / Tasks URL 通常留默认即可</td>
+            <td>转写必需</td>
+          </tr>
+          <tr>
+            <td><strong>回顾 AI</strong>(Recap)</td>
+            <td>选 provider(DeepSeek / 通义 / OpenAI 兼容 / Anthropic / 本地 CLI),填对应的 API Key 和模型名(如 <code>deepseek-chat</code>)</td>
+            <td>写回顾必需</td>
+          </tr>
+          <tr>
+            <td><strong>VAD 静音裁剪</strong></td>
+            <td>默认开启,转写前自动裁掉 &gt;2 秒的静音段,省 3-10% 计费时长。不需要可关</td>
+            <td>可选</td>
+          </tr>
+          <tr>
+            <td><strong>AI 搜索(MCP)</strong></td>
+            <td>填 Brave 或 Tavily 的搜索 API Key,写回顾时 AI 能联网查证。不填则不联网</td>
+            <td>可选</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3 id="add-streamer">添加主播</h3>
+      <p>点左侧菜单 <strong>「主播」</strong> → 右上角「添加主播」。</p>
+      <ol class="step-list">
+        <li><strong>主页 URL</strong>:粘贴 <code>https://space.bilibili.com/&lt;UID&gt;</code>(UID 是主页 URL 里那串数字)。</li>
+        <li>程序自动识别主播名和 UID,保存。</li>
+        <li>新主播出现在列表里,点开<strong>主播详情抽屉</strong>,可以配置:
+          <ul>
+            <li><strong>自动录制</strong>:直播开始自动录音频 + 弹幕</li>
+            <li><strong>自动转写</strong>:录制结束后自动转文字</li>
+            <li><strong>自动回顾</strong>:转写完成后自动生成回顾</li>
+            <li><strong>发布设置</strong>:发布到哪个 B 站账号、哪个文集、是否原创、AIGC 标记等</li>
+            <li><strong>术语表</strong>:这个主播专属的人名 / 游戏术语</li>
+          </ul>
+        </li>
+      </ol>
+      <p>典型场景:加一个常看的主播 → 打开「自动录制」+「自动转写」+「自动回顾」,以后他开播你都不用管,第二天打开就是一篇现成的回顾。</p>
+
+      <div class="callout">
+        <strong>🔒 安全提示:</strong>程序默认只监听本机 <code>127.0.0.1:6334</code>。如果想从其他电脑访问,必须在 <code>config.yaml</code> 里设 <code>web.admin_token</code> 加密码,否则任何人都能操作你的后台。
+      </div>
+    </section>
+
+    <!-- 四、自动录直播 -->
+    <section id="record-live">
+      <h2>四、自动录直播</h2>
+      <p>这是程序最核心的功能 —— 主播开播自动录,你完全不用守着。</p>
+
+      <h3>开一次自动录制</h3>
+      <ol class="step-list">
+        <li>在「主播」页打开主播的配置抽屉,确认「自动录制」开关已开。</li>
+        <li>主播开播后,程序会在几分钟内检测到(默认每 3 分钟检查一次直播状态)。</li>
+        <li>首页顶部状态条会变成<strong>「直播中」</strong>(橙色),并显示录制时长和音频分段数。</li>
+        <li>主播下播后,程序继续录完最后一段,然后自动进入转写流程(如果开了「自动转写」)。</li>
+      </ol>
+
+      <h3>手动触发录制</h3>
+      <p>主播已经在直播但没自动录?在主播列表点「立即检查」按钮,强制探测一次直播状态。探测到开播会立即开始录制。</p>
+
+      <h3>录制中的稳健性</h3>
+      <ul>
+        <li><strong>断线重连</strong>:网络抖动、CDN 切换导致断流,程序自动重连,已录的部分不丢。</li>
+        <li><strong>风控冷却</strong>:被 B 站限流时会等待冷却后重试,不会一直硬撞触发更严重的风控。</li>
+        <li><strong>空文件收尾</strong>:有时下播瞬间会产生 0 字节的空分段,程序自动识别并丢弃,不会让空文件污染后续转写。</li>
+        <li><strong>多分段合并</strong>:一场直播因为重连会产生多个音频分段,程序在转写前会自动合并成单个文件。</li>
+      </ul>
+    </section>
+
+    <!-- 五、处理回放 -->
+    <section id="import-replay">
+      <h2>五、处理回放</h2>
+      <p>不是只能录直播 —— 已经下播的回放也能处理,有三种方式。</p>
+
+      <h3 id="discover">方式一:发现回放(推荐)</h3>
+      <p>适合「我想批量看某主播最近都播了什么」。</p>
+      <ol class="step-list">
+        <li>进<strong>「回顾」</strong>页,切到 <strong>「回放」</strong> tab。</li>
+        <li>点「发现回放」,粘贴<strong>合集 URL</strong>(主播主页的「合集/列表」页 URL,如 <code>space.bilibili.com/12345678/lists/...</code>)。</li>
+        <li>高级选项可填:cookie(留空则默认用已登录的 B 站账号)、标题过滤前缀。</li>
+        <li>点「发现」,程序列出该合集所有回放。勾选你想处理的几条。</li>
+        <li>点「执行勾选」,程序后台下载,完成后自动转写。</li>
+      </ol>
+
+      <h3 id="download-url">方式二:链接下载</h3>
+      <p>适合「我只想处理这一个具体视频」。</p>
+      <ol class="step-list">
+        <li>「回顾」页 → 「回放」tab → 「链接下载」。</li>
+        <li>粘贴单个视频 URL(如 <code>https://www.bilibili.com/video/BV1xxx</code>)。</li>
+        <li>填标题(必填),可选主播(留空归入「未分类」)。</li>
+        <li>点「下载」,程序下载音频后自动转写。</li>
+      </ol>
+
+      <h3 id="import-local">方式三:导入本地文件</h3>
+      <p>适合「我已经有录音文件了,想让程序帮我转写 + 写回顾」。</p>
+      <ol class="step-list">
+        <li>「回顾」页 → 「回放」tab → 「导入」。</li>
+        <li>选择本地音频文件(mp3 / m4a / wav / flv 等 ffmpeg 支持的格式)。</li>
+        <li>填标题(必填),可选主播。</li>
+        <li>点「导入」,程序把音频标准化(转 mp3 + 重采样)后进入转写。</li>
+      </ol>
+    </section>
+
+    <!-- 六、生成回顾 -->
+    <section id="generate-recap">
+      <h2>六、生成回顾</h2>
+      <p>音频进入转写后,「回顾」页这一行会显示进度,从 <code>录音 → 转写中 → 转写完成</code>。转写完成后就可以生成回顾了。</p>
+
+      <h3>自动生成(推荐)</h3>
+      <p>如果主播抽屉里开了「自动回顾」开关,转写完成的场次会自动开始写回顾,无需操作。</p>
+
+      <h3>手动生成</h3>
+      <ol class="step-list">
+        <li>「回顾」页找到状态为「转写完成」的场次。</li>
+        <li>点「写回顾」按钮(行内动作或抽屉里都有)。</li>
+        <li>程序调用 AI 生成回顾,通常 1-3 分钟。生成中状态变为 <code>回顾中</code>。</li>
+        <li>完成后状态变 <code>已生成</code>,点这一行可以查看回顾的 Markdown 源码,直接编辑修改。</li>
+      </ol>
+
+      <h3>回顾的结构</h3>
+      <p>AI 默认生成的回顾包含五个部分(可在「设置 → 回顾模板」里自定义):</p>
+      <ul>
+        <li><strong>概要</strong> —— 一段话讲清楚这场直播讲了什么</li>
+        <li><strong>高光时刻</strong> —— 列出几个最精彩的片段,带时间戳</li>
+        <li><strong>详细内容</strong> —— 按主题分章节展开</li>
+        <li><strong>精彩语录</strong> —— 主播说的金句</li>
+        <li><strong>观看建议</strong> —— 适合什么样的观众看</li>
+      </ul>
+
+      <div class="callout tip">
+        <strong>💡 联网查证:</strong>如果你在「设置 → AI 搜索(MCP)」配置了 Brave 或 Tavily 的搜索 Key,写回顾时 AI 会主动联网核实术语、人名、事件,减少胡编。生成时间会稍长一些。
+      </div>
+
+      <h3>失败重试</h3>
+      <p>转写或回顾失败?「回顾」页这一行会显示「失败」,右侧有「重试」和「重置」两个入口:</p>
+      <ul>
+        <li><strong>重试</strong>:重跑当前失败步骤(如回顾失败就重写回顾)。</li>
+        <li><strong>重置</strong>:仅 ASR 转写失败时可用,把场次退回到「音频就绪」状态让你重新转写。</li>
+      </ul>
+    </section>
+
+    <!-- 七、发布到专栏 -->
+    <section id="publish">
+      <h2>七、发布到 B 站专栏</h2>
+      <p>回顾生成完,下一步就是发到 B 站专栏了。</p>
+
+      <h3>前置:登录 B 站账号</h3>
+      <ol class="step-list">
+        <li>「设置」页 → <strong>「账号」</strong>卡片。</li>
+        <li>点「扫码登录」,用手机 B 站 app 扫页面上的二维码。</li>
+        <li>登录成功后,程序保存 cookie,后续发布都用这个账号。</li>
+        <li>可以保存多个账号(如一个下载用、一个发布用),在主播抽屉里为每个主播指定不同的发布账号。</li>
+      </ol>
+
+      <h3>发布</h3>
+      <ol class="step-list">
+        <li>「回顾」页找到「已生成」的回顾,点「发布」按钮。</li>
+        <li>在发布对话框里确认:标题、专栏分区、文集、是否原创、AIGC 标记、封面。</li>
+        <li>选「直接发布」或「存为草稿」(推荐先存草稿,在 B 站 app 里确认无误后再发布)。</li>
+        <li>点确认。发布成功后状态变 <code>已发布</code>,并记录发布时间和文章链接。</li>
+      </ol>
+
+      <div class="callout warn">
+        <strong>⚠️ 风控建议:</strong>建议用小号发布,不要短时间内连续发多篇,避免被 B 站判定为营销号。程序默认会等回顾生成后再让你手动点发布,不会全自动连发。
+      </div>
+    </section>
+
+    <!-- 八、术语表 -->
+    <section id="glossary">
+      <h2>八、术语表(减少转错字)</h2>
+      <p>主播的名字、游戏术语经常被 AI 转错 —— 比如「灰泽满 Hazel」可能被转成「挥则慢 黑子」。术语表就是解决这个的。</p>
+
+      <h3>给主播配术语表</h3>
+      <ol class="step-list">
+        <li>「主播」页打开主播抽屉 → 「术语表」。</li>
+        <li>手动添加:输入错误写法(可选)和正确写法。例如「Hazel」 → 「灰泽满 Hazel」。</li>
+        <li>保存后,这个主播后续转写和回顾都会优先用术语表里的写法。</li>
+      </ol>
+
+      <h3>AI 自动发现新词</h3>
+      <p>程序还会在转写过程中自动识别可能的新术语,加到术语表的「候选」列表。「设置 → 术语表」里可以批量复核:AI 配合搜索引擎(如果配了 MCP)帮你确认每个候选要不要采纳。</p>
+    </section>
+
+    <!-- 九、网盘归档 -->
+    <section id="network-disk">
+      <h2>九、录音自动存网盘</h2>
+      <p>录音文件占地方?可以让程序发布完成后自动上传到 WebDAV 网盘,然后删除本地副本。</p>
+      <ol class="step-list">
+        <li>「设置」页 → <strong>「网盘」</strong>(WebDAV)卡片。</li>
+        <li>填 WebDAV 服务器地址、用户名、密码、远程目录。</li>
+        <li>保存。之后每场直播发布完,音频文件自动上传,本地副本删除(数据库里保留索引,界面仍能看到记录)。</li>
+      </ol>
+      <p>不配也能用 —— 程序会把录音留在本地 <code>data/&lt;主播&gt;/&lt;场次&gt;/raw/</code> 目录。</p>
+    </section>
+
+    <!-- 十、常见问题 -->
+    <section id="troubleshoot">
+      <h2>十、常见问题</h2>
+
+      <h3>启动后打不开管理界面?</h3>
+      <ul>
+        <li>确认浏览器访问的是 <code>http://127.0.0.1:6334</code>(注意是 http 不是 https)。</li>
+        <li>检查端口是否被占用:命令行 <code>netstat -ano | findstr 6334</code>,如果有其他进程占用,在 <code>config.yaml</code> 里改 <code>web.listen</code> 换个端口。</li>
+        <li>desktop 版右键托盘图标 → 「打开管理界面」会自动开浏览器。</li>
+      </ul>
+
+      <h3>启动报错 "ffmpeg not found"?</h3>
+      <p>两种解决:</p>
+      <ul>
+        <li><strong>简单方案</strong>:下载带 <code>-ffmpeg</code> 后缀的版本(自带裁剪版 ffmpeg)。</li>
+        <li><strong>自己装 ffmpeg</strong>:从 <a href="https://ffmpeg.org/download.html" target="_blank" rel="noopener">ffmpeg.org</a> 下载,把 <code>ffmpeg.exe</code> 和 <code>ffprobe.exe</code> 放到 PATH 里或 exe 同目录。</li>
+      </ul>
+
+      <h3>录制 / 转写 / 回顾失败?</h3>
+      <ul>
+        <li>看「回顾」页这一行的红色错误提示,会写明是哪一步、什么原因。</li>
+        <li>点「重试」重跑失败的步骤;ASR 转写失败可以「重置」回退到「音频就绪」。</li>
+        <li>如果是 AI 接口报错,检查「设置」里的 API Key 和 URL 是否正确、账户余额是否充足。</li>
+        <li>desktop 版日志在 <code>%LOCALAPPDATA%\Hikami-Go\hikami.log</code>;命令行版日志直接打在终端。</li>
+      </ul>
+
+      <h3>主播开播了但没自动录?</h3>
+      <ul>
+        <li>确认主播抽屉里「自动录制」开关是开的。</li>
+        <li>主播列表点「立即检查」强制探测一次直播状态。</li>
+        <li>确认你的 B 站账号 cookie 还没过期(「设置 → 账号」会显示登录状态)。主播隐藏了开播状态时,程序依赖账号 cookie 才能查到。</li>
+      </ul>
+
+      <h3>从别的电脑访问后台?</h3>
+      <p>默认只监听本机。要远程访问必须加密码:</p>
+      <pre><code># config.yaml
+web:
+  listen: "0.0.0.0:6334"      # 0.0.0.0 = 监听所有网卡
+  admin_token: "你的强密码"    # 必填!程序会强制要求</code></pre>
+      <p>重启程序后,从其他电脑访问 <code>http://&lt;这台电脑的IP&gt;:6334</code>,会要求输入 admin_token。</p>
+    </section>
+
+    <!-- 十一、进阶配置 -->
+    <section id="advanced">
+      <h2>十一、进阶配置</h2>
+      <p>以上是日常使用。下面这些是可选的进阶项,都在 <code>config.yaml</code>(或管理界面的「设置」页)里改。</p>
+
+      <table class="opt-table">
+        <thead>
+          <tr><th>配置项</th><th>作用</th><th>默认</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>output_root</code></td>
+            <td>录播、数据库存哪个目录</td>
+            <td><code>./data</code></td>
+          </tr>
+          <tr>
+            <td><code>web.listen</code></td>
+            <td>管理界面监听地址。改 <code>0.0.0.0:6334</code> 允许远程访问(必须配 admin_token)</td>
+            <td><code>127.0.0.1:6334</code></td>
+          </tr>
+          <tr>
+            <td><code>web.admin_token</code></td>
+            <td>后台访问密码。监听非本机时强制必填</td>
+            <td>空</td>
+          </tr>
+          <tr>
+            <td><code>vad.enabled</code></td>
+            <td>转写前裁掉静音段,省 3-10% 计费时长</td>
+            <td><code>true</code></td>
+          </tr>
+          <tr>
+            <td><code>cron.discovery</code></td>
+            <td>定时扫描主播直播状态的间隔。留空则不自动扫(纯手动模式)</td>
+            <td>空(2026-07-19 起默认禁用)</td>
+          </tr>
+          <tr>
+            <td><code>mcp.enabled</code></td>
+            <td>启用 AI 联网搜索。需要配 Brave 或 Tavily Key</td>
+            <td><code>false</code></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>完整配置项见仓库里的 <a href="https://github.com/lililixxx1/hikami-go/blob/main/config.full.example.yaml" target="_blank" rel="noopener"><code>config.full.example.yaml</code></a>,每个字段都有注释。</p>
+
+      <h3>配置备份与迁移</h3>
+      <p>换电脑时不用重配。「设置」页 → <strong>「备份」</strong>卡片可以导出一个 JSON 包,包含所有设置(密钥单独加密打包)。新机器装好程序后,「导入」这个 JSON 即可恢复全部配置。</p>
+
+      <div class="callout">
+        <strong>📖 想了解更多?</strong> deeper 文档在 GitHub 仓库:<a href="https://github.com/lililixxx1/hikami-go/blob/main/docs/BUSINESS_FLOW.md" target="_blank" rel="noopener">业务流程图</a>、<a href="https://github.com/lililixxx1/hikami-go/blob/main/docs/data-flow.md" target="_blank" rel="noopener">数据流详解</a>、<a href="https://github.com/lililixxx1/hikami-go/blob/main/docs/FRONTEND_ARCHITECTURE.md" target="_blank" rel="noopener">前端架构</a>。
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ===== 页脚 ===== -->
+<footer class="footer">
+  <div class="container">
+    <div class="footer-grid">
+      <div>
+        <div class="brand" style="margin-bottom:12px">
+          <span class="brand-mark">神</span>
+          <span style="color:#fff">你好神 · Hikami-Go</span>
+        </div>
+        <p style="font-size:14.5px;line-height:1.7;max-width:380px;margin:0">
+          中文名「你好神」取自 Hi-kami(Hi=你好,kami=神)的双关。
+          一个帮你把 B 站直播自动变成回顾文章的本地工具。
+        </p>
+      </div>
+      <div>
+        <h4>资源</h4>
+        <ul>
+          <li><a href="index.html">← 返回首页</a></li>
+          <li><a href="https://github.com/lililixxx1/hikami-go" target="_blank" rel="noopener">GitHub 仓库</a></li>
+          <li><a href="https://github.com/lililixxx1/hikami-go/releases/latest" target="_blank" rel="noopener">最新版本</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>文档</h4>
+        <ul>
+          <li><a href="https://github.com/lililixxx1/hikami-go/blob/main/docs/FRONTEND_ARCHITECTURE.md" target="_blank" rel="noopener">前端架构</a></li>
+          <li><a href="https://github.com/lililixxx1/hikami-go/blob/main/docs/BUSINESS_FLOW.md" target="_blank" rel="noopener">业务流程</a></li>
+          <li><a href="https://github.com/lililixxx1/hikami-go/blob/main/docs/data-flow.md" target="_blank" rel="noopener">数据流</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <span>GPL-3.0 许可证 · © 2026 Hikami-Go</span>
+      <span>界面字体 <a href="assets/SORA-OFL-LICENSE.txt" target="_blank">Sora (OFL 1.1)</a></span>
+    </div>
+  </div>
+</footer>
+
+<script src="assets/landing.js"></script>
+<script>
+  /* 文档页专用:左侧目录跟随滚动高亮当前章节 */
+  (function () {
+    var links = document.querySelectorAll('.docs-toc a[href^="#"]');
+    var targets = [];
+    links.forEach(function (a) {
+      var id = a.getAttribute('href').slice(1);
+      var el = document.getElementById(id);
+      if (el) targets.push({ link: a, el: el });
+    });
+    if (!targets.length || !('IntersectionObserver' in window)) return;
+
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        var found = targets.find(function (t) { return t.el === entry.target; });
+        if (!found) return;
+        if (entry.isIntersecting) {
+          targets.forEach(function (t) { t.link.classList.remove('active'); });
+          found.link.classList.add('active');
+        }
+      });
+    }, { rootMargin: '-80px 0px -70% 0px', threshold: 0 });
+
+    targets.forEach(function (t) { io.observe(t.el); });
+  })();
+</script>
+
+</body>
+</html>
