@@ -10,7 +10,7 @@
 
 - **入口文件**: `cookie.go`, `cookie_crypto.go`, `cookie_account.go`, `cookie_writer.go`, `login.go`, `wbi.go`, `ua.go`, `video.go`, `playurl.go`, `danmaku.go`, `danmaku_seg.go`, `buvid.go`
 - **核心类型**: `BiliCookie`, `CookieAccountStore`, `QRLoginSessionStore`, `WBISigner`, `BuvidStore`, `VideoClient`, `PlayURLClient`, `DanmakuClient`, `SegDanmaku`, `SegDanmakuClient`
-- **测试总数**: 84（按 `grep -c "^func Test" internal/biliutil/*_test.go` 统计；含 `buvid.go` 的 10 个测试函数、`cover_test.go` 的 2 个、`replay_title_test.go` 的 2 个；`http_test.go` 仅为测试辅助无 Test 函数）
+- **测试总数**: 90（按 `grep -c "^func Test" internal/biliutil/*_test.go` 统计；含 `buvid.go` 的 10 个测试函数、`cover_test.go` 的 2 个、`shortlink_test.go` 的 6 个、`replay_title_test.go` 的 2 个；`http_test.go` 仅为测试辅助无 Test 函数）
 
 ## 对外接口
 
@@ -104,6 +104,15 @@
 | `DownloadCover(ctx, client, url, cookieHeader, rawDir)` | 下载视频官方封面到 `rawDir`（文件名 `cover` + 按 Content-Type/URL 推断的扩展名），失败仅打 warn 不阻断主流程 |
 | `coverExt(contentType, rawURL)` | 按 Content-Type（image/jpeg→.jpg 等）推断封面扩展名，回退到 URL 路径解析 |
 | `CleanReplayTitle(title)` | 清洗录播视频标题，保留直播主题（去站点后缀/多余空白/emoji 变体等），幂等 |
+| `ResolveShortLink(ctx, client, rawURL)` | **2026-08-08 新增**。把 b23.tv 短链解析为含 BV 的落地长链(Go http.Client 默认跟随 10 次重定向,取 `resp.Request.URL`)。非 b23.tv 零开销原值返回;失败(网络错/落地 host 非 B 站官方域/落地无 BV)打 WARN 降级返回原值,不阻断调用方(与 DownloadCover 策略一致)。用途:`download.CreateFromURL` 入口单一收口,让下游 ExtractVideoID/cid/弹幕/标题统一拿到 BV |
+
+### 短链解析(2026-08-08 新增)
+
+`shortlink.go` 提供 b23.tv 短链到含 BV 长链的解析能力。核心设计:
+- **host 严格判定**:`isB23ShortLink` 先 `ToLower Contains` 快速短路,再 `url.Parse` + `EqualFold` + `TrimSuffix` 尾点严格判 `Hostname() == b23.tv`,排除 query/fragment 含 "b23.tv" 的长链与 `b23.tv.evil.com` 这类 host 仿冒(兼容 `B23.TV` 大小写与 `b23.tv.` 尾点)。
+- **落地 URL 双校验**:`isBilibiliVideoURL`(host ∈ www./m./bilibili.com)+ `bvPattern.FindString`(含 BV)。任一不满足降级,避免把风控中间页/登录页/钓鱼站当结果。
+- **降级不阻断**:与 `DownloadCover` 一致——网络错误/落地异常/无 BV 全部打 WARN 返回原短链,调用方继续用原值(走 sha1 兜底),音频/标题/弹幕任一失败都不阻断下载主体。
+- **复用既有基建**:`HTTPDoer`/`httpClientOrDefault`(30s 超时)/`setBiliHeaders`/`bvPattern`,签名对齐 `DownloadCover`。
 
 | 类型 | 说明 |
 |------|------|
@@ -256,6 +265,7 @@
 - `danmaku_test.go`: 2 个测试用例，覆盖明文 XML 和 `Content-Encoding: deflate`（zlib）解压
 - `danmaku_seg_test.go`: 9 个测试用例，覆盖多段解码、未知字段、截断、varint overflow、fixed64/fixed32 跳过、XML 转义、midHash 转义、空页停止、段数上限
 - `cover_test.go`: 2 个测试用例，覆盖 DownloadCover 落盘 + coverExt 扩展名推断
+- `shortlink_test.go`: 6 个测试用例（2026-08-08 新增），覆盖 ResolveShortLink b23.tv 短链解析：302→BV 成功、非 b23.tv 零开销原值返回、落地无 BV 降级、网络错误降级、isB23ShortLink host 判定（含 B23.TV 大小写 + b23.tv. 尾点 + query 含 b23.tv 误判排除 + host 仿冒排除）、落地 host 非 B 站官方域降级
 - `replay_title_test.go`: 2 个测试用例，覆盖 CleanReplayTitle 清洗 + 幂等性
 
 ## 常见问题 (FAQ)
@@ -296,6 +306,7 @@ A: 从 B 站 `nav` API 的 `wbi_img.img_url` 和 `wbi_img.sub_url` 字段提取�
 - `danmaku.go` -- B 站弹幕 XML 拉取，支持 deflate/gzip 解压
 - `danmaku_seg.go` -- seg.so 弹幕 protobuf wire 解码、分页拉取与 XML 合并
 - `cover.go` -- 视频官方封面下载（DownloadCover 按 Content-Type/URL 推断扩展名，失败仅 warn 不阻断）
+- `shortlink.go` -- **2026-08-08 新增**。b23.tv 短链解析（ResolveShortLink 把短链 HTTP 解析为含 BV 长链,host 严格判定 + 落地双校验 + 失败降级,供 download.CreateFromURL 入口单一收口）
 - `replay_title.go` -- 录播视频标题清洗（CleanReplayTitle，保留直播主题，幂等）
 - `buvid.go` -- 设备指纹存储（BuvidStore，按 cookie 24h 缓存 buvid3/buvid4，nil-safe）+ InjectBuvids replace 注入 + Invalidate（按 cookie 失效缓存，-352 重试用）
 - `cookie_test.go` -- Cookie 单元测试（1 个用例）
@@ -318,6 +329,7 @@ A: 从 B 站 `nav` API 的 `wbi_img.img_url` 和 `wbi_img.sub_url` 字段提取�
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-08-08 | 功能 | **新增 `shortlink.go` b23.tv 短链解析**(`ResolveShortLink`)。触发:8-7 官方录播用 b23.tv 短链下载,音频正常(yt-dlp 自动跟随 302)但回顾文档无弹幕、标题变 BV 兜底。根因:Go 代码 BV 提取依赖正则,b23.tv 短链不含 BV 字面量需 HTTP 302 解析。设计:host 严格判定(EqualFold+去尾点,排除 query 含 b23.tv / host 仿冒)+ 落地 URL 双校验(host 属 B 站官方域 + 含 BV)+ 失败降级不阻断(与 DownloadCover 策略一致)。复用 HTTPDoer/httpClientOrDefault/setBiliHeaders/bvPattern,签名对齐 DownloadCover。**测试 +6**(shortlink_test.go:FollowsRedirectToBV/NonB23ReturnsAsIs/NoBVInFinalFallback/NetworkErrorFallback/IsB23ShortLink 含大小写尾点 case/NonBilibiliFinalFallback),**biliutil 84→90**。codex 两阶段审核:r16 NEEDS_FIX(host 大小写/尾点 + 落地域名校验 + body 注释)→ r17 APPROVED。配套 `download.CreateFromURL` 入口单一收口(见 download/CLAUDE.md)。 |
 | 2026-07-29 | 重构 | **删除包级 `FetchVideoInfo` 便捷函数**(`video.go`,branch `fix/discover-title-perf-2026-07-29` 配套)。该函数每次调用 `vc := &VideoClient{}` 新建实例,导致 `BuvidStore`(24h)/WBI signer(1h)缓存随实例丢弃形同虚设 —— 发现回放预览时 38 条视频逐条解析空标题,每条重打 finger/spi + nav + view,耗时 29s 超前端 30s 超时。核实全项目**唯一调用方**是 `download.ResolveDownloadTitle`(改为持长生命周期 `Handler.viewClient` 实例方法后该函数变死代码),`download.go` 的 `fetchCidMapForMultiP`/`singlePCid` 与 `native.go` 本就直接 new `VideoClient{}` 调 `.Fetch()`,不走包级函数。`(*VideoClient).Fetch` 实例方法保留不变。**测试数不变(84)**:包级函数无专属测试,删除不影响。API 表 + 文件清单同步移除 FetchVideoInfo 描述。 |
 | 2026-07-06 | 功能 | 新增 `(*BuvidStore).Invalidate(cookieHeader)`：按 cookie 删除 buvid3/buvid4 缓存条目，下次 `GetBuvids` 重新拉取。用于 -352 风控重试前强制刷新指纹（与 `WBISigner.RefreshKeys` 配合，确保重试用新 buvid + 新签名）。nil-safe（nil 接收者直接返回）。配套 4 个测试（nil-safe/按 key 删除强制重拉/仅影响指定 cookie/缺失 key no-op），顺手修正 `buvid_test` 的 `readCount` 无效独立 mutex 改用 `atomic`。**调用方**：`live_record/bilibili.go` 的 `CheckLive` -352 重试路径。本轮同时补登此前漏入文档的 `cover.go`（DownloadCover，2 测试）和 `replay_title.go`（CleanReplayTitle，2 测试）。测试计数：biliutil 80→84（buvid_test 6→10、+cover 2、+replay_title 2） |
 | 2026-07-05 | 功能 | 新增 `buvid.go`：`BuvidStore`（按 cookie 24h 缓存 buvid3/buvid4，nil-safe）+ `InjectBuvids`（replace 语义注入，剔除旧同名再追加）。**目的**：统一 B 站 -352 风控对抗的设备指纹层，消除 `publisher`/`live_record` 此前两份重复的 buvid 拉取实现，并供 `channel/identify` 修复 -352 使用。关键洞察：buvid 注入是 -352 对抗的必要但不充分条件，`getInfoByRoom`/`getRoomInfoOld`/`getDanmuInfo` 端点还需 WBI 签名（探针实测：buvid only 仍 -352，buvid + WBI → 200）。测试计数：biliutil 69→80 |
