@@ -834,6 +834,99 @@ func TestHandleTaskCDNErrorUsesIndependentBudget(t *testing.T) {
 	}
 }
 
+// TestHandleTaskCDNBudgetExhaustedWithAudioFinishesSuccess 验证 2026-08-08 统一收口修复：
+// 首段录到有效音频后，后续重连段全部 CDN 404 直到 cdnRetryBudget 耗尽 —— 此时**有已录音频，
+// 应走成功收尾保留音频**（finishWithAudioIfAny → err=nil → finalize + enqueueNormalize），
+// 而非旧代码的裸 break reconnect 导致循环外 return err 丢弃音频。
+//
+// 真实场景（2026-08-07 灰泽满那场 bili_1298779265_live_20260807_225255）：part.4 录满 36.7MB/1535s，
+// 下播后重连全 404，CDN 预算耗尽命中循环顶部 CDN 分支（旧代码 :838-840 无守卫），整场判 failed、
+// 音频白录。8-3 commit 5504d09 只补了 switch 内两条耗尽路径，漏了这条循环顶部的 CDN 分支。
+//
+// fakeClient 的 CheckLive 总返回 live=true（避免下播误判干扰），GetStream 总成功（让 selectStream
+// 不失败，确保只有 recordAudio 返回 404 来触发 CDN 分支）。recorder 调用 7 次：1 首段(成功) +
+// 1 次 maxReconnect 普通重连(404) + 5 次 CDN 重试(404，budget 5→0 耗尽)。
+func TestHandleTaskCDNBudgetExhaustedWithAudioFinishesSuccess(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = true
+	manager.cfg.LiveRecord.MaxReconnect = 3 // 通用预算给足，确保是 CDN 预算（=5）耗尽触发收尾
+	manager.cfg.LiveRecord.ReconnectDelay = 1
+	// fakeClient: CheckLive 总 live=true，GetStream 总成功 —— 确保 selectStream 不失败，
+	// 只有 recordAudio 返回 CDN 404 来稳定触发循环顶部 CDN 分支。
+	manager.client = fakeClient{}
+	recorder := &recordOnceThenCDNFailRecorder{}
+	manager.audio = recorder
+	stubFFmpegConcat(t)
+
+	running := mustCreateRunningTask(t, pool)
+	err := manager.HandleTask(context.Background(), running, noopReporter{})
+	if err != nil {
+		t.Fatalf("handle task: %v, want nil (CDN budget exhausted but first segment recorded → preserve audio)", err)
+	}
+
+	// 成功收尾应合并分段为 audio.m4a 并保留首段内容。
+	rawDir := filepath.Join(manager.cfg.OutputRoot, "huize", "live_20260427_120000", "raw")
+	audioPath := filepath.Join(rawDir, "audio.m4a")
+	content, readErr := os.ReadFile(audioPath)
+	if readErr != nil {
+		t.Fatalf("read finalized audio: %v", readErr)
+	}
+	if !strings.Contains(string(content), "segment-1") {
+		t.Fatalf("audio content = %q, want first segment preserved after CDN exhaustion", string(content))
+	}
+	// 首段(成功)经 decideAfterRecord→afterRecordReconnect 走一次 maxReconnect 重连(part.1 返回 404)，
+	// 之后进入循环顶部 CDN 分支耗尽 cdnRetryBudget=5（part.2~6）。共 7 次调用：1 首段 + 1 普通
+	// 重连 + 5 次 CDN 重试。精确 ==7 证明走的是 CDN 独立预算耗尽而非被 maxReconnect 截断。
+	if len(recorder.outputs) != 7 {
+		t.Fatalf("recorder outputs = %d, want 7 (1 successful first + 1 maxReconnect retry + 5 CDN retries exhausting budget)", len(recorder.outputs))
+	}
+}
+
+// TestHandleTaskSelectStreamBudgetExhaustedWithAudioFinishesSuccess 验证 selectFailedPending
+// 分支预算耗尽时的对称守卫（2026-08-08 统一收口修复）：首段录到有效音频后，重连 selectStream
+// 失败直到 attemptsUsed >= maxReconnect 耗尽 —— 有已录音频应走成功收尾保留音频，而非旧代码的
+// 裸 break reconnect 导致循环外 return err 丢弃音频。
+//
+// selectStreamFailsAfterFirstClient:首次 GetStream 成功(首段可录制),后续全失败(重连选流失败)。
+// 首段 recorder 返回 nil(clean EOF)→ decideAfterRecord(live=true)→ afterRecordReconnect →
+// selectStream 失败 → 下轮 selectFailedPending 分支 attemptsUsed>=maxReconnect(=1) 耗尽。
+// 断言:err==nil + audio.m4a 保留首段 + GetStream 调用 2 次(证明走到了 selectStream 重连)。
+func TestHandleTaskSelectStreamBudgetExhaustedWithAudioFinishesSuccess(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = true
+	manager.cfg.LiveRecord.MaxReconnect = 1
+	manager.cfg.LiveRecord.ReconnectDelay = 1
+	c := &selectStreamFailsAfterFirstClient{tb: t}
+	manager.client = c
+	// cleanEOFRecorder:每次写有效字节返回 nil。首段成功录到音频；后续 selectStream 失败
+	// 让重连段无法录制(recordAudio 不会被调用),所以音频只有首段。
+	manager.audio = &cleanEOFRecorder{}
+	stubFFmpegConcat(t)
+
+	running := mustCreateRunningTask(t, pool)
+	err := manager.HandleTask(context.Background(), running, noopReporter{})
+	if err != nil {
+		t.Fatalf("handle task: %v, want nil (selectStream budget exhausted but first segment recorded → preserve audio)", err)
+	}
+
+	// 成功收尾应保留首段音频。
+	rawDir := filepath.Join(manager.cfg.OutputRoot, "huize", "live_20260427_120000", "raw")
+	audioPath := filepath.Join(rawDir, "audio.m4a")
+	content, readErr := os.ReadFile(audioPath)
+	if readErr != nil {
+		t.Fatalf("read finalized audio: %v", readErr)
+	}
+	if !strings.Contains(string(content), "segment-1") {
+		t.Fatalf("audio content = %q, want first segment preserved after selectStream exhaustion", string(content))
+	}
+	// GetStream 首次成功(首段) + 第 2 次失败(触发 selectFailedPending 耗尽)= 2 次。
+	if c.getStreamCnt != 2 {
+		t.Fatalf("GetStream called %d times, want 2 (1 successful first + 1 failing reconnect)", c.getStreamCnt)
+	}
+}
+
 // TestCdnBackoff 验证异常 #2 的指数退避公式(base*2^n,上限 60s)。
 func TestCdnBackoff(t *testing.T) {
 	tests := []struct {
@@ -1265,6 +1358,21 @@ type cdnFailRecorder struct {
 
 func (r *cdnFailRecorder) Record(ctx context.Context, stream StreamInfo, outputPath string) error {
 	r.outputs = append(r.outputs, outputPath)
+	return errors.New("open live stream: http status 404")
+}
+
+// recordOnceThenCDNFailRecorder 首次 Record 写有效字节并返回 nil（模拟录到主体内容），
+// 之后每次返回 CDN 404 不写文件（模拟下播后重连全失败）。用于验证 CDN 预算耗尽时
+// 有已录音频应走成功收尾（2026-08-08 统一收口修复，对应 2026-08-07 灰泽满那场）。
+type recordOnceThenCDNFailRecorder struct {
+	outputs []string
+}
+
+func (r *recordOnceThenCDNFailRecorder) Record(ctx context.Context, stream StreamInfo, outputPath string) error {
+	r.outputs = append(r.outputs, outputPath)
+	if len(r.outputs) == 1 {
+		return os.WriteFile(outputPath, []byte("segment-1\n"), 0o644)
+	}
 	return errors.New("open live stream: http status 404")
 }
 
