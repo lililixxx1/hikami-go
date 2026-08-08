@@ -488,6 +488,72 @@ func TestCreateFromURL_ChannelMissing(t *testing.T) {
 	}
 }
 
+// TestCreateFromURL_B23ShortLinkResolvesToBV 钉死:b23.tv 短链在 CreateFromURL 入口
+// 经 shortLinkResolver 解析为含 BV 的长链后,SourceID 为真实 BV(而非 sha1 兜底)、
+// SourceURL 为落地长链的归一化结果。用 SetShortLinkResolver 注入桩避免打真实 b23.tv 外网。
+// 这是本次短链修复的核心契约:CreateFromURL 确实调了解析、下游确实拿到 BV。
+func TestCreateFromURL_B23ShortLinkResolvesToBV(t *testing.T) {
+	fix := setupDownloadTest(t)
+	fix.insertChannel(t, "ch1")
+	h := NewHandler(fix.cfg, fix.sessions, fix.states, fix.pool, &mockDownloader{}, fix.channelStore)
+
+	// 注入桩:b23.tv 短链 → 返回含 BV 的落地长链(模拟真实解析成功)。
+	h.SetShortLinkResolver(func(_ context.Context, _ biliutil.HTTPDoer, rawURL string) string {
+		if strings.Contains(rawURL, "b23.tv") {
+			return "https://www.bilibili.com/video/BV1xx411c7mD"
+		}
+		return rawURL
+	})
+
+	task, err := h.CreateFromURL(context.Background(), "ch1", "https://b23.tv/AJIsbvW")
+	if err != nil {
+		t.Fatalf("CreateFromURL: %v", err)
+	}
+	got, err := fix.sessions.Get(context.Background(), task.SessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if want := "BV1xx411c7mD"; got.SourceID != want {
+		t.Fatalf("SourceID = %q, want %q (短链应解析为 BV,而非 sha1 兜底)", got.SourceID, want)
+	}
+	if got.SourceURL != "https://www.bilibili.com/video/BV1xx411c7mD" {
+		t.Fatalf("SourceURL = %q, want 落地长链归一化结果", got.SourceURL)
+	}
+}
+
+// TestCreateFromURL_B23ShortLinkDegradesSafely 钉死降级路径:短链解析失败(桩返回原短链)
+// 时,CreateFromURL 不 panic、仍成功创建 session(SourceID 退回 sha1 兜底)——
+// 与"失败降级不阻断"的设计契约一致。
+func TestCreateFromURL_B23ShortLinkDegradesSafely(t *testing.T) {
+	fix := setupDownloadTest(t)
+	fix.insertChannel(t, "ch1")
+	h := NewHandler(fix.cfg, fix.sessions, fix.states, fix.pool, &mockDownloader{}, fix.channelStore)
+
+	// 注入桩:模拟解析失败 → 降级返回原短链(ResolveShortLink 失败时的真实行为)。
+	h.SetShortLinkResolver(func(_ context.Context, _ biliutil.HTTPDoer, rawURL string) string {
+		return rawURL
+	})
+
+	task, err := h.CreateFromURL(context.Background(), "ch1", "https://b23.tv/AJIsbvW")
+	if err != nil {
+		t.Fatalf("CreateFromURL 降级路径也应成功创建 session: %v", err)
+	}
+	if task.SessionID == "" {
+		t.Fatal("task.SessionID empty")
+	}
+	got, err := fix.sessions.Get(context.Background(), task.SessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	// 降级时 SourceID 为 sha1[:16] 兜底(16 位十六进制),非 BV 号。
+	if got.SourceID == "" {
+		t.Fatal("SourceID empty")
+	}
+	if strings.HasPrefix(got.SourceID, "BV") {
+		t.Fatalf("降级时 SourceID 应为 sha1 兜底,实际 = %q (看起来像 BV,说明降级没生效)", got.SourceID)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Cookie 解析：注入 SetCookieAccountStore 后，HandleTask 应经 ResolveCookie 落盘临时 cookie。
 // ---------------------------------------------------------------------------

@@ -500,6 +500,10 @@ type Handler struct {
 	// (2026-07-29 修复)。参照 channel.Identifier.buvids / NativeDownloader.ViewBuvids 范式。
 	// 零值 VideoClient 可用:首次 Fetch 时 ensure() 懒初始化内部组件。
 	viewClient *biliutil.VideoClient
+	// shortLinkResolver 解析 b23.tv 短链为含 BV 的长链(2026-08-08 短链修复)。
+	// 生产默认 biliutil.ResolveShortLink(走 httpClientOrDefault);测试可经
+	// SetShortLinkResolver 注入桩避免打真实 b23.tv 外网。nil 时用包级默认实现。
+	shortLinkResolver func(ctx context.Context, client biliutil.HTTPDoer, rawURL string) string
 }
 
 func NewHandler(cfg *config.Config, sessions *session.Store, states *state.Store, workers *worker.Pool, downloader Downloader, channels *channel.Store) *Handler {
@@ -519,6 +523,13 @@ func NewHandler(cfg *config.Config, sessions *session.Store, states *state.Store
 // 必须在首次 ResolveDownloadTitle 前调用;生产代码用 NewHandler 注入的默认实例。
 func (h *Handler) SetViewClient(vc *biliutil.VideoClient) {
 	h.viewClient = vc
+}
+
+// SetShortLinkResolver 替换内部短链解析函数,仅用于测试注入桩避免打真实 b23.tv 外网
+// (对齐 SetViewClient 注入范式)。必须在首次 CreateFromURL 前调用;
+// 生产代码用包级 biliutil.ResolveShortLink(经 NewHandler 留 nil 兜底)。
+func (h *Handler) SetShortLinkResolver(fn func(ctx context.Context, client biliutil.HTTPDoer, rawURL string) string) {
+	h.shortLinkResolver = fn
 }
 
 // SetCookieAccountStore 注入账号池，使下载支持账号化 cookie 解析
@@ -544,6 +555,15 @@ func (h *Handler) CreateFromURL(ctx context.Context, channelID, rawURL string) (
 	if rawURL == "" {
 		return worker.Task{}, fmt.Errorf("%w: url is required", session.ErrInvalid)
 	}
+	// b23.tv 短链解析为完整 URL(含 BV 号),后续 ExtractVideoID/NormalizeSourceURL/
+	// singlePCid/fetchCidMapForMultiP/ResolveDownloadTitle 统一受益(单一入口收口,DRY)。
+	// 非 b23.tv 零开销返回;解析失败降级返回原 URL,不阻断导入(见 ResolveShortLink 文档)。
+	// resolver 经 SetShortLinkResolver 注入(测试桩),nil 兜底到包级默认实现。
+	resolver := h.shortLinkResolver
+	if resolver == nil {
+		resolver = biliutil.ResolveShortLink
+	}
+	rawURL = resolver(ctx, nil, rawURL)
 	sourceID := biliutil.ExtractVideoID(rawURL)
 	cleanURL := biliutil.NormalizeSourceURL(rawURL)
 	title := h.ResolveDownloadTitle(ctx, channelID, sourceID)
