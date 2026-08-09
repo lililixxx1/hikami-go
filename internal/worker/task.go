@@ -208,6 +208,25 @@ func (s *Store) MarkRunning(ctx context.Context, id string) (Task, error) {
 	return s.Get(ctx, id)
 }
 
+// DeferRunning 在不增加 attempt 的情况下把 running 任务退回 pending。适用于
+// handler 尚未真正尝试远端操作的场景，例如下载限速窗口仍关闭时。
+func (s *Store) DeferRunning(ctx context.Context, id string, message string) (Task, error) {
+	nowStr := nowRFC3339()
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE tasks
+		SET status = ?, message = ?, error = NULL, started_at = NULL,
+			finished_at = NULL, updated_at = ?
+		WHERE id = ? AND status = ?
+	`, StatusPending, message, nowStr, id, StatusRunning)
+	if err != nil {
+		return Task{}, err
+	}
+	if err := requireAffected(result); err != nil {
+		return Task{}, err
+	}
+	return s.Get(ctx, id)
+}
+
 // ResetToPending 将任务重置为 pending 状态，同时重置 started_at、progress 和 attempt 计数。
 // 用于服务重启时恢复可重新执行的任务。
 func (s *Store) ResetToPending(ctx context.Context, id string) (Task, error) {

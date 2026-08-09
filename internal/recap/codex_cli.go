@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"hikami-go/internal/aiprovider"
@@ -36,8 +38,11 @@ func (p *CodexCLIProvider) Generate(ctx context.Context, systemPrompt string, pr
 	defer cancel()
 
 	fullPrompt := "--- System Instructions ---\n" + systemPrompt + "\n\n--- User Request ---\n" + prompt
-	args := []string{"exec", "--model", recapModelFromContext(ctx, p.cfg.RecapAI.Model), "-"}
+	args := codexCLIArgs(recapModelFromContext(ctx, p.cfg.RecapAI.Model))
 	cmd := exec.CommandContext(ctx, cliPath, args...)
+	// 回顾生成只需要 stdin 中的提示词。从仓库目录运行会让 Codex 加载项目
+	// AGENTS.md 等编码代理上下文，导致每次回顾浪费大量 token。
+	cmd.Dir = os.TempDir()
 	executil.HideWindow(cmd)
 	cmd.Stdin = bytes.NewReader([]byte(fullPrompt))
 
@@ -56,4 +61,18 @@ func (p *CodexCLIProvider) Generate(ctx context.Context, systemPrompt string, pr
 		Content: content,
 		Raw:     raw,
 	}, nil
+}
+
+func codexCLIArgs(model string) []string {
+	args := []string{
+		"exec",
+		"--sandbox", "read-only",
+		"--ephemeral",
+		"--color", "never",
+		"--skip-git-repo-check",
+	}
+	if model = strings.TrimSpace(model); model != "" {
+		args = append(args, "--model", model)
+	}
+	return append(args, "-")
 }

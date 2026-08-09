@@ -109,14 +109,15 @@ type LogsConfig struct {
 }
 
 type DashScopeConfig struct {
-	APIKeyEnv          string `mapstructure:"api_key_env"`
-	ASRURL             string `mapstructure:"asr_url"`
-	TasksURL           string `mapstructure:"tasks_url"`
-	Model              string `mapstructure:"model"`
-	Language           string `mapstructure:"language"`
-	DiarizationEnabled bool   `mapstructure:"diarization_enabled"`
-	SpeakerCount       int    `mapstructure:"speaker_count"`
-	VocabularyID       string `mapstructure:"vocabulary_id"`
+	APIKeyEnv               string `mapstructure:"api_key_env"`
+	ASRURL                  string `mapstructure:"asr_url"`
+	TasksURL                string `mapstructure:"tasks_url"`
+	Model                   string `mapstructure:"model"`
+	Language                string `mapstructure:"language"`
+	DiarizationEnabled      bool   `mapstructure:"diarization_enabled"`
+	SpeakerCount            int    `mapstructure:"speaker_count"`
+	VocabularyID            string `mapstructure:"vocabulary_id"`
+	TemporaryStorageEnabled bool   `mapstructure:"temporary_storage_enabled"`
 }
 
 type ASRTempConfig struct {
@@ -196,10 +197,15 @@ func (r RecapAIConfig) EffectiveBaseURL() string {
 	return DefaultRecapBaseURL
 }
 
-// EffectiveModel 返回留空兜底后的有效 model,空值回落到 deepseek-v4-pro。
+// EffectiveModel 返回留空兜底后的有效 model。API provider 空值回落到
+// deepseek-v4-pro；CLI/local provider 空值表示沿用 CLI 自身默认模型。
 func (r RecapAIConfig) EffectiveModel() string {
 	if m := strings.TrimSpace(r.Model); m != "" {
 		return m
+	}
+	switch r.EffectiveProvider() {
+	case "claude_cli", "codex_cli", "local":
+		return ""
 	}
 	return DefaultRecapModel
 }
@@ -365,6 +371,18 @@ type ArchiveConfig struct {
 
 type DownloaderConfig struct {
 	Backend string `mapstructure:"backend"`
+	// AutoRetry 仅控制 download 任务；不需要打开 worker.auto_retry，避免把
+	// ASR/recap 等任务一并自动重试。MaxRetryAttempts 包含首次执行。
+	AutoRetry        bool `mapstructure:"auto_retry"`
+	MaxRetryAttempts int  `mapstructure:"max_retry_attempts"`
+	// MaxConcurrent 限制同时访问 B 站的回放下载数。<=0 表示关闭批量下载保护，
+	// 保持升级前的并发行为；设置为正数后才启用间隔和失败冷却。
+	MaxConcurrent int `mapstructure:"max_concurrent"`
+	// MinIntervalSeconds 是一次下载结束到下一次下载开始之间的最小间隔。
+	MinIntervalSeconds int `mapstructure:"min_interval_seconds"`
+	// FailureBackoffSeconds 是任一下载失败后，所有后续下载共享的冷却时间。
+	// 用共享窗口避免批量任务在 B 站 412/429 风控时继续逐个撞限流。
+	FailureBackoffSeconds int `mapstructure:"failure_backoff_seconds"`
 	// PerURLStallSeconds 控制 native 单 URL 的「无进度超时」：持续收到字节即重置，
 	// 连续 N 秒无字节才切 backupUrl。<=0 用默认（60s）。
 	// 2026-07-31 修正：取代原固定 5 分钟总时长超时（误掐长视频长传输）。
@@ -448,17 +466,48 @@ func (m MCPConfig) EffectiveMaxToolRounds() int {
 // 零回归:失败/裁剪比低于 min_output_ratio/ffmpeg 缺 filter → 用原始音频,行为与关闭一致。
 // 详见 plans/plan-vad-2026-07-27.md。
 type VADConfig struct {
-	Enabled        bool    `mapstructure:"enabled"          json:"enabled"`
-	ThresholdDB    int     `mapstructure:"threshold_db"     json:"threshold_db"`     // -80 ~ 0,推荐 -40
-	MinSilenceSec  float64 `mapstructure:"min_silence_sec"  json:"min_silence_sec"`  // > 0,推荐 2.0
-	PaddingSec     float64 `mapstructure:"padding_sec"      json:"padding_sec"`      // >= 0,推荐 0.2(silence_map 层实现,不用 ffmpeg stop_silence)
-	DetectionMode  string  `mapstructure:"detection_mode"   json:"detection_mode"`   // "peak" | "rms",固定 peak(silencedetect 只支持 peak,VADProcessor 内部忽略此字段)
-	MinOutputRatio float64 `mapstructure:"min_output_ratio" json:"min_output_ratio"` // 裁剪后/原始 < 此值视为异常,回退原始(防 ffmpeg bug 裁过头)
+	Enabled         bool    `mapstructure:"enabled"          json:"enabled"`
+	Engine          string  `mapstructure:"engine"           json:"engine"`               // "silence" | "ina";空值按 silence 兼容旧配置
+	ThresholdDB     int     `mapstructure:"threshold_db"     json:"threshold_db"`         // -80 ~ 0,推荐 -40
+	MinSilenceSec   float64 `mapstructure:"min_silence_sec"  json:"min_silence_sec"`      // > 0,推荐 2.0
+	PaddingSec      float64 `mapstructure:"padding_sec"      json:"padding_sec"`          // >= 0,推荐 0.2(silence_map 层实现,不用 ffmpeg stop_silence)
+	DetectionMode   string  `mapstructure:"detection_mode"   json:"detection_mode"`       // "peak" | "rms",固定 peak(silencedetect 只支持 peak,VADProcessor 内部忽略此字段)
+	MinOutputRatio  float64 `mapstructure:"min_output_ratio" json:"min_output_ratio"`     // 裁剪后/原始 < 此值视为异常,回退原始(防 ffmpeg bug 裁过头)
+	InaPython       string  `mapstructure:"ina_python"       json:"ina_python"`           // inaSpeechSegmenter 隔离环境 Python
+	InaScript       string  `mapstructure:"ina_script"       json:"ina_script"`           // scripts/ina_segment.py
+	InaBatchSize    int     `mapstructure:"ina_batch_size"   json:"ina_batch_size"`       // GPU 推理 batch,显存不足时调低
+	InaMinSpeechSec float64 `mapstructure:"ina_min_speech_sec" json:"ina_min_speech_sec"` // 丢弃更短的 speech 毛刺
+	InaMergeGapSec  float64 `mapstructure:"ina_merge_gap_sec"  json:"ina_merge_gap_sec"`  // 合并相邻说话片段的最大间隔
+}
+
+func (v VADConfig) EffectiveEngine() string {
+	if strings.TrimSpace(v.Engine) == "" {
+		return "silence"
+	}
+	return strings.ToLower(strings.TrimSpace(v.Engine))
+}
+
+func (v VADConfig) EffectiveInaPython() string {
+	if strings.TrimSpace(v.InaPython) == "" {
+		return "python3"
+	}
+	return strings.TrimSpace(v.InaPython)
+}
+
+func (v VADConfig) EffectiveInaScript() string {
+	if strings.TrimSpace(v.InaScript) == "" {
+		return "scripts/ina_segment.py"
+	}
+	return strings.TrimSpace(v.InaScript)
 }
 
 // Validate 校验 VADConfig 字段范围。Config.Validate 与 handler updateVADConfig 都调它
 // (qoder v2 M-1:handler inline 校验避免存入非法值后下次启动 fatal)。
 func (v VADConfig) Validate() error {
+	engine := v.EffectiveEngine()
+	if engine != "silence" && engine != "ina" {
+		return fmt.Errorf("vad.engine must be silence or ina")
+	}
 	if v.ThresholdDB > 0 || v.ThresholdDB < -80 {
 		return fmt.Errorf("vad.threshold_db must be in [-80, 0]")
 	}
@@ -470,6 +519,17 @@ func (v VADConfig) Validate() error {
 	}
 	if v.MinOutputRatio <= 0 || v.MinOutputRatio > 1 {
 		return fmt.Errorf("vad.min_output_ratio must be in (0, 1]")
+	}
+	if engine == "ina" {
+		if v.InaBatchSize <= 0 {
+			return fmt.Errorf("vad.ina_batch_size must be > 0")
+		}
+		if v.InaMinSpeechSec < 0 {
+			return fmt.Errorf("vad.ina_min_speech_sec must be >= 0")
+		}
+		if v.InaMergeGapSec < 0 {
+			return fmt.Errorf("vad.ina_merge_gap_sec must be >= 0")
+		}
 	}
 	// detection_mode 不校验:VADProcessor 内部固定 peak(写死),忽略用户配置。
 	return nil
@@ -622,14 +682,15 @@ type ASRS3SectionDTO struct {
 
 // DashScopeSectionDTO 对应 updateDashScopeConfig 管理的字段。APIKey 不进 DTO（走 secrets）。
 type DashScopeSectionDTO struct {
-	APIKeyEnv          *string `json:"api_key_env,omitempty"`
-	ASRURL             *string `json:"asr_url,omitempty"`
-	TasksURL           *string `json:"tasks_url,omitempty"`
-	Model              *string `json:"model,omitempty"`
-	Language           *string `json:"language,omitempty"`
-	DiarizationEnabled *bool   `json:"diarization_enabled,omitempty"`
-	SpeakerCount       *int    `json:"speaker_count,omitempty"`
-	VocabularyID       *string `json:"vocabulary_id,omitempty"`
+	APIKeyEnv               *string `json:"api_key_env,omitempty"`
+	ASRURL                  *string `json:"asr_url,omitempty"`
+	TasksURL                *string `json:"tasks_url,omitempty"`
+	Model                   *string `json:"model,omitempty"`
+	Language                *string `json:"language,omitempty"`
+	DiarizationEnabled      *bool   `json:"diarization_enabled,omitempty"`
+	SpeakerCount            *int    `json:"speaker_count,omitempty"`
+	VocabularyID            *string `json:"vocabulary_id,omitempty"`
+	TemporaryStorageEnabled *bool   `json:"temporary_storage_enabled,omitempty"`
 }
 
 // RecapAISectionDTO 对应 updateRecapConfig 管理的字段。
@@ -689,11 +750,17 @@ type MCPSectionDTO struct {
 // DetectionMode 不暴露(UI 不显示),VADProcessor 内部固定 peak。
 // 见 plans/plan-vad-2026-07-27.md Phase 5。
 type VADSectionDTO struct {
-	Enabled        *bool    `json:"enabled,omitempty"`
-	ThresholdDB    *int     `json:"threshold_db,omitempty"`
-	MinSilenceSec  *float64 `json:"min_silence_sec,omitempty"`
-	PaddingSec     *float64 `json:"padding_sec,omitempty"`
-	MinOutputRatio *float64 `json:"min_output_ratio,omitempty"`
+	Enabled         *bool    `json:"enabled,omitempty"`
+	Engine          *string  `json:"engine,omitempty"`
+	ThresholdDB     *int     `json:"threshold_db,omitempty"`
+	MinSilenceSec   *float64 `json:"min_silence_sec,omitempty"`
+	PaddingSec      *float64 `json:"padding_sec,omitempty"`
+	MinOutputRatio  *float64 `json:"min_output_ratio,omitempty"`
+	InaPython       *string  `json:"ina_python,omitempty"`
+	InaScript       *string  `json:"ina_script,omitempty"`
+	InaBatchSize    *int     `json:"ina_batch_size,omitempty"`
+	InaMinSpeechSec *float64 `json:"ina_min_speech_sec,omitempty"`
+	InaMergeGapSec  *float64 `json:"ina_merge_gap_sec,omitempty"`
 }
 
 // ReplaySectionDTO 对应 updateReplayConfig 管理的回放类全局自动开关段(presence-aware,2026-07-30)。
@@ -839,6 +906,9 @@ func ApplyOverrides(cfg *Config, overrides map[string]json.RawMessage) error {
 		if dto.VocabularyID != nil {
 			cfg.DashScope.VocabularyID = *dto.VocabularyID
 		}
+		if dto.TemporaryStorageEnabled != nil {
+			cfg.DashScope.TemporaryStorageEnabled = *dto.TemporaryStorageEnabled
+		}
 	}
 
 	if raw, ok := overrides["recap_ai"]; ok && len(raw) > 0 {
@@ -945,6 +1015,9 @@ func ApplyOverrides(cfg *Config, overrides map[string]json.RawMessage) error {
 		if dto.Enabled != nil {
 			cfg.VAD.Enabled = *dto.Enabled
 		}
+		if dto.Engine != nil {
+			cfg.VAD.Engine = *dto.Engine
+		}
 		if dto.ThresholdDB != nil {
 			cfg.VAD.ThresholdDB = *dto.ThresholdDB
 		}
@@ -956,6 +1029,21 @@ func ApplyOverrides(cfg *Config, overrides map[string]json.RawMessage) error {
 		}
 		if dto.MinOutputRatio != nil {
 			cfg.VAD.MinOutputRatio = *dto.MinOutputRatio
+		}
+		if dto.InaPython != nil {
+			cfg.VAD.InaPython = *dto.InaPython
+		}
+		if dto.InaScript != nil {
+			cfg.VAD.InaScript = *dto.InaScript
+		}
+		if dto.InaBatchSize != nil {
+			cfg.VAD.InaBatchSize = *dto.InaBatchSize
+		}
+		if dto.InaMinSpeechSec != nil {
+			cfg.VAD.InaMinSpeechSec = *dto.InaMinSpeechSec
+		}
+		if dto.InaMergeGapSec != nil {
+			cfg.VAD.InaMergeGapSec = *dto.InaMergeGapSec
 		}
 	}
 
@@ -1043,6 +1131,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("dashscope.diarization_enabled", true)
 	v.SetDefault("dashscope.speaker_count", 0)
 	v.SetDefault("dashscope.vocabulary_id", "")
+	v.SetDefault("dashscope.temporary_storage_enabled", false)
 	v.SetDefault("asr_temp.cleanup_after_success", true)
 	v.SetDefault("asr_temp.enabled", false)
 	v.SetDefault("asr_temp.listen", "")
@@ -1073,15 +1162,28 @@ func setDefaults(v *viper.Viper) {
 	// VAD 默认开启(实测 -40dB/2s 零真实内容损失,3-10% 降本);失败自动回退原始音频。
 	// 详见 plans/plan-vad-2026-07-27.md 与 internal/asr/vad_processor.go。
 	v.SetDefault("vad.enabled", true)
+	v.SetDefault("vad.engine", "silence")
 	v.SetDefault("vad.threshold_db", -40)
 	v.SetDefault("vad.min_silence_sec", 2.0)
 	v.SetDefault("vad.padding_sec", 0.2)
 	v.SetDefault("vad.detection_mode", "peak") // 固定 peak:对齐 silencedetect,不改
 	v.SetDefault("vad.min_output_ratio", 0.3)  // 裁剪后 < 30% 原始 → 视为异常回退
+	v.SetDefault("vad.ina_python", "python3")
+	v.SetDefault("vad.ina_script", "scripts/ina_segment.py")
+	v.SetDefault("vad.ina_batch_size", 256)
+	v.SetDefault("vad.ina_min_speech_sec", 0.6)
+	v.SetDefault("vad.ina_merge_gap_sec", 0.4)
 	// Replay 默认关(2026-07-30):升级零行为变化,用户在回放页工具栏按需开启。
 	v.SetDefault("replay.auto_asr", false)
 	v.SetDefault("replay.auto_recap", false)
 	v.SetDefault("downloader.backend", "auto")
+	// 自动重试默认关闭，避免已删除/私密等永久错误被重复请求。
+	v.SetDefault("downloader.auto_retry", false)
+	v.SetDefault("downloader.max_retry_attempts", 12)
+	// 批量下载保护也默认关闭，避免升级后改变既有吞吐；需要时显式配置。
+	v.SetDefault("downloader.max_concurrent", 0)
+	v.SetDefault("downloader.min_interval_seconds", 0)
+	v.SetDefault("downloader.failure_backoff_seconds", 0)
 	v.SetDefault("downloader.per_url_stall_seconds", 60)
 	v.SetDefault("downloader.per_url_max_minutes", 240)
 	v.SetDefault("publish.enabled", false)
@@ -1160,6 +1262,18 @@ func (c *Config) Validate() error {
 	case "", "auto", "native", "ytdlp":
 	default:
 		return fmt.Errorf("downloader.backend must be one of: auto, native, ytdlp, got %s", c.Downloader.Backend)
+	}
+	if c.Downloader.MaxRetryAttempts < 0 {
+		return fmt.Errorf("downloader.max_retry_attempts must be greater than or equal to 0")
+	}
+	if c.Downloader.MaxConcurrent < 0 {
+		return fmt.Errorf("downloader.max_concurrent must be greater than or equal to 0")
+	}
+	if c.Downloader.MinIntervalSeconds < 0 {
+		return fmt.Errorf("downloader.min_interval_seconds must be greater than or equal to 0")
+	}
+	if c.Downloader.FailureBackoffSeconds < 0 {
+		return fmt.Errorf("downloader.failure_backoff_seconds must be greater than or equal to 0")
 	}
 	if err := c.VAD.Validate(); err != nil {
 		return err

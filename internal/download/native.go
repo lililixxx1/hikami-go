@@ -110,6 +110,18 @@ func (d NativeDownloader) Download(ctx context.Context, sourceURL string, rawDir
 	}
 	// 下载视频官方封面到 raw/cover.*（供 publisher 作为专栏封面）。失败不阻断下载。
 	biliutil.DownloadCover(ctx, d.HTTPClient, info.Pic, cookieHeader, rawDir)
+	if selected, ok := biliutil.ExtractVideoPart(sourceURL); ok {
+		for i, page := range info.Pages {
+			pageIndex := page.Page
+			if pageIndex <= 0 {
+				pageIndex = i + 1
+			}
+			if pageIndex == selected {
+				return d.downloadSingleP(ctx, rawDir, cookieHeader, info, page)
+			}
+		}
+		return fmt.Errorf("multi-P page %d does not exist", selected)
+	}
 	if len(info.Pages) == 1 {
 		return d.downloadSingleP(ctx, rawDir, cookieHeader, info, info.Pages[0])
 	}

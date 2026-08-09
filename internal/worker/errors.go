@@ -62,6 +62,7 @@ var friendlyErrorMappings = []errorMapping{
 	{compilePattern(`Video unavailable`), "视频不可用", "该回放可能已被删除或设为私密"},
 	{compilePattern(`Sign in to confirm`), "需要登录才能下载", "请配置下载用 Cookie"},
 	{compilePattern(`HTTP Error 403`), "访问被拒绝", "请检查 Cookie 是否有效"},
+	{compilePattern(`HTTP Error 412|Precondition Failed`), "B 站风控拦截", "系统会降低下载频率并延迟重试，无需立即反复点击"},
 
 	// rclone 相关
 	{compilePattern(`rclone.*not found`), "上传工具未安装", "请安装 rclone"},

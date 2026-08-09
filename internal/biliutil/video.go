@@ -56,9 +56,10 @@ type VideoInfo struct {
 
 // VideoPage 是 B 站视频分 P 信息。
 type VideoPage struct {
-	CID  int64  `json:"cid"`
-	Part string `json:"part"`
-	Page int    `json:"page"`
+	CID      int64  `json:"cid"`
+	Part     string `json:"part"`
+	Page     int    `json:"page"`
+	Duration int64  `json:"duration,omitempty"`
 }
 
 // ensure 懒初始化 -352 风控对抗字段。

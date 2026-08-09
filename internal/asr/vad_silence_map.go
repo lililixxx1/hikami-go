@@ -34,6 +34,9 @@ type SilenceMapParam struct {
 	MinSilenceSec float64 `json:"min_silence_sec"`
 	PaddingSec    float64 `json:"padding_sec"`
 	Detection     string  `json:"detection"`
+	Engine        string  `json:"engine,omitempty"`
+	MinSpeechSec  float64 `json:"min_speech_sec,omitempty"`
+	MergeGapSec   float64 `json:"merge_gap_sec,omitempty"`
 }
 
 // KeptSegment 描述一段在 trimmed 音频里保留的区间,及其在原始音频里的对应区间。

@@ -276,6 +276,10 @@ func (m *Manager) Execute(ctx context.Context, items []ExecuteItem) []Result {
 	results := make([]Result, 0, len(items))
 	for _, item := range items {
 		title := m.resolveTitle(ctx, item.ChannelID, item.SourceID, item.Title)
+		startedAt, ok := biliutil.ReplayDateFromTitle(title)
+		if !ok {
+			startedAt, _ = biliutil.ReplayDateFromTitle(item.Title)
+		}
 		result := Result{
 			ChannelID: item.ChannelID,
 			SourceID:  item.SourceID,
@@ -286,6 +290,7 @@ func (m *Manager) Execute(ctx context.Context, items []ExecuteItem) []Result {
 			SourceID:  item.SourceID,
 			Title:     title,
 			SourceURL: item.SourceURL,
+			StartedAt: startedAt,
 		})
 		if err != nil {
 			result.Error = err.Error()
@@ -414,11 +419,16 @@ func (m *Manager) DiscoverChannel(ctx context.Context, item channel.Channel) ([]
 			continue
 		}
 		title := m.resolveTitle(ctx, item.ID, entry.ID, entry.Title)
+		startedAt, ok := biliutil.ReplayDateFromTitle(title)
+		if !ok {
+			startedAt, _ = biliutil.ReplayDateFromTitle(entry.Title)
+		}
 		createdSession, created, err := m.sessions.CreateDownload(ctx, session.CreateDownloadInput{
 			ChannelID: item.ID,
 			SourceID:  entry.ID,
 			Title:     title,
 			SourceURL: entryURL(entry),
+			StartedAt: startedAt,
 		})
 		result := Result{
 			ChannelID: item.ID,

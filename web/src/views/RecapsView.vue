@@ -560,6 +560,7 @@ onMounted(async () => {
       v-model:current-page="currentPage"
       v-model:page-size="pageSize"
       :sessions="pagedSessions"
+      :total-items="filteredSessions.length"
       :tasks="tasksStore.items"
       :capabilities="capabilities"
       :channels="channels"

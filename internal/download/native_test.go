@@ -287,6 +287,88 @@ func TestNativeDownloaderDownloadMultiP(t *testing.T) {
 	}
 }
 
+func TestNativeDownloaderExplicitPartDownloadsOnlySelectedPage(t *testing.T) {
+	const (
+		bvid    = "BV1xx411c7mD"
+		baseURL = "https://bili.test"
+	)
+	var playCIDs []string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if nativeHandleAntiRisk(w, r) {
+			return
+		}
+		switch r.URL.Path {
+		case "/x/web-interface/view":
+			_, _ = w.Write([]byte(`{
+				"code": 0,
+				"data": {
+					"aid": 123,
+					"bvid": "` + bvid + `",
+					"title": "多 P 回放",
+					"pages": [
+						{"cid": 456, "part": "第一场", "page": 1},
+						{"cid": 789, "part": "第二场", "page": 2}
+					]
+				}
+			}`))
+		case "/x/player/wbi/playurl":
+			cid := r.URL.Query().Get("cid")
+			playCIDs = append(playCIDs, cid)
+			_, _ = w.Write([]byte(fmt.Sprintf(`{
+				"code": 0,
+				"data": {"dash": {"audio": [
+					{"id": 1, "baseUrl": "%s/audio/%s", "bandwidth": 128000, "mimeType": "audio/mp4", "codecs": "mp4a.40.2"}
+				]}}
+			}`, baseURL, cid)))
+		case "/audio/789":
+			_, _ = w.Write([]byte("audio-p2"))
+		case "/x/v2/dm/web/seg.so":
+			if r.URL.Query().Get("oid") != "789" {
+				t.Fatalf("danmaku oid = %q, want selected page cid", r.URL.Query().Get("oid"))
+			}
+			_, _ = w.Write(nativeSegReply(nativeSegElem(
+				nativeProtoVarint(1, 12),
+				nativeProtoVarint(2, 2000),
+				nativeProtoVarint(3, 1),
+				nativeProtoVarint(4, 25),
+				nativeProtoVarint(5, 16777215),
+				nativeProtoBytes(6, []byte("hash2")),
+				nativeProtoBytes(7, []byte("seg-p2")),
+				nativeProtoVarint(8, 1710000001),
+				nativeProtoVarint(11, 0),
+			)))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	})
+
+	rawDir := t.TempDir()
+	err := (NativeDownloader{
+		HTTPClient:  mockNativeHTTPDoer(handler),
+		ViewBaseURL: baseURL,
+		APIBaseURL:  baseURL,
+		Cookie:      &biliutil.BiliCookie{SESSDATA: "sess", BiliJct: "jct", DedeUserID: "100"},
+		Signer:      nativeFakeSigner{},
+	}).Download(context.Background(), "https://www.bilibili.com/video/"+bvid+"?p=2", rawDir, "")
+	if err != nil {
+		t.Fatalf("Download: %v", err)
+	}
+	if len(playCIDs) != 1 || playCIDs[0] != "789" {
+		t.Fatalf("playurl cids = %v, want only 789", playCIDs)
+	}
+	assertFileContent(t, filepath.Join(rawDir, "audio.m4a"), "audio-p2")
+	if _, err := os.Stat(filepath.Join(rawDir, "part_durations.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("explicit part must use single-P output, stat err = %v", err)
+	}
+	metadataData, err := os.ReadFile(filepath.Join(rawDir, "metadata.ytdlp.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(metadataData), `"part": "第二场"`) {
+		t.Fatalf("selected page metadata missing: %s", metadataData)
+	}
+}
+
 func TestNativeDownloaderSegFallbackToXML(t *testing.T) {
 	const (
 		bvid    = "BV1xx411c7mD"

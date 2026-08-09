@@ -18,22 +18,42 @@ const tasks: Task[] = [
 describe('SessionTableV10', () => {
   it('renders channel_name from session', () => {
     const wrapper = mount(SessionTableV10, {
-      props: { sessions, tasks, capabilities: caps, channels: [], actionLoadingId: '', currentPage: 1, pageSize: 20 },
+      props: { sessions, tasks, capabilities: caps, channels: [], actionLoadingId: '', currentPage: 1, pageSize: 20, totalItems: 1 },
     })
     expect(wrapper.text()).toContain('Alice')
   })
   it('shows progress bar from matching task', () => {
     const wrapper = mount(SessionTableV10, {
-      props: { sessions, tasks, capabilities: caps, channels: [], actionLoadingId: '', currentPage: 1, pageSize: 20 },
+      props: { sessions, tasks, capabilities: caps, channels: [], actionLoadingId: '', currentPage: 1, pageSize: 20, totalItems: 1 },
     })
     const fill = wrapper.find('.progress-bar-fill')
     expect(fill.attributes('style')).toContain('width: 75%')
   })
   it('emits open-recap on row click', async () => {
     const wrapper = mount(SessionTableV10, {
-      props: { sessions, tasks, capabilities: caps, channels: [], actionLoadingId: '', currentPage: 1, pageSize: 20 },
+      props: { sessions, tasks, capabilities: caps, channels: [], actionLoadingId: '', currentPage: 1, pageSize: 20, totalItems: 1 },
     })
     await wrapper.find('tbody tr').trigger('click')
     expect(wrapper.emitted('open-recap')?.[0]).toEqual([sessions[0]])
+  })
+  it('shows an active recap instead of offering duplicate generation', () => {
+    const recapTask: Task = {
+      id: 'recap-1', channel_id: 'c1', session_id: 's1', type: 'recap', status: 'pending',
+      payload: '{}', progress: 0, message: '', error: '', attempt: 1, created_at: '', updated_at: '',
+    }
+    const wrapper = mount(SessionTableV10, {
+      props: { sessions, tasks: [...tasks, recapTask], capabilities: caps, channels: [], actionLoadingId: '', currentPage: 1, pageSize: 20, totalItems: 1 },
+    })
+    expect(wrapper.text()).toContain('回顾排队中')
+    expect(wrapper.text()).not.toContain('生成回顾')
+  })
+
+  it('uses the filtered total instead of the current page length for pagination', async () => {
+    const wrapper = mount(SessionTableV10, {
+      props: { sessions, tasks, capabilities: caps, channels: [], actionLoadingId: '', currentPage: 1, pageSize: 20, totalItems: 41 },
+    })
+    expect(wrapper.text()).toContain('1/3')
+    await wrapper.get('.pagination-row button:last-child').trigger('click')
+    expect(wrapper.emitted('update:currentPage')?.[0]).toEqual([2])
   })
 })

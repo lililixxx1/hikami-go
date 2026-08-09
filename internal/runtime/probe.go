@@ -95,20 +95,22 @@ func Probe(cfg *config.Config) *Status {
 	recapProviderAvailable := probeRecapProvider(cfg, tools)
 	// recap key 检测走 EffectiveAPIKeyEnv 兜底,与响应层/运行时一致(空 env 名视为 AI_API_KEY)。
 	recapKeySet := os.Getenv(cfg.RecapAI.EffectiveAPIKeyEnv()) != ""
+	recapAuthReady := recapKeySet || !recapProviderNeedsAPIKey(cfg.RecapAI.EffectiveProvider())
 	rcloneAvailable := tools["rclone"].Available
 	ytDLPAvailable := tools["yt-dlp"].Available
 	// 走 EffectiveAPIKeyEnv 兜底,与 recap/响应层一致(空 env 名视为 DASHSCOPE_API_KEY)。
 	dashScopeKeySet := os.Getenv(cfg.DashScope.EffectiveAPIKeyEnv()) != ""
 	asrRcloneFallbackAvailable := cfg.ASRTemp.RcloneConfigured() && rcloneAvailable && cfg.ASRTemp.PublicBaseURL != ""
 	asrS3Available := cfg.ASRS3.Configured()
+	dashScopeTempAvailable := cfg.DashScope.TemporaryStorageEnabled
 	webDAVRcloneFallbackAvailable := cfg.WebDAV.RcloneConfigured() && rcloneAvailable
 
 	capabilities := Capabilities{
 		ReplayDownload: ytDLPAvailable,
-		ASRSubmit:      dashScopeKeySet && (cfg.ASRTemp.NativeConfigured() || asrS3Available || asrRcloneFallbackAvailable),
+		ASRSubmit:      dashScopeKeySet && (cfg.ASRTemp.NativeConfigured() || asrS3Available || asrRcloneFallbackAvailable || dashScopeTempAvailable),
 		ASRModel:       asr.NormalizeDashScopeASRModel(cfg.DashScope.Model),
 		ASRRequestMode: asr.DashScopeRequestMode(cfg.DashScope.Model),
-		RecapGenerate:  cfg.RecapAI.Enabled && recapKeySet && recapProviderAvailable,
+		RecapGenerate:  cfg.RecapAI.Enabled && recapAuthReady && recapProviderAvailable,
 		WebDAVUpload:   cfg.WebDAV.NativeConfigured() || webDAVRcloneFallbackAvailable,
 		PublishOpus:    cfg.Publish.Enabled,
 	}
@@ -212,8 +214,18 @@ func probeRecapProvider(cfg *config.Config, tools map[string]ToolStatus) bool {
 	}
 }
 
+func recapProviderNeedsAPIKey(provider string) bool {
+	switch provider {
+	case "claude_cli", "codex_cli", "local":
+		return false
+	default:
+		return true
+	}
+}
+
 func asrTempConfigured(cfg *config.Config) bool {
-	return cfg.ASRTemp.NativeConfigured() ||
+	return cfg.DashScope.TemporaryStorageEnabled ||
+		cfg.ASRTemp.NativeConfigured() ||
 		(cfg.ASRTemp.RcloneConfigured() &&
 			cfg.ASRTemp.BasePath != "" &&
 			cfg.ASRTemp.PublicBaseURL != "")
@@ -228,10 +240,7 @@ func capabilityReason(capabilities Capabilities, cfg *config.Config, tools map[s
 		// 走 EffectiveAPIKeyEnv 兜底,与 recap/响应层一致。
 		dashScopeKeySet := os.Getenv(cfg.DashScope.EffectiveAPIKeyEnv()) != ""
 		if !asrTempConfigured(cfg) && !cfg.ASRS3.Configured() {
-			reasons = append(reasons, "asr_temp not configured")
-		}
-		if !cfg.ASRS3.Configured() {
-			reasons = append(reasons, "asr_s3 not configured")
+			reasons = append(reasons, "asr audio upload backend not configured")
 		}
 		if cfg.ASRTemp.RcloneConfigured() && !cfg.ASRTemp.NativeConfigured() && !tools["rclone"].Available {
 			reasons = append(reasons, "rclone unavailable for asr_temp fallback")
@@ -241,14 +250,15 @@ func capabilityReason(capabilities Capabilities, cfg *config.Config, tools map[s
 		}
 	}
 	if !capabilities.RecapGenerate {
-		recapKeySet := cfg.RecapAI.APIKeyEnv != "" && os.Getenv(cfg.RecapAI.APIKeyEnv) != ""
+		provider := cfg.RecapAI.EffectiveProvider()
+		recapKeySet := os.Getenv(cfg.RecapAI.EffectiveAPIKeyEnv()) != ""
 		if !cfg.RecapAI.Enabled {
 			reasons = append(reasons, "recap not enabled")
 		}
-		if !recapKeySet {
+		if recapProviderNeedsAPIKey(provider) && !recapKeySet {
 			reasons = append(reasons, "recap api key not configured")
 		}
-		if cfg.RecapAI.Enabled && recapKeySet {
+		if cfg.RecapAI.Enabled && (recapKeySet || !recapProviderNeedsAPIKey(provider)) {
 			reasons = append(reasons, "recap provider unavailable")
 		}
 	}

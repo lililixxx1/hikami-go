@@ -33,6 +33,7 @@ const props = defineProps<{
   actionLoadingId: string
   currentPage: number
   pageSize: number
+  totalItems: number
 }>()
 
 const emit = defineEmits<{
@@ -45,27 +46,45 @@ const emit = defineEmits<{
   'update:pageSize': [value: number]
 }>()
 
-// 当前页任务总数(壳做过滤+分页后传入 sessions;totalPages 仅用于翻页按钮显示)
-const totalPages = computed(() => Math.max(1, Math.ceil(props.sessions.length / props.pageSize)))
+// sessions 只包含当前页，页数必须用过滤后的总条数计算。
+const totalPages = computed(() => Math.max(1, Math.ceil(props.totalItems / props.pageSize)))
 
-// 按 current_task_id 关联任务(WS 进度对接):只在 status 处于「运行中族」时显示进度条
+// 优先关联本场活跃任务。recap 在成功前不会推进 session 状态/current_task_id，
+// 因此只按 current_task_id 会把正在排队/生成的回顾误显示成「转写完成」。
 const PROGRESS_STATUSES = new Set([
   'discovered', 'downloading', 'recording', 'importing',
   'media_ready', 'asr_submitted', 'asr_done',
 ])
 function sessionTask(s: Session): Task | null {
-  return props.tasks.find((t) => t.id === s.current_task_id) ?? null
+  const active = props.tasks.find((t) =>
+    t.session_id === s.id && (t.status === 'pending' || t.status === 'running'),
+  )
+  return active ?? props.tasks.find((t) => t.id === s.current_task_id) ?? null
 }
 function showProgress(s: Session): boolean {
   return PROGRESS_STATUSES.has(s.status) && !!sessionTask(s)
 }
 
 function statusVariant(s: Session): 'success' | 'warning' | 'danger' | 'info' {
+  if (activeRecapTask(s)) return 'warning'
   const c = getFriendlySessionStatus(s).color
   if (c === 'success') return 'success'
   if (c === 'warning') return 'warning'
   if (c === 'danger') return 'danger'
   return 'info'
+}
+
+function activeRecapTask(s: Session): Task | null {
+  return props.tasks.find((t) =>
+    t.session_id === s.id && t.type === 'recap' && (t.status === 'pending' || t.status === 'running'),
+  ) ?? null
+}
+
+function statusLabel(s: Session): string {
+  const task = activeRecapTask(s)
+  if (task?.status === 'pending') return '回顾排队中'
+  if (task?.status === 'running') return '生成回顾中'
+  return getFriendlySessionStatus(s).label
 }
 
 // UnassignedChannelLabel 是系统占位 channel _unassigned 的展示标签(2026-07-19 解耦改动)。
@@ -82,7 +101,8 @@ function channelName(s: Session): string {
 
 // 列表行(表A)动作集合(复用状态机)。派生→loose 窄化转换(见文件头注释)。
 function rowActions(s: Session) {
-  return getRowActions(s as unknown as LooseSession, props.capabilities as LooseCapabilities | null, sessionTask(s) as unknown as LooseTask | null)
+	if (activeRecapTask(s)) return {}
+	return getRowActions(s as unknown as LooseSession, props.capabilities as LooseCapabilities | null, sessionTask(s) as unknown as LooseTask | null)
 }
 
 // failed 行的重试占位文案(模板用)。状态机仅读 status,窄化转换安全。
@@ -126,7 +146,7 @@ function onNext() {
           <td>{{ s.title || s.id }}</td>
           <td>{{ channelName(s) }}</td>
           <td>
-            <HPill :variant="statusVariant(s)">{{ getFriendlySessionStatus(s).label }}</HPill>
+            <HPill :variant="statusVariant(s)">{{ statusLabel(s) }}</HPill>
           </td>
           <td class="muted">{{ formatDateTime(s.created_at) }}</td>
           <td>

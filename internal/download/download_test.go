@@ -464,6 +464,38 @@ func TestCreateFromURL_DuplicateConflict(t *testing.T) {
 	}
 }
 
+func TestCreateFromURL_MultiPPartsAreDistinct(t *testing.T) {
+	fix := setupDownloadTest(t)
+	fix.insertChannel(t, "ch1")
+	h := NewHandler(fix.cfg, fix.sessions, fix.states, fix.pool, &mockDownloader{}, fix.channelStore)
+
+	first, err := h.CreateFromURL(context.Background(), "ch1", "https://www.bilibili.com/video/BV1xx411c7mD?p=1")
+	if err != nil {
+		t.Fatalf("create p1: %v", err)
+	}
+	second, err := h.CreateFromURL(context.Background(), "ch1", "https://www.bilibili.com/video/BV1xx411c7mD?p=2")
+	if err != nil {
+		t.Fatalf("create p2: %v", err)
+	}
+	if first.SessionID == second.SessionID {
+		t.Fatalf("multi-P sessions collided: %q", first.SessionID)
+	}
+	p1, err := fix.sessions.Get(context.Background(), first.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p2, err := fix.sessions.Get(context.Background(), second.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p1.SourceID != "BV1xx411c7mD_p001" || p2.SourceID != "BV1xx411c7mD_p002" {
+		t.Fatalf("unexpected source ids: %q, %q", p1.SourceID, p2.SourceID)
+	}
+	if p1.SourceURL != "https://www.bilibili.com/video/BV1xx411c7mD?p=1" || p2.SourceURL != "https://www.bilibili.com/video/BV1xx411c7mD?p=2" {
+		t.Fatalf("part query lost: %q, %q", p1.SourceURL, p2.SourceURL)
+	}
+}
+
 func TestCreateFromURL_InvalidInput(t *testing.T) {
 	fix := setupDownloadTest(t)
 	fix.insertChannel(t, "ch1")
@@ -700,6 +732,32 @@ func TestHandleTaskDownloadFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "network error") {
 		t.Fatalf("error should contain 'network error', got: %v", err)
+	}
+}
+
+func TestHandleTaskRetriesDownloadFromFailedSession(t *testing.T) {
+	fix := setupDownloadTest(t)
+	fix.insertChannel(t, "ch1")
+	fix.insertSession(t, "ch1_dl_bv123", "bv123", "ch1", string(state.StatusFailed), "https://example.com/video")
+
+	dl := &mockDownloader{
+		downloadCb: func(sourceURL, rawDir string) error {
+			writeFile(t, filepath.Join(rawDir, "audio.m4a"), "fake audio")
+			return nil
+		},
+	}
+	h := NewHandler(fix.cfg, fix.sessions, fix.states, fix.pool, dl, fix.channelStore)
+	task := worker.Task{ID: "task_retry", ChannelID: "ch1", SessionID: "ch1_dl_bv123", Type: TaskType, Attempt: 2}
+
+	if err := h.HandleTask(context.Background(), task, noopReporter{}); err != nil {
+		t.Fatalf("retry HandleTask: %v", err)
+	}
+	sess, err := fix.sessions.Get(context.Background(), task.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.Status != string(state.StatusDownloading) {
+		t.Fatalf("session status = %q, want downloading", sess.Status)
 	}
 }
 

@@ -200,6 +200,38 @@ func TestPublishConfigRoundTripNormalizesZeroPrivatePub(t *testing.T) {
 	}
 }
 
+// TestPublishConfigTypeErrorNamesField 验证 JSON 字段类型不匹配时返回具体字段和期望
+// 类型，而不是无法定位的通用 invalid json body。
+func TestPublishConfigTypeErrorNamesField(t *testing.T) {
+	server := newTestServer(t)
+
+	rec := performRequest(server, http.MethodPut, "/api/config/publish", `{"topic_id":"123"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("string topic_id expected 400, got %d (body=%s)", rec.Code, rec.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	const want = `field "topic_id" must be integer, got string`
+	if body["error"] != want {
+		t.Fatalf("error = %q, want %q", body["error"], want)
+	}
+}
+
+// TestPublishConfigMalformedJSONKeepsGenericError 确保语法错误不泄露内部解码细节。
+func TestPublishConfigMalformedJSONKeepsGenericError(t *testing.T) {
+	server := newTestServer(t)
+
+	rec := performRequest(server, http.MethodPut, "/api/config/publish", `{"topic_id":`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("malformed JSON expected 400, got %d (body=%s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"error":"invalid json body"`) {
+		t.Fatalf("unexpected malformed JSON response: %s", rec.Body.String())
+	}
+}
+
 // TestToolsConfigRoundTrip 验证 yt-dlp/rclone 路径的 GET/PUT 往返。
 // PUT 后持久化到 runtime_settings,GET 回读一致;保存后 cfg.YTDLP/Rclone 已更新
 // (refreshRuntimeStatus 会重新 Probe,这里只验证配置写入,不验证 Probe 副作用)。
@@ -1869,7 +1901,7 @@ func TestGetDashScopeConfigReturnsResponse(t *testing.T) {
 func TestUpdateDashScopeConfigFields(t *testing.T) {
 	server := newTestServer(t)
 
-	body := `{"model":"paraformer-v2","language":"en","diarization_enabled":true,"speaker_count":3,"vocabulary_id":"vocab-1","asr_url":"https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription","tasks_url":"https://dashscope.aliyuncs.com/api/v1/tasks"}`
+	body := `{"model":"paraformer-v2","language":"en","diarization_enabled":true,"speaker_count":3,"vocabulary_id":"vocab-1","temporary_storage_enabled":true,"asr_url":"https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription","tasks_url":"https://dashscope.aliyuncs.com/api/v1/tasks"}`
 	resp := performRequest(server, http.MethodPut, "/api/config/dashscope", body)
 	if resp.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", resp.Code, resp.Body.String())
@@ -1889,6 +1921,9 @@ func TestUpdateDashScopeConfigFields(t *testing.T) {
 	}
 	if got.VocabularyID != "vocab-1" {
 		t.Fatalf("vocabulary_id = %q, want vocab-1", got.VocabularyID)
+	}
+	if !got.TemporaryStorageEnabled {
+		t.Fatal("temporary_storage_enabled = false, want true")
 	}
 }
 
@@ -2854,9 +2889,12 @@ func TestVADConfigRoundTrip(t *testing.T) {
 	if !strings.Contains(getRec.Body.String(), `"threshold_db":-40`) {
 		t.Fatalf("default threshold_db should be -40, got: %s", getRec.Body.String())
 	}
+	if !strings.Contains(getRec.Body.String(), `"engine":"silence"`) {
+		t.Fatalf("default engine should be silence, got: %s", getRec.Body.String())
+	}
 
 	// 2. PUT 完整覆盖 → 200 + 持久化
-	putBody := `{"enabled":false,"threshold_db":-50,"min_silence_sec":3.0,"padding_sec":0.5,"min_output_ratio":0.5}`
+	putBody := `{"enabled":false,"engine":"ina","threshold_db":-50,"min_silence_sec":3.0,"padding_sec":0.5,"min_output_ratio":0.5,"ina_python":"/opt/ina/python","ina_script":"/opt/ina/segment.py","ina_batch_size":128,"ina_min_speech_sec":0.8,"ina_merge_gap_sec":0.5}`
 	putRec := performRequest(server, http.MethodPut, "/api/config/vad", putBody)
 	if putRec.Code != http.StatusOK {
 		t.Fatalf("PUT vad status = %d, body=%s", putRec.Code, putRec.Body.String())
@@ -2867,6 +2905,9 @@ func TestVADConfigRoundTrip(t *testing.T) {
 	if !strings.Contains(putRec.Body.String(), `"threshold_db":-50`) {
 		t.Fatalf("PUT response should show threshold_db=-50, got: %s", putRec.Body.String())
 	}
+	if !strings.Contains(putRec.Body.String(), `"engine":"ina"`) || !strings.Contains(putRec.Body.String(), `"ina_batch_size":128`) {
+		t.Fatalf("PUT response should include ina config, got: %s", putRec.Body.String())
+	}
 
 	// 3. GET 回读一致
 	getRec2 := performRequest(server, http.MethodGet, "/api/config/vad", "")
@@ -2875,6 +2916,9 @@ func TestVADConfigRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(getRec2.Body.String(), `"threshold_db":-50`) {
 		t.Fatalf("GET after PUT should reflect persisted threshold_db=-50, got: %s", getRec2.Body.String())
+	}
+	if !strings.Contains(getRec2.Body.String(), `"ina_python":"/opt/ina/python"`) {
+		t.Fatalf("GET after PUT should reflect persisted ina config, got: %s", getRec2.Body.String())
 	}
 
 	// 4. presence-aware:只传 enabled,其他字段保持

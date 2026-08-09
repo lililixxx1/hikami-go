@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -1457,10 +1458,14 @@ func (s *Server) getTask(ctx *gin.Context) {
 	}
 	if task.Status == worker.StatusFailed {
 		if worker.ShouldAutoRetry(s.cfg, task.Type, task.Attempt) {
+			maxAttempts := s.cfg.Worker.MaxRetryAttempts
+			if task.Type == download.TaskType && s.cfg.Downloader.AutoRetry {
+				maxAttempts = s.cfg.Downloader.MaxRetryAttempts
+			}
 			resp["auto_retry"] = map[string]interface{}{
 				"scheduled":    true,
 				"attempt":      task.Attempt,
-				"max_attempts": s.cfg.Worker.MaxRetryAttempts,
+				"max_attempts": maxAttempts,
 			}
 		}
 	}
@@ -2068,6 +2073,38 @@ type publishConfigResponse struct {
 	UpChooseComment int    `json:"up_choose_comment"`
 }
 
+// jsonBindErrorMessage 为 JSON 类型不匹配返回可操作的字段提示，同时避免把完整的
+// Go 解码错误（可能包含内部结构名）直接暴露给客户端。其它语法错误仍使用稳定的
+// 通用文案。
+func jsonBindErrorMessage(err error) string {
+	var typeErr *json.UnmarshalTypeError
+	if !errors.As(err, &typeErr) {
+		return "invalid json body"
+	}
+
+	expected := typeErr.Type.String()
+	switch typeErr.Type.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		expected = "integer"
+	case reflect.Float32, reflect.Float64:
+		expected = "number"
+	case reflect.Bool:
+		expected = "boolean"
+	case reflect.String:
+		expected = "string"
+	case reflect.Array, reflect.Slice:
+		expected = "array"
+	case reflect.Map, reflect.Struct:
+		expected = "object"
+	}
+
+	if typeErr.Field == "" {
+		return fmt.Sprintf("invalid json type: expected %s, got %s", expected, typeErr.Value)
+	}
+	return fmt.Sprintf("field %q must be %s, got %s", typeErr.Field, expected, typeErr.Value)
+}
+
 func newPublishConfigResponse(p config.PublishConfig) publishConfigResponse {
 	return publishConfigResponse{
 		Enabled:         p.Enabled,
@@ -2116,7 +2153,7 @@ func (s *Server) updatePublishConfig(ctx *gin.Context) {
 		UpChooseComment *int    `json:"up_choose_comment"`
 	}
 	if err := ctx.ShouldBindJSON(&input); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid json body"})
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": jsonBindErrorMessage(err)})
 		return
 	}
 
@@ -2460,15 +2497,16 @@ func asrs3ConfigToDTO(c config.ASRS3Config, managed bool) config.ASRS3SectionDTO
 // --- DashScope (ASR) config handlers ---
 
 type dashscopeConfigResponse struct {
-	APIKeyEnv          string `json:"api_key_env"`
-	APIKeySet          bool   `json:"api_key_set"`
-	ASRURL             string `json:"asr_url"`
-	TasksURL           string `json:"tasks_url"`
-	Model              string `json:"model"`
-	Language           string `json:"language"`
-	DiarizationEnabled bool   `json:"diarization_enabled"`
-	SpeakerCount       int    `json:"speaker_count"`
-	VocabularyID       string `json:"vocabulary_id"`
+	APIKeyEnv               string `json:"api_key_env"`
+	APIKeySet               bool   `json:"api_key_set"`
+	ASRURL                  string `json:"asr_url"`
+	TasksURL                string `json:"tasks_url"`
+	Model                   string `json:"model"`
+	Language                string `json:"language"`
+	DiarizationEnabled      bool   `json:"diarization_enabled"`
+	SpeakerCount            int    `json:"speaker_count"`
+	VocabularyID            string `json:"vocabulary_id"`
+	TemporaryStorageEnabled bool   `json:"temporary_storage_enabled"`
 }
 
 // newDashScopeConfigResponse 返回 DashScope 配置响应。
@@ -2476,15 +2514,16 @@ type dashscopeConfigResponse struct {
 func newDashScopeConfigResponse(d config.DashScopeConfig) dashscopeConfigResponse {
 	envKey := d.EffectiveAPIKeyEnv()
 	return dashscopeConfigResponse{
-		APIKeyEnv:          envKey,
-		APIKeySet:          os.Getenv(envKey) != "",
-		ASRURL:             d.ASRURL,
-		TasksURL:           d.TasksURL,
-		Model:              d.Model,
-		Language:           d.Language,
-		DiarizationEnabled: d.DiarizationEnabled,
-		SpeakerCount:       d.SpeakerCount,
-		VocabularyID:       d.VocabularyID,
+		APIKeyEnv:               envKey,
+		APIKeySet:               os.Getenv(envKey) != "",
+		ASRURL:                  d.ASRURL,
+		TasksURL:                d.TasksURL,
+		Model:                   d.Model,
+		Language:                d.Language,
+		DiarizationEnabled:      d.DiarizationEnabled,
+		SpeakerCount:            d.SpeakerCount,
+		VocabularyID:            d.VocabularyID,
+		TemporaryStorageEnabled: d.TemporaryStorageEnabled,
 	}
 }
 
@@ -2510,16 +2549,17 @@ func (s *Server) getDashScopeConfig(ctx *gin.Context) {
 
 func (s *Server) updateDashScopeConfig(ctx *gin.Context) {
 	var input struct {
-		APIKeyEnv          *string `json:"api_key_env"`
-		APIKey             *string `json:"api_key"`
-		ClearKey           *bool   `json:"clear_key"`
-		ASRURL             *string `json:"asr_url"`
-		TasksURL           *string `json:"tasks_url"`
-		Model              *string `json:"model"`
-		Language           *string `json:"language"`
-		DiarizationEnabled *bool   `json:"diarization_enabled"`
-		SpeakerCount       *int    `json:"speaker_count"`
-		VocabularyID       *string `json:"vocabulary_id"`
+		APIKeyEnv               *string `json:"api_key_env"`
+		APIKey                  *string `json:"api_key"`
+		ClearKey                *bool   `json:"clear_key"`
+		ASRURL                  *string `json:"asr_url"`
+		TasksURL                *string `json:"tasks_url"`
+		Model                   *string `json:"model"`
+		Language                *string `json:"language"`
+		DiarizationEnabled      *bool   `json:"diarization_enabled"`
+		SpeakerCount            *int    `json:"speaker_count"`
+		VocabularyID            *string `json:"vocabulary_id"`
+		TemporaryStorageEnabled *bool   `json:"temporary_storage_enabled"`
 	}
 	if err := ctx.ShouldBindJSON(&input); err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid json body"})
@@ -2586,6 +2626,9 @@ func (s *Server) updateDashScopeConfig(ctx *gin.Context) {
 	if input.VocabularyID != nil {
 		nextCfg.VocabularyID = strings.TrimSpace(*input.VocabularyID)
 	}
+	if input.TemporaryStorageEnabled != nil {
+		nextCfg.TemporaryStorageEnabled = *input.TemporaryStorageEnabled
+	}
 	if input.APIKeyEnv != nil {
 		nextCfg.APIKeyEnv = strings.TrimSpace(*input.APIKeyEnv)
 	}
@@ -2622,14 +2665,15 @@ func (s *Server) updateDashScopeConfig(ctx *gin.Context) {
 // dashscopeConfigToDTO 把 DashScopeConfig 转成完整下一状态 DTO。APIKey 不进 DTO（走 secrets）。
 func dashscopeConfigToDTO(c config.DashScopeConfig) config.DashScopeSectionDTO {
 	return config.DashScopeSectionDTO{
-		APIKeyEnv:          &c.APIKeyEnv,
-		ASRURL:             &c.ASRURL,
-		TasksURL:           &c.TasksURL,
-		Model:              &c.Model,
-		Language:           &c.Language,
-		DiarizationEnabled: &c.DiarizationEnabled,
-		SpeakerCount:       &c.SpeakerCount,
-		VocabularyID:       &c.VocabularyID,
+		APIKeyEnv:               &c.APIKeyEnv,
+		ASRURL:                  &c.ASRURL,
+		TasksURL:                &c.TasksURL,
+		Model:                   &c.Model,
+		Language:                &c.Language,
+		DiarizationEnabled:      &c.DiarizationEnabled,
+		SpeakerCount:            &c.SpeakerCount,
+		VocabularyID:            &c.VocabularyID,
+		TemporaryStorageEnabled: &c.TemporaryStorageEnabled,
 	}
 }
 
@@ -3284,20 +3328,32 @@ func (s *Server) updateMCPConfig(ctx *gin.Context) {
 // 拒绝非法值(qoder v2 M-1),避免存入非法值后下次启动 fatal。见 plans/plan-vad-2026-07-27.md Phase 5。
 
 type vadConfigResponse struct {
-	Enabled        bool    `json:"enabled"`
-	ThresholdDB    int     `json:"threshold_db"`
-	MinSilenceSec  float64 `json:"min_silence_sec"`
-	PaddingSec     float64 `json:"padding_sec"`
-	MinOutputRatio float64 `json:"min_output_ratio"`
+	Enabled         bool    `json:"enabled"`
+	Engine          string  `json:"engine"`
+	ThresholdDB     int     `json:"threshold_db"`
+	MinSilenceSec   float64 `json:"min_silence_sec"`
+	PaddingSec      float64 `json:"padding_sec"`
+	MinOutputRatio  float64 `json:"min_output_ratio"`
+	InaPython       string  `json:"ina_python"`
+	InaScript       string  `json:"ina_script"`
+	InaBatchSize    int     `json:"ina_batch_size"`
+	InaMinSpeechSec float64 `json:"ina_min_speech_sec"`
+	InaMergeGapSec  float64 `json:"ina_merge_gap_sec"`
 }
 
 func newVADConfigResponse(cfg config.Config) vadConfigResponse {
 	return vadConfigResponse{
-		Enabled:        cfg.VAD.Enabled,
-		ThresholdDB:    cfg.VAD.ThresholdDB,
-		MinSilenceSec:  cfg.VAD.MinSilenceSec,
-		PaddingSec:     cfg.VAD.PaddingSec,
-		MinOutputRatio: cfg.VAD.MinOutputRatio,
+		Enabled:         cfg.VAD.Enabled,
+		Engine:          cfg.VAD.EffectiveEngine(),
+		ThresholdDB:     cfg.VAD.ThresholdDB,
+		MinSilenceSec:   cfg.VAD.MinSilenceSec,
+		PaddingSec:      cfg.VAD.PaddingSec,
+		MinOutputRatio:  cfg.VAD.MinOutputRatio,
+		InaPython:       cfg.VAD.EffectiveInaPython(),
+		InaScript:       cfg.VAD.EffectiveInaScript(),
+		InaBatchSize:    cfg.VAD.InaBatchSize,
+		InaMinSpeechSec: cfg.VAD.InaMinSpeechSec,
+		InaMergeGapSec:  cfg.VAD.InaMergeGapSec,
 	}
 }
 
@@ -3319,6 +3375,9 @@ func (s *Server) updateVADConfig(ctx *gin.Context) {
 	if input.Enabled != nil {
 		next.Enabled = *input.Enabled
 	}
+	if input.Engine != nil {
+		next.Engine = *input.Engine
+	}
 	if input.ThresholdDB != nil {
 		next.ThresholdDB = *input.ThresholdDB
 	}
@@ -3331,6 +3390,21 @@ func (s *Server) updateVADConfig(ctx *gin.Context) {
 	if input.MinOutputRatio != nil {
 		next.MinOutputRatio = *input.MinOutputRatio
 	}
+	if input.InaPython != nil {
+		next.InaPython = *input.InaPython
+	}
+	if input.InaScript != nil {
+		next.InaScript = *input.InaScript
+	}
+	if input.InaBatchSize != nil {
+		next.InaBatchSize = *input.InaBatchSize
+	}
+	if input.InaMinSpeechSec != nil {
+		next.InaMinSpeechSec = *input.InaMinSpeechSec
+	}
+	if input.InaMergeGapSec != nil {
+		next.InaMergeGapSec = *input.InaMergeGapSec
+	}
 	// qoder v2 M-1:inline 校验,400 拒绝非法值(与 Validate() 逻辑一致,避免存入后下次启动 fatal)
 	if err := next.Validate(); err != nil {
 		s.publishMu.Unlock()
@@ -3338,11 +3412,17 @@ func (s *Server) updateVADConfig(ctx *gin.Context) {
 		return
 	}
 	dto := config.VADSectionDTO{
-		Enabled:        &next.Enabled,
-		ThresholdDB:    &next.ThresholdDB,
-		MinSilenceSec:  &next.MinSilenceSec,
-		PaddingSec:     &next.PaddingSec,
-		MinOutputRatio: &next.MinOutputRatio,
+		Enabled:         &next.Enabled,
+		Engine:          &next.Engine,
+		ThresholdDB:     &next.ThresholdDB,
+		MinSilenceSec:   &next.MinSilenceSec,
+		PaddingSec:      &next.PaddingSec,
+		MinOutputRatio:  &next.MinOutputRatio,
+		InaPython:       &next.InaPython,
+		InaScript:       &next.InaScript,
+		InaBatchSize:    &next.InaBatchSize,
+		InaMinSpeechSec: &next.InaMinSpeechSec,
+		InaMergeGapSec:  &next.InaMergeGapSec,
 	}
 	if err := runtimeconfig.WithTx(ctx.Request.Context(), s.runtimeCfg.DB(), func(tx *sql.Tx) error {
 		return s.persistSectionTx(ctx.Request.Context(), tx, "vad", dto)

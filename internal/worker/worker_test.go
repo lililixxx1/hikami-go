@@ -326,6 +326,33 @@ func TestStoreRetryFailedTask(t *testing.T) {
 	}
 }
 
+func TestStoreDeferRunningTaskDoesNotIncrementAttempt(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	created, err := s.Create(ctx, CreateInput{ChannelID: "test_ch", Type: "download"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := s.MarkRunning(ctx, created.ID); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+
+	deferred, err := s.DeferRunning(ctx, created.ID, "waiting for download window")
+	if err != nil {
+		t.Fatalf("DeferRunning: %v", err)
+	}
+	if deferred.Status != StatusPending {
+		t.Fatalf("status = %q, want pending", deferred.Status)
+	}
+	if deferred.Attempt != 1 {
+		t.Fatalf("attempt = %d, want unchanged 1", deferred.Attempt)
+	}
+	if deferred.Message != "waiting for download window" {
+		t.Fatalf("message = %q", deferred.Message)
+	}
+}
+
 func TestStoreCancelPendingTask(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
@@ -1096,6 +1123,71 @@ func TestPoolRetry(t *testing.T) {
 	result, err := waitForStatus(ctx, store, task.ID, StatusSucceeded, 5*time.Second)
 	if err != nil {
 		t.Fatalf("waitForStatus succeeded: %v (last status=%q)", err, result.Status)
+	}
+}
+
+func TestPoolDeferredErrorRequeuesWithoutAttemptOrFailure(t *testing.T) {
+	database := setupDB(t)
+	insertChannel(t, database)
+	store := NewStore(database)
+	hub := NewHub()
+	pool := NewPool(store, hub, 1, nil)
+	ctx := context.Background()
+
+	var calls atomic.Int32
+	pool.Register("deferred_type", func(ctx context.Context, task Task, reporter Reporter) error {
+		if calls.Add(1) == 1 {
+			return Defer(10*time.Millisecond, "waiting for safe window")
+		}
+		return reporter.Progress(ctx, 100, "done")
+	})
+	if err := pool.Start(ctx, 1); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer pool.Stop()
+
+	task, err := pool.Enqueue(ctx, CreateInput{ChannelID: "test_ch", Type: "deferred_type"})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	result, err := waitForStatus(ctx, store, task.ID, StatusSucceeded, 5*time.Second)
+	if err != nil {
+		t.Fatalf("waitForStatus: %v (last status=%q)", err, result.Status)
+	}
+	if result.Attempt != 1 {
+		t.Fatalf("attempt = %d, want unchanged 1", result.Attempt)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("handler calls = %d, want 2", calls.Load())
+	}
+}
+
+func TestEnqueueIDAfterStopDoesNotQueue(t *testing.T) {
+	pool := NewPool(nil, NewHub(), 1, nil)
+	close(pool.done)
+
+	pool.enqueueID("late-task")
+	if got := len(pool.queue); got != 0 {
+		t.Fatalf("queue length after stop = %d, want 0", got)
+	}
+}
+
+func TestShouldAutoRetryUsesDownloaderPolicy(t *testing.T) {
+	cfg := &config.Config{
+		Worker: config.WorkerConfig{AutoRetry: false, MaxRetryAttempts: 2},
+		Downloader: config.DownloaderConfig{
+			AutoRetry:        true,
+			MaxRetryAttempts: 12,
+		},
+	}
+	if !ShouldAutoRetry(cfg, "download", 11) {
+		t.Fatal("download attempt 11 should use downloader retry policy")
+	}
+	if ShouldAutoRetry(cfg, "download", 12) {
+		t.Fatal("download attempt 12 should exhaust downloader retry policy")
+	}
+	if ShouldAutoRetry(cfg, "recap", 1) {
+		t.Fatal("non-download task must still respect disabled worker auto retry")
 	}
 }
 

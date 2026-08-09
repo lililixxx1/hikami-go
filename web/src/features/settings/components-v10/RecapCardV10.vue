@@ -42,6 +42,7 @@ const advancedOpen = ref(false)
 const maxTokens = computed({ get: () => String(config.value.max_tokens), set: (v: string) => { config.value.max_tokens = Number(v) || 0 } })
 const maxContinuations = computed({ get: () => String(config.value.max_continuations), set: (v: string) => { config.value.max_continuations = Number(v) || 0 } })
 const timeoutSeconds = computed({ get: () => String(config.value.timeout_seconds), set: (v: string) => { config.value.timeout_seconds = Number(v) || 0 } })
+const usesCLI = computed(() => config.value.provider === 'claude_cli' || config.value.provider === 'codex_cli')
 
 // useRecapModels 按 group 聚合,扁平化为 HCombobox options(可输入,无需 group 前缀)
 const modelOptions = computed(() => {
@@ -98,7 +99,7 @@ defineExpose({ reload: fetchConfig })
       <HSwitch v-model="config.enabled">{{ config.enabled ? '已启用' : '已关闭' }}</HSwitch>
     </template>
 
-    <div class="form-row-inline">
+    <div v-if="!usesCLI" class="form-row-inline">
       <label class="form-label">API 地址</label>
       <div class="form-field">
         <HInput v-model="config.base_url" placeholder="https://api.deepseek.com" />
@@ -109,12 +110,12 @@ defineExpose({ reload: fetchConfig })
     <div class="form-row-inline">
       <label class="form-label">模型版本</label>
       <div class="form-field">
-        <HCombobox v-model="config.model" :options="modelOptions" placeholder="deepseek-v4-pro" clearable />
-        <div class="form-hint">支持输入任意 OpenAI 兼容模型名称,清空跟随 DeepSeek 默认。</div>
+        <HCombobox v-model="config.model" :options="modelOptions" :placeholder="usesCLI ? '留空使用 CLI 默认模型' : 'deepseek-v4-pro'" clearable />
+        <div class="form-hint">{{ usesCLI ? '留空使用当前 CLI 登录账号的默认模型。' : '支持输入任意 OpenAI 兼容模型名称,清空跟随 DeepSeek 默认。' }}</div>
       </div>
     </div>
 
-    <div class="form-row-inline">
+    <div v-if="!usesCLI" class="form-row-inline">
       <label class="form-label">API 密钥</label>
       <div class="form-field">
         <div class="input-group">
@@ -125,6 +126,13 @@ defineExpose({ reload: fetchConfig })
         </div>
         <div class="form-hint">读取配置时不会返回明文;需要更新时重新输入。</div>
         <HCheckbox v-if="config.api_key_set" v-model="clearKey">清除已保存密钥</HCheckbox>
+      </div>
+    </div>
+
+    <div v-else class="form-row-inline">
+      <label class="form-label">认证方式</label>
+      <div class="form-field">
+        <div class="form-hint">使用本机 {{ config.provider === 'codex_cli' ? 'Codex' : 'Claude' }} CLI 的现有登录状态，不需要在 Hikami 中填写 API key。</div>
       </div>
     </div>
 
@@ -139,7 +147,7 @@ defineExpose({ reload: fetchConfig })
           <div class="form-hint">回顾生成后端实现,留空跟随 openai_compatible。</div>
         </div>
       </div>
-      <div class="form-row-inline">
+      <div v-if="!usesCLI" class="form-row-inline">
         <label class="form-label">密钥环境变量</label>
         <div class="form-field">
           <HInput v-model="config.api_key_env" placeholder="AI_API_KEY" />

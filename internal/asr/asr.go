@@ -21,8 +21,9 @@ import (
 const TaskType = "asr"
 
 var (
-	ErrSessionNotReady = errors.New("session is not ready for asr")
-	ErrAudioMissing    = errors.New("asr audio is missing")
+	ErrSessionNotReady  = errors.New("session is not ready for asr")
+	ErrAudioMissing     = errors.New("asr audio is missing")
+	ErrNoSpeechDetected = errors.New("inaSpeechSegmenter detected no speech; asr skipped")
 )
 
 type Handler struct {
@@ -148,9 +149,14 @@ func (h *Handler) HandleTask(ctx context.Context, task worker.Task, reporter wor
 	asrAudioPath := audioPath
 	var activeSilenceMap *SilenceMap // 非空 = 待 remap(用内存对象避免再读盘,防重入)
 	silenceMapPath := ""
+	skipNoSpeech := false
 	if h.vad != nil && h.cfg.VAD.Enabled {
 		trimmed, smap, vadErr := h.applyVAD(ctx, audioPath, sessionDir)
-		if vadErr != nil {
+		if errors.Is(vadErr, ErrNoSpeechDetected) {
+			skipNoSpeech = true
+			slog.InfoContext(ctx, "ina vad: no speech detected, skip paid asr",
+				"session_id", task.SessionID)
+		} else if vadErr != nil {
 			slog.WarnContext(ctx, "vad: fallback to original audio (processing failed)",
 				"session_id", task.SessionID, "error", vadErr)
 		} else if smap != nil {
@@ -171,15 +177,29 @@ func (h *Handler) HandleTask(ctx context.Context, task worker.Task, reporter wor
 		}
 	}
 
-	result, err := h.transcribe(ctx, task, asrAudioPath, sessionInfo)
-	if err != nil {
-		return err
+	var result Result
+	if skipNoSpeech {
+		result = Result{
+			Transcript: "（inaSpeechSegmenter 未检测到可转写的说话片段，已跳过云端 ASR。）\n",
+			SRT:        "",
+			Segments:   []map[string]any{},
+			Raw: map[string]any{
+				"provider": "ina_skip",
+				"reason":   ErrNoSpeechDetected.Error(),
+			},
+		}
+	} else {
+		var err error
+		result, err = h.transcribe(ctx, task, asrAudioPath, sessionInfo)
+		if err != nil {
+			return err
+		}
 	}
 
 	// 反向映射:把 result.Segments 从 trimmed 时间线平移回原始时间线(只调一次,写盘前)。
 	// 用内存 activeSilenceMap 防重入(qoder v2 M-2),不读盘(避免 LoadSilenceMap 额外 IO)。
 	if activeSilenceMap != nil {
-		activeSilenceMap.RemapSegments(result.Segments)
+		remapResultTimeline(&result, activeSilenceMap)
 		slog.InfoContext(ctx, "vad: remapped segments to original timeline",
 			"session_id", task.SessionID, "segment_count", len(result.Segments))
 		activeSilenceMap = nil
@@ -210,10 +230,23 @@ func (h *Handler) HandleTask(ctx context.Context, task worker.Task, reporter wor
 	if _, err := h.states.Apply(ctx, task.SessionID, state.EventASRSucceeded, task.ID, ""); err != nil {
 		return err
 	}
-	if h.onSuccess != nil {
+	if h.onSuccess != nil && !skipNoSpeech {
 		h.onSuccess(ctx, task)
 	}
+	if skipNoSpeech {
+		return reporter.Progress(ctx, 95, "no speech detected; paid asr skipped")
+	}
 	return reporter.Progress(ctx, 95, "asr package completed")
+}
+
+func remapResultTimeline(result *Result, sm *SilenceMap) {
+	if result == nil || sm == nil {
+		return
+	}
+	sm.RemapSegments(result.Segments)
+	// DashScope 在裁剪后的时间线上生成 SRT。segments remap 后必须同步重建，
+	// 否则 transcript.srt 与 segments.json/原直播时间线不一致。
+	result.SRT = buildSRT(result.Segments)
 }
 
 func (h *Handler) transcribe(ctx context.Context, task worker.Task, audioPath string, sessionInfo session.Session) (Result, error) {
@@ -266,6 +299,9 @@ func (h *Handler) audioPath(sessionInfo session.Session) string {
 //   - Trim 失败                         → error,用原始,删残留
 //   - Trimmed 文件 size==0              → error,用原始(同 normalize convertAtomic post-condition)
 func (h *Handler) applyVAD(ctx context.Context, audioPath, sessionDir string) (string, *SilenceMap, error) {
+	if h.cfg.VAD.EffectiveEngine() == "ina" {
+		return h.applyInaVAD(ctx, audioPath, sessionDir)
+	}
 	intervals, origMS, err := h.vad.Detect(ctx, audioPath)
 	if err != nil {
 		return "", nil, fmt.Errorf("vad detect: %w", err)
@@ -290,6 +326,30 @@ func (h *Handler) applyVAD(ctx context.Context, audioPath, sessionDir string) (s
 	if err != nil || info.Size() == 0 {
 		_ = os.Remove(trimmedPath)
 		return "", nil, fmt.Errorf("vad trim produced empty/missing output: %v", err)
+	}
+	return trimmedPath, smap, nil
+}
+
+func (h *Handler) applyInaVAD(ctx context.Context, audioPath, sessionDir string) (string, *SilenceMap, error) {
+	inaResultPath := filepath.Join(sessionDir, "asr", "ina_segments.json")
+	segments, origMS, err := h.vad.DetectInaSpeech(ctx, audioPath, inaResultPath)
+	if err != nil {
+		return "", nil, err
+	}
+	smap := h.vad.BuildInaSpeechMap(segments, origMS)
+	if smap == nil || len(smap.KeptSegments) == 0 {
+		return "", nil, ErrNoSpeechDetected
+	}
+	trimmedPath := filepath.Join(sessionDir, "asr", "audio.asr.trimmed.mp3")
+	_ = os.Remove(trimmedPath)
+	if err := h.vad.Trim(ctx, audioPath, trimmedPath, smap); err != nil {
+		_ = os.Remove(trimmedPath)
+		return "", nil, fmt.Errorf("ina vad trim: %w", err)
+	}
+	info, err := os.Stat(trimmedPath)
+	if err != nil || info.Size() == 0 {
+		_ = os.Remove(trimmedPath)
+		return "", nil, fmt.Errorf("ina vad trim produced empty/missing output: %v", err)
 	}
 	return trimmedPath, smap, nil
 }

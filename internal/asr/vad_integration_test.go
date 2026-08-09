@@ -140,3 +140,40 @@ func TestVADIntegration_TrimMatchesSilenceMap(t *testing.T) {
 	t.Logf("OK: trimmed %dms vs silence_map %dms (diff %dms within 50ms tolerance)",
 		actualMS, smap.TrimmedDurationMS, diff)
 }
+
+func TestVADIntegration_StreamTrimManySegments(t *testing.T) {
+	ffmpeg, ffprobe := skipIfNoFFmpeg(t)
+	dir := t.TempDir()
+	audioPath := genTestAudio(t, ffmpeg, dir)
+	p := &VADProcessor{ffmpeg: ffmpeg, ffprobe: ffprobe, cfg: &config.Config{}}
+
+	const segmentCount = streamTrimSegmentThreshold + 1
+	smap := &SilenceMap{OriginalDurationMS: 9000}
+	var trimmedCursor int64
+	for i := 0; i < segmentCount; i++ {
+		start := int64(i * 100)
+		end := start + 50
+		smap.KeptSegments = append(smap.KeptSegments, KeptSegment{
+			OriginalStartMS: start,
+			OriginalEndMS:   end,
+			TrimmedStartMS:  trimmedCursor,
+			TrimmedEndMS:    trimmedCursor + 50,
+		})
+		trimmedCursor += 50
+	}
+	smap.TrimmedDurationMS = trimmedCursor
+
+	trimmedPath := filepath.Join(dir, "stream-trimmed.mp3")
+	if err := p.Trim(context.Background(), audioPath, trimmedPath, smap); err != nil {
+		t.Fatalf("stream Trim: %v", err)
+	}
+	actualMS := ffprobeDurationMS(t, ffprobe, trimmedPath)
+	diff := actualMS - smap.TrimmedDurationMS
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > 100 {
+		t.Fatalf("stream Trim output duration %dms != silence_map %dms (diff %dms)",
+			actualMS, smap.TrimmedDurationMS, diff)
+	}
+}

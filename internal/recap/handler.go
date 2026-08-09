@@ -25,6 +25,10 @@ import (
 
 const TaskType = "recap"
 
+// 分钟级重试让批量任务低成本等待：pending 任务不占 worker，也避免在一个长回顾
+// 运行期间频繁写 SQLite 和日志。
+const recapBusyRetryDelay = time.Minute
+
 const defaultSystemPrompt = `你是专业的直播内容编辑，擅长将直播转写文本和弹幕数据整理成结构清晰、内容丰富的中文直播回顾文档。你的语调生动但不煽情，像一位懂行又有趣的导播在为观众做赛后解说。
 
 ## 术语校正规则
@@ -256,6 +260,9 @@ type Handler struct {
 	glossaryDiscoverer glossaryDiscoverer
 	capabilityChecker  CapabilityChecker
 	mcpManager         MCPToolkit // MCP 搜索工具(Phase 4),nil 时降级普通 Generate
+	// recapGate 仅为本地 CLI provider 串行化昂贵生成；普通 API provider 保持原有并发。
+	// 其它回顾运行时，等待任务会释放 worker goroutine。
+	recapGate chan struct{}
 }
 
 // MCPToolkit 是 MCP 工具管理器的最小接口(duck-typing,避免 recap 反向导入 mcp 包)。
@@ -365,12 +372,39 @@ func NewHandler(cfg *config.Config, sessions *session.Store, states *state.Store
 	if templateStore == nil {
 		templateStore = NewTemplateStore(nil)
 	}
-	h := &Handler{cfg: cfg, sessions: sessions, states: states, provider: provider, glossaryStore: glossaryStore, templateStore: templateStore, channels: channels}
+	var recapGate chan struct{}
+	if serialRecapProvider(cfg) {
+		recapGate = make(chan struct{}, 1)
+	}
+	h := &Handler{
+		cfg:           cfg,
+		sessions:      sessions,
+		states:        states,
+		provider:      provider,
+		glossaryStore: glossaryStore,
+		templateStore: templateStore,
+		channels:      channels,
+		recapGate:     recapGate,
+	}
 	// Enable summarizer if configured
 	if cfg != nil && cfg.RecapAI.EnableSummarization {
 		h.summarizer = NewTranscriptSummarizer(provider)
 	}
 	return h
+}
+
+// serialRecapProvider 只限制本地 CLI。远端 API 通常自行提供并发与限流能力，升级后
+// 不应无配置地把原有并发吞吐降为 1。
+func serialRecapProvider(cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	switch cfg.RecapAI.EffectiveProvider() {
+	case "claude_cli", "codex_cli":
+		return true
+	default:
+		return false
+	}
 }
 
 type recapRuntimeOptions struct {
@@ -422,6 +456,13 @@ func (h *Handler) CreateTask(ctx context.Context, pool *worker.Pool, sessionID s
 	if err != nil {
 		return worker.Task{}, err
 	}
+	// 重复点击以及自动/手动提交重叠时保持幂等。回顾成功前 session 会有意保留在
+	// asr_done，因此不能只根据 session 状态判断是否已有任务。
+	if task, ok, err := pool.Store().ActiveBySessionAndType(ctx, sessionInfo.ID, TaskType); err != nil {
+		return worker.Task{}, err
+	} else if ok {
+		return task, nil
+	}
 	canCreateFirst := func(s string) bool {
 		return s == string(state.StatusASRDone) || s == string(state.StatusUploaded)
 	}
@@ -440,13 +481,14 @@ func canCreateRegen(status string) bool {
 }
 
 // canHandleRecap 报告 HandleTask 是否允许执行回顾生成。
-// 接受 asr_done/uploaded（首次生成）和 recap_done/published（重新生成）——后者覆盖本地 md
+// 接受 asr_done/uploaded（首次生成）、failed（任务重试）和 recap_done/published（重新生成）——后者覆盖本地 md
 // 不推进状态（HandleTask 成功路径的 Apply 守卫只认 asr_done/uploaded，对 recap_done/published 不动）。
 func canHandleRecap(status string) bool {
 	return status == string(state.StatusASRDone) ||
 		status == string(state.StatusUploaded) ||
 		status == string(state.StatusRecapDone) ||
-		status == string(state.StatusPublished)
+		status == string(state.StatusPublished) ||
+		status == string(state.StatusFailed)
 }
 
 // validateRecapPreconditions 校验回顾任务的公共前置条件：能力、本地可用、转写文件存在、无并发任务。
@@ -484,6 +526,11 @@ func (h *Handler) CreateRegenTask(ctx context.Context, pool *worker.Pool, sessio
 	if err != nil {
 		return worker.Task{}, err
 	}
+	if task, ok, err := pool.Store().ActiveBySessionAndType(ctx, sessionInfo.ID, TaskType); err != nil {
+		return worker.Task{}, err
+	} else if ok {
+		return task, nil
+	}
 	if err := h.validateRecapPreconditions(ctx, pool, sessionInfo, canCreateRegen,
 		fmt.Sprintf("status must be %s or %s for regeneration", state.StatusRecapDone, state.StatusPublished)); err != nil {
 		return worker.Task{}, err
@@ -516,6 +563,15 @@ func (h *Handler) HandleTask(ctx context.Context, task worker.Task, reporter wor
 	}
 	if !canHandleRecap(sessionInfo.Status) {
 		return fmt.Errorf("session state %q is not valid for %s", sessionInfo.Status, TaskType)
+	}
+	// 只有本地 CLI provider 才带 gate；nil 表示保留普通 API provider 的原有并发。
+	if h.recapGate != nil {
+		select {
+		case h.recapGate <- struct{}{}:
+			defer func() { <-h.recapGate }()
+		default:
+			return worker.Defer(recapBusyRetryDelay, "waiting for another recap generation")
+		}
 	}
 	sessionDir := h.sessionDir(sessionInfo)
 	recapRange, err := parseTaskRange(task.Payload)
@@ -742,7 +798,9 @@ func (h *Handler) HandleTask(ctx context.Context, task worker.Task, reporter wor
 	if err := os.WriteFile(filepath.Join(recapDir, fileBase+".md"), []byte(recap), 0o644); err != nil {
 		return err
 	}
-	if sessionInfo.Status == string(state.StatusASRDone) || sessionInfo.Status == string(state.StatusUploaded) {
+	if sessionInfo.Status == string(state.StatusASRDone) ||
+		sessionInfo.Status == string(state.StatusUploaded) ||
+		sessionInfo.Status == string(state.StatusFailed) {
 		if _, err := h.states.Apply(ctx, task.SessionID, state.EventRecapSucceeded, task.ID, ""); err != nil {
 			return err
 		}

@@ -2561,8 +2561,8 @@ export interface components {
             /** @description ASR 请求模式(omitempty,transcription/session) */
             asr_request_mode?: string;
             /**
-             * @description 回顾生成可用。需 recap.enabled + recap api key 已设 + provider 可用
-             *     (claude_cli/codex_cli 看命令可用;openai_compatible/anthropic 看密钥)。
+             * @description 回顾生成可用。需 recap.enabled + provider 可用；
+             *     claude_cli/codex_cli 使用 CLI 自身登录态，openai_compatible/anthropic 需要 API key。
              */
             recap_generate: boolean;
             /** @description WebDAV 上传可用(原生配置 或 rclone 兜底) */
@@ -3441,6 +3441,8 @@ export interface components {
             diarization_enabled: boolean;
             speaker_count: number;
             vocabulary_id: string;
+            /** @description 是否使用 DashScope 免费临时 OSS 上传本地 ASR 音频（仅建议开发/低频试跑） */
+            temporary_storage_enabled: boolean;
         };
         /**
          * @description 全字段可选。asr_url/tasks_url 传了必须是合法 http(s) url + host。
@@ -3459,6 +3461,8 @@ export interface components {
             diarization_enabled?: boolean;
             speaker_count?: number;
             vocabulary_id?: string;
+            /** @description 是否使用 DashScope 免费临时 OSS */
+            temporary_storage_enabled?: boolean;
         };
         /**
          * @description ASR S3 配置响应。
@@ -3630,6 +3634,8 @@ export interface components {
         VADConfigResponse: {
             /** @description VAD 总开关(默认 true,失败自动回退原始音频) */
             enabled: boolean;
+            /** @description 分段引擎 */
+            engine: "silence" | "ina";
             /** @description 静音判定阈值(默认 -40,值越小越严格) */
             threshold_db: number;
             /**
@@ -3647,6 +3653,13 @@ export interface components {
              * @description 裁剪后/原始低于此值视为异常,回退原始音频(默认 0.3,防 ffmpeg bug 裁过头)
              */
             min_output_ratio: number;
+            ina_python: string;
+            ina_script: string;
+            ina_batch_size: number;
+            /** Format: float */
+            ina_min_speech_sec: number;
+            /** Format: float */
+            ina_merge_gap_sec: number;
         };
         /**
          * @description PUT /api/config/vad 请求。全字段可选(presence-aware)。
@@ -3655,6 +3668,7 @@ export interface components {
          */
         VADConfigRequest: {
             enabled?: boolean;
+            engine?: "silence" | "ina";
             threshold_db?: number;
             /** Format: float */
             min_silence_sec?: number;
@@ -3662,6 +3676,13 @@ export interface components {
             padding_sec?: number;
             /** Format: float */
             min_output_ratio?: number;
+            ina_python?: string;
+            ina_script?: string;
+            ina_batch_size?: number;
+            /** Format: float */
+            ina_min_speech_sec?: number;
+            /** Format: float */
+            ina_merge_gap_sec?: number;
         };
         /** @description 回顾 AI 段导出(指针,缺席=备份不含) */
         ExportRecapAI: {

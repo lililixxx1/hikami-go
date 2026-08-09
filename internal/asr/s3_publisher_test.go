@@ -188,4 +188,21 @@ func TestNewConfiguredTranscriber_ThreeTierPriority(t *testing.T) {
 			t.Fatalf("expected LocalTranscriber when no backend configured, got %T", tr)
 		}
 	})
+
+	t.Run("dashscope temporary storage is fallback backend", func(t *testing.T) {
+		cfg := &config.Config{
+			DashScope: config.DashScopeConfig{
+				APIKeyEnv:               "DASHSCOPE_API_KEY",
+				TemporaryStorageEnabled: true,
+			},
+		}
+		tr := NewConfiguredTranscriber(cfg)
+		dst, ok := tr.(*DashScopeTranscriber)
+		if !ok {
+			t.Fatalf("expected *DashScopeTranscriber, got %T", tr)
+		}
+		if dst.dashScopeTempPublisher == nil {
+			t.Fatal("expected DashScope temporary publisher to be configured")
+		}
+	})
 }

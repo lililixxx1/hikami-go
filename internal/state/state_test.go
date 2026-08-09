@@ -79,6 +79,9 @@ func TestNextValidTransitions(t *testing.T) {
 		{"importing + import_succeeded -> importing", StatusImporting, EventImportSucceeded, StatusImporting},
 		{"importing + normalize_succeeded -> media_ready", StatusImporting, EventNormalizeSucceeded, StatusMediaReady},
 
+		// 下载失败任务 -> downloading（手动/自动重试）
+		{"failed + download_started -> downloading", StatusFailed, EventDownloadStarted, StatusDownloading},
+
 		// media_ready -> asr_submitted
 		{"media_ready + asr_submitted -> asr_submitted", StatusMediaReady, EventASRSubmitted, StatusASRSubmitted},
 
@@ -123,7 +126,6 @@ func TestNextInvalidTransition(t *testing.T) {
 		{"discovered + normalize_succeeded", StatusDiscovered, EventNormalizeSucceeded},
 		{"asr_submitted + upload_succeeded", StatusASRSubmitted, EventUploadSucceeded},
 		{"published + download_started", StatusPublished, EventDownloadStarted},
-		{"failed + download_started", StatusFailed, EventDownloadStarted},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

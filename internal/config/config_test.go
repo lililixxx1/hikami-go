@@ -73,6 +73,13 @@ db_path: /tmp/hikami-test/hikami.db
 	if cfg.Downloader.Backend != "auto" {
 		t.Errorf("downloader.backend = %q, 期望 auto", cfg.Downloader.Backend)
 	}
+	if cfg.Downloader.AutoRetry || cfg.Downloader.MaxRetryAttempts != 12 {
+		t.Errorf("downloader retry defaults = (%v, %d), 期望 (false, 12)", cfg.Downloader.AutoRetry, cfg.Downloader.MaxRetryAttempts)
+	}
+	if cfg.Downloader.MaxConcurrent != 0 || cfg.Downloader.MinIntervalSeconds != 0 || cfg.Downloader.FailureBackoffSeconds != 0 {
+		t.Errorf("downloader risk defaults = (%d, %d, %d), 期望 (0, 0, 0)",
+			cfg.Downloader.MaxConcurrent, cfg.Downloader.MinIntervalSeconds, cfg.Downloader.FailureBackoffSeconds)
+	}
 }
 
 func TestValidate_MissingOutputRoot(t *testing.T) {
@@ -274,6 +281,36 @@ func TestValidate_DownloaderBackend(t *testing.T) {
 	}
 }
 
+func TestValidate_DownloaderRiskControl(t *testing.T) {
+	fields := []struct {
+		name string
+		set  func(*DownloaderConfig)
+	}{
+		{name: "max retry attempts", set: func(c *DownloaderConfig) { c.MaxRetryAttempts = -1 }},
+		{name: "max concurrent", set: func(c *DownloaderConfig) { c.MaxConcurrent = -1 }},
+		{name: "minimum interval", set: func(c *DownloaderConfig) { c.MinIntervalSeconds = -1 }},
+		{name: "failure backoff", set: func(c *DownloaderConfig) { c.FailureBackoffSeconds = -1 }},
+	}
+	for _, tt := range fields {
+		t.Run(tt.name, func(t *testing.T) {
+			downloader := DownloaderConfig{Backend: "auto"}
+			tt.set(&downloader)
+			cfg := &Config{
+				OutputRoot: "/tmp/test",
+				DBPath:     "test.db",
+				Web:        WebConfig{Enabled: true, Listen: "127.0.0.1:6334"},
+				Worker:     WorkerConfig{Num: 1},
+				LiveRecord: LiveRecordConfig{AudioContainer: "m4a"},
+				Downloader: downloader,
+				VAD:        validVADDefaults(),
+			}
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("期望负数下载风控配置报错")
+			}
+		})
+	}
+}
+
 func TestDownloaderConfigHelpers(t *testing.T) {
 	if !(&DownloaderConfig{Backend: "auto"}).NativeConfigured() {
 		t.Fatal("auto 应视为 native")
@@ -357,6 +394,12 @@ func TestRecapEffectiveHelpers(t *testing.T) {
 	}
 	if got := filled.EffectiveAPIKeyEnv(); got != "MY_KEY" {
 		t.Fatalf("EffectiveAPIKeyEnv() filled = %q, want MY_KEY", got)
+	}
+
+	// CLI provider 留空时使用 CLI 当前配置的默认模型，不能误显示或传入 DeepSeek 模型名。
+	cli := RecapAIConfig{Provider: "codex_cli"}
+	if got := cli.EffectiveModel(); got != "" {
+		t.Fatalf("EffectiveModel() codex_cli empty = %q, want empty CLI default", got)
 	}
 }
 
@@ -828,6 +871,9 @@ func TestVADDefaults(t *testing.T) {
 	if !cfg.VAD.Enabled {
 		t.Errorf("VAD.Enabled = false, want true (default on)")
 	}
+	if cfg.VAD.EffectiveEngine() != "silence" {
+		t.Errorf("VAD.Engine = %q, want silence", cfg.VAD.Engine)
+	}
 	if cfg.VAD.ThresholdDB != -40 {
 		t.Errorf("VAD.ThresholdDB = %d, want -40", cfg.VAD.ThresholdDB)
 	}
@@ -842,6 +888,12 @@ func TestVADDefaults(t *testing.T) {
 	}
 	if cfg.VAD.MinOutputRatio != 0.3 {
 		t.Errorf("VAD.MinOutputRatio = %v, want 0.3", cfg.VAD.MinOutputRatio)
+	}
+	if cfg.VAD.EffectiveInaPython() != "python3" || cfg.VAD.EffectiveInaScript() != "scripts/ina_segment.py" {
+		t.Errorf("ina commands = %q / %q", cfg.VAD.InaPython, cfg.VAD.InaScript)
+	}
+	if cfg.VAD.InaBatchSize != 256 || cfg.VAD.InaMinSpeechSec != 0.6 || cfg.VAD.InaMergeGapSec != 0.4 {
+		t.Errorf("ina defaults = batch %d, min %v, gap %v", cfg.VAD.InaBatchSize, cfg.VAD.InaMinSpeechSec, cfg.VAD.InaMergeGapSec)
 	}
 }
 
@@ -862,6 +914,9 @@ func TestVADValidate(t *testing.T) {
 		{"ratio_zero", VADConfig{ThresholdDB: -40, MinSilenceSec: 2, PaddingSec: 0.2, MinOutputRatio: 0}, false},
 		{"ratio_over_one", VADConfig{ThresholdDB: -40, MinSilenceSec: 2, PaddingSec: 0.2, MinOutputRatio: 1.5}, false},
 		{"ratio_one_ok", VADConfig{ThresholdDB: -40, MinSilenceSec: 2, PaddingSec: 0.2, MinOutputRatio: 1}, true},
+		{"bad_engine", VADConfig{Engine: "unknown", ThresholdDB: -40, MinSilenceSec: 2, PaddingSec: 0.2, MinOutputRatio: 1}, false},
+		{"ina_ok", VADConfig{Engine: "ina", ThresholdDB: -40, MinSilenceSec: 2, PaddingSec: 0.2, MinOutputRatio: 1, InaBatchSize: 256, InaMinSpeechSec: 0.6, InaMergeGapSec: 0.4}, true},
+		{"ina_bad_batch", VADConfig{Engine: "ina", ThresholdDB: -40, MinSilenceSec: 2, PaddingSec: 0.2, MinOutputRatio: 1, InaBatchSize: 0}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -884,13 +939,25 @@ func TestApplyOverrides_OverridesVADFields(t *testing.T) {
 	minSilence := 3.0
 	padding := 0.5
 	ratio := 0.5
+	engine := "ina"
+	inaPython := "/opt/ina/bin/python"
+	inaScript := "/opt/ina/segment.py"
+	inaBatch := 128
+	inaMinSpeech := 0.8
+	inaMergeGap := 0.5
 	overrides := map[string]json.RawMessage{
 		"vad": rawJSON(t, VADSectionDTO{
-			Enabled:        &enabled,
-			ThresholdDB:    &threshold,
-			MinSilenceSec:  &minSilence,
-			PaddingSec:     &padding,
-			MinOutputRatio: &ratio,
+			Enabled:         &enabled,
+			Engine:          &engine,
+			ThresholdDB:     &threshold,
+			MinSilenceSec:   &minSilence,
+			PaddingSec:      &padding,
+			MinOutputRatio:  &ratio,
+			InaPython:       &inaPython,
+			InaScript:       &inaScript,
+			InaBatchSize:    &inaBatch,
+			InaMinSpeechSec: &inaMinSpeech,
+			InaMergeGapSec:  &inaMergeGap,
 		}),
 	}
 	if err := ApplyOverrides(cfg, overrides); err != nil {
@@ -910,6 +977,10 @@ func TestApplyOverrides_OverridesVADFields(t *testing.T) {
 	}
 	if cfg.VAD.MinOutputRatio != 0.5 {
 		t.Errorf("VAD.MinOutputRatio = %v, want 0.5", cfg.VAD.MinOutputRatio)
+	}
+	if cfg.VAD.Engine != engine || cfg.VAD.InaPython != inaPython || cfg.VAD.InaScript != inaScript ||
+		cfg.VAD.InaBatchSize != inaBatch || cfg.VAD.InaMinSpeechSec != inaMinSpeech || cfg.VAD.InaMergeGapSec != inaMergeGap {
+		t.Errorf("ina override fields = %+v", cfg.VAD)
 	}
 }
 

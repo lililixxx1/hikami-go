@@ -77,7 +77,7 @@ const sections = computed<SidebarSection[]>(() => {
     { id: 'backup', label: '配置备份', group: '账号与备份' },
     { id: 'tools', label: '外部工具', group: '高级' },
     { id: 'mcp', label: 'AI 搜索(MCP)', group: '高级' },
-    { id: 'vad', label: 'VAD 静音裁剪', group: '高级' },
+    { id: 'vad', label: 'ASR 前置分段', group: '高级' },
   ]
 })
 
@@ -209,7 +209,7 @@ function showASRBackendHint() {
   const reason = capabilities.value?.reason || ''
   const needYtDlp = reason.includes('yt-dlp')
   HAlert(
-    `ASR 密钥已配置，但转写还需要以下配置才能工作：\n\n${needYtDlp ? '① yt-dlp（下载 B站回放音频）：\n   pip install yt-dlp    （Windows: winget install yt-dlp）\n\n' : ''}② 临时音频发布后端（三选一，DashScope 需通过公网 URL 拉取音频）：\n\n方案 A：本地 HTTP 服务（需公网 IP，服务自动检测）\nasr_temp:\n  enabled: true\n  listen: ":6335"\n  local_dir: "./output/asr-temp"\n\n方案 B：S3 兼容对象存储（推荐，阿里云 OSS / MinIO）\nasr_s3:\n  endpoint: "https://oss-cn-xxx.aliyuncs.com"\n  bucket: "your-bucket"\n  access_key_id: "xxx"\n  access_key_secret: "xxx"\n  public_url_prefix: "https://your-bucket.xxx.aliyuncs.com/asr"\n\n方案 C：rclone 回退\nasr_temp:\n  rclone_remote: "your-remote:"\n  base_path: "asr/"\n  public_base_url: "https://你的公网URL/asr"\n\n修改 config.yaml 后重启服务生效。`,
+    `ASR 密钥已配置，但转写还需要以下配置才能工作：\n\n${needYtDlp ? '① yt-dlp（下载 B站回放音频）：\n   pip install yt-dlp    （Windows: winget install yt-dlp）\n\n' : ''}② 临时音频上传后端：\n\n试跑推荐：在「ASR 转写 · DashScope」卡片开启“免费临时存储”。无需公网 IP 或另购 OSS，文件 48 小时后自动删除；仅适合低频测试。\n\n正式批量使用：在「临时音频存储」卡片配置 S3/阿里云 OSS，或配置可公网访问的本地 HTTP/rclone 后端。`,
     { title: '配置 ASR 后端', confirmText: '我知道了', type: 'info' },
   )
 }

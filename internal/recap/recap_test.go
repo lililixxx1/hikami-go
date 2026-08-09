@@ -191,12 +191,12 @@ func TestCreateRegenTaskRejectsWrongStatus(t *testing.T) {
 	}
 }
 
-// TestHandleTaskAcceptsRegenStatuses 验证 HandleTask 入口守卫(canHandleRecap)不拒绝
-// 重新生成场景的状态。Codex 复审发现：CreateRegenTask 允许 recap_done/published，
+// TestHandleTaskAcceptsRetryAndRegenStatuses 验证 HandleTask 入口守卫(canHandleRecap)不拒绝
+// 任务重试和重新生成场景的状态。Codex 复审发现：CreateRegenTask 允许 recap_done/published，
 // 但 canHandleRecap 原先只认 asr_done/uploaded，导致重新生成任务执行时被立即拒绝。
-// 此测试确保 recap_done/published 不会被入口守卫拦下（后续 AI 调用由 LocalProvider 驱动）。
-func TestHandleTaskAcceptsRegenStatuses(t *testing.T) {
-	for _, status := range []string{string(state.StatusRecapDone), string(state.StatusPublished)} {
+// 此测试确保 failed/recap_done/published 不会被入口守卫拦下（后续 AI 调用由 LocalProvider 驱动）。
+func TestHandleTaskAcceptsRetryAndRegenStatuses(t *testing.T) {
+	for _, status := range []string{string(state.StatusFailed), string(state.StatusRecapDone), string(state.StatusPublished)} {
 		t.Run(status, func(t *testing.T) {
 			fix := setupRecapTest(t)
 			setupRecapReadySession(t, fix, status)
@@ -207,7 +207,7 @@ func TestHandleTaskAcceptsRegenStatuses(t *testing.T) {
 			// 关键断言：不应返回 "session state ... is not valid for recap"（入口守卫错误）
 			// AI 调用可能因测试环境返回其他错误，但必须是守卫之后的原因，而非 canHandleRecap 拒绝
 			if err != nil && strings.Contains(err.Error(), "is not valid for") {
-				t.Fatalf("HandleTask rejected %s at entry guard: %v (canHandleRecap should accept regen statuses)", status, err)
+				t.Fatalf("HandleTask rejected %s at entry guard: %v (canHandleRecap should accept retry and regen statuses)", status, err)
 			}
 		})
 	}
@@ -251,7 +251,7 @@ func TestCreateTaskLocalUnavailable(t *testing.T) {
 	}
 }
 
-func TestCreateTaskActiveConflict(t *testing.T) {
+func TestCreateTaskActiveIsIdempotent(t *testing.T) {
 	fix := setupRecapTest(t)
 	fix.insertChannel(t, "ch1")
 	fix.insertSession(t, "ch1_live_20260101_120000", "live_20260101_120000", "ch1", string(state.StatusASRDone))
@@ -268,17 +268,71 @@ func TestCreateTaskActiveConflict(t *testing.T) {
 
 	h := NewHandler(fix.cfg, fix.sessions, fix.states, LocalProvider{}, fix.glossaryStore, nil, nil)
 	// First task succeeds
-	_, err := h.CreateTask(context.Background(), fix.pool, "ch1_live_20260101_120000")
+	first, err := h.CreateTask(context.Background(), fix.pool, "ch1_live_20260101_120000")
 	if err != nil {
 		t.Fatalf("first CreateTask: %v", err)
 	}
-	// Second task should conflict
-	_, err = h.CreateTask(context.Background(), fix.pool, "ch1_live_20260101_120000")
-	if err == nil {
-		t.Fatalf("expected conflict error")
+	// 重复提交应返回同一个活动任务，而不是向用户暴露 "already exists"。
+	second, err := h.CreateTask(context.Background(), fix.pool, "ch1_live_20260101_120000")
+	if err != nil {
+		t.Fatalf("second CreateTask: %v", err)
 	}
-	if !strings.Contains(err.Error(), worker.ErrTaskConflict.Error()) {
-		t.Fatalf("error = %v, want ErrTaskConflict", err)
+	if second.ID != first.ID {
+		t.Fatalf("second task ID = %q, want existing %q", second.ID, first.ID)
+	}
+}
+
+func TestHandleTaskDefersWhileAnotherRecapIsRunning(t *testing.T) {
+	fix := setupRecapTest(t)
+	setupRecapReadySession(t, fix, string(state.StatusASRDone))
+	fix.cfg.RecapAI.Provider = "codex_cli"
+
+	h := NewHandler(fix.cfg, fix.sessions, fix.states, LocalProvider{}, fix.glossaryStore, nil, nil)
+	h.recapGate <- struct{}{}
+	t.Cleanup(func() { <-h.recapGate })
+
+	task := worker.Task{ID: "t1", ChannelID: "ch1", SessionID: "ch1_live_20260101_120000", Type: TaskType, Payload: "{}"}
+	err := h.HandleTask(context.Background(), task, &noopReporter{})
+	var deferred *worker.DeferredError
+	if !errors.As(err, &deferred) {
+		t.Fatalf("HandleTask error = %v, want DeferredError", err)
+	}
+	if deferred.Delay != recapBusyRetryDelay {
+		t.Fatalf("deferred delay = %v, want %v", deferred.Delay, recapBusyRetryDelay)
+	}
+}
+
+func TestNewHandlerSerializesOnlyCLIProviders(t *testing.T) {
+	fix := setupRecapTest(t)
+
+	fix.cfg.RecapAI.Provider = "openai_compatible"
+	apiHandler := NewHandler(fix.cfg, fix.sessions, fix.states, LocalProvider{}, fix.glossaryStore, nil, nil)
+	if apiHandler.recapGate != nil {
+		t.Fatal("普通 API provider 不应默认串行化回顾")
+	}
+
+	fix.cfg.RecapAI.Provider = "claude_cli"
+	cliHandler := NewHandler(fix.cfg, fix.sessions, fix.states, LocalProvider{}, fix.glossaryStore, nil, nil)
+	if cliHandler.recapGate == nil {
+		t.Fatal("本地 CLI provider 应串行化回顾")
+	}
+}
+
+func TestHandleTaskRetryAdvancesFailedSession(t *testing.T) {
+	fix := setupRecapTest(t)
+	setupRecapReadySession(t, fix, string(state.StatusFailed))
+
+	h := NewHandler(fix.cfg, fix.sessions, fix.states, LocalProvider{}, fix.glossaryStore, nil, nil)
+	task := worker.Task{ID: "retry-recap", ChannelID: "ch1", SessionID: "ch1_live_20260101_120000", Type: TaskType, Payload: "{}"}
+	if err := h.HandleTask(context.Background(), task, &noopReporter{}); err != nil {
+		t.Fatalf("HandleTask retry: %v", err)
+	}
+	sess, err := fix.sessions.Get(context.Background(), task.SessionID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if sess.Status != string(state.StatusRecapDone) {
+		t.Fatalf("session status = %q, want %q", sess.Status, state.StatusRecapDone)
 	}
 }
 

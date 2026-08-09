@@ -30,6 +30,7 @@ const config = ref<DashScopeConfig>({
   diarization_enabled: false,
   speaker_count: 0,
   vocabulary_id: '',
+  temporary_storage_enabled: false,
 })
 const apiKey = ref('')
 const clearKey = ref(false)
@@ -126,6 +127,14 @@ defineExpose({ reload: fetchConfig })
         </div>
         <div class="form-hint">DashScope API 密钥,读取配置时不会返回明文;需要更新时重新输入。</div>
         <HCheckbox v-if="config.api_key_set" v-model="clearKey">清除已保存密钥</HCheckbox>
+      </div>
+    </div>
+
+    <div class="form-row-inline">
+      <label class="form-label">临时存储</label>
+      <div class="form-field">
+        <HSwitch v-model="config.temporary_storage_enabled">直接上传本地音频到 DashScope 临时 OSS</HSwitch>
+        <div class="form-hint">无需公网 IP 或单独配置 OSS；单文件上限 1 GB、48 小时自动过期。仅适合试跑和低频使用，正式批量任务建议配置自己的对象存储。</div>
       </div>
     </div>
 

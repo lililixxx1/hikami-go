@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"hikami-go/internal/biliutil"
 	"hikami-go/internal/channel"
@@ -47,6 +48,11 @@ func (d YTDLPDownloader) Download(ctx context.Context, sourceURL string, rawDir 
 	command := d.Command
 	if command == "" {
 		command = "yt-dlp"
+	}
+	// 显式 ?p=N 表示调用方选择了多 P BV 中的一页。此时不能再探测父播放列表，
+	// 否则单页会重新展开成整个合集。
+	if _, ok := biliutil.ExtractVideoPart(sourceURL); ok {
+		return d.downloadSingleP(ctx, command, sourceURL, rawDir, cookieFile)
 	}
 
 	// Check if this is a multi-P video by probing the playlist entries.
@@ -468,6 +474,18 @@ func singlePCid(ctx context.Context, sourceURL, cookieFile string) int64 {
 	if err != nil || len(info.Pages) == 0 {
 		return 0
 	}
+	if selected, ok := biliutil.ExtractVideoPart(sourceURL); ok {
+		for i, page := range info.Pages {
+			pageIndex := page.Page
+			if pageIndex <= 0 {
+				pageIndex = i + 1
+			}
+			if pageIndex == selected {
+				return page.CID
+			}
+		}
+		return 0
+	}
 	return info.Pages[0].CID
 }
 
@@ -504,6 +522,7 @@ type Handler struct {
 	// 生产默认 biliutil.ResolveShortLink(走 httpClientOrDefault);测试可经
 	// SetShortLinkResolver 注入桩避免打真实 b23.tv 外网。nil 时用包级默认实现。
 	shortLinkResolver func(ctx context.Context, client biliutil.HTTPDoer, rawURL string) string
+	limiter           *downloadLimiter
 }
 
 func NewHandler(cfg *config.Config, sessions *session.Store, states *state.Store, workers *worker.Pool, downloader Downloader, channels *channel.Store) *Handler {
@@ -515,6 +534,7 @@ func NewHandler(cfg *config.Config, sessions *session.Store, states *state.Store
 		downloader: downloader,
 		channels:   channels,
 		viewClient: &biliutil.VideoClient{}, // 长生命周期:跨 ResolveDownloadTitle 调用共享缓存
+		limiter:    newDownloadLimiter(cfg.Downloader),
 	}
 }
 
@@ -564,14 +584,18 @@ func (h *Handler) CreateFromURL(ctx context.Context, channelID, rawURL string) (
 		resolver = biliutil.ResolveShortLink
 	}
 	rawURL = resolver(ctx, nil, rawURL)
-	sourceID := biliutil.ExtractVideoID(rawURL)
+	videoID := biliutil.ExtractVideoID(rawURL)
+	sourceID := biliutil.ExtractVideoSourceID(rawURL)
 	cleanURL := biliutil.NormalizeSourceURL(rawURL)
-	title := h.ResolveDownloadTitle(ctx, channelID, sourceID)
+	part, _ := biliutil.ExtractVideoPart(rawURL)
+	title := h.resolveDownloadTitle(ctx, channelID, videoID, part)
+	startedAt, _ := biliutil.ReplayDateFromTitle(title)
 	createdSession, created, err := h.sessions.CreateDownload(ctx, session.CreateDownloadInput{
 		ChannelID: channelID,
 		SourceID:  sourceID,
 		Title:     title,
 		SourceURL: cleanURL,
+		StartedAt: startedAt,
 	})
 	if err != nil {
 		return worker.Task{}, err
@@ -593,21 +617,40 @@ func (h *Handler) CreateFromURL(ctx context.Context, channelID, rawURL string) (
 // cookie 解析复用 HandleTask 的策略：账号池（账号化配置 → 默认下载账号 → legacy 文件）→ 退化到频道配置。
 // 导出方法，实现 discover.TitleResolver 接口。
 func (h *Handler) ResolveDownloadTitle(ctx context.Context, channelID, sourceID string) string {
+	return h.resolveDownloadTitle(ctx, channelID, sourceID, 0)
+}
+
+// resolveDownloadTitle 解析 BV 总标题或显式选择的多 P 页标题。分 P 标题通常包含
+// 原直播日期，保留它也能让 CreateFromURL 正确填充 started_at。
+func (h *Handler) resolveDownloadTitle(ctx context.Context, channelID, videoID string, selectedPart int) string {
 	cookieHeader := h.downloadCookieHeader(ctx, channelID)
 	// 用 h.viewClient(长生命周期)而非包级 FetchVideoInfo:后者每次新建实例会丢弃
 	// BuvidStore/WBI signer 缓存,导致一次预览里每条视频都重打 finger/spi + nav。
-	info, err := h.viewClient.Fetch(ctx, sourceID, cookieHeader)
+	info, err := h.viewClient.Fetch(ctx, videoID, cookieHeader)
 	if err != nil {
 		slog.Warn("resolve download title: view api failed, fallback to source id",
-			"channel_id", channelID, "source_id", sourceID, "error", err)
-		return sourceID
+			"channel_id", channelID, "source_id", videoID, "part", selectedPart, "error", err)
+		return videoID
 	}
-	cleaned := biliutil.CleanReplayTitle(info.Title)
+	rawTitle := info.Title
+	if selectedPart > 0 {
+		for i, page := range info.Pages {
+			pageIndex := page.Page
+			if pageIndex <= 0 {
+				pageIndex = i + 1
+			}
+			if pageIndex == selectedPart && strings.TrimSpace(page.Part) != "" {
+				rawTitle = page.Part
+				break
+			}
+		}
+	}
+	cleaned := biliutil.CleanReplayTitle(rawTitle)
 	if cleaned == "" {
-		return sourceID
+		return videoID
 	}
 	slog.Info("resolve download title",
-		"channel_id", channelID, "source_id", sourceID, "raw_title", info.Title, "title", cleaned)
+		"channel_id", channelID, "source_id", videoID, "part", selectedPart, "raw_title", rawTitle, "title", cleaned)
 	return cleaned
 }
 
@@ -658,6 +701,13 @@ func (h *Handler) HandleTask(ctx context.Context, task worker.Task, reporter wor
 	if err != nil {
 		return err
 	}
+	release, retryAfter := h.limiter.tryAcquire()
+	if release == nil {
+		message := fmt.Sprintf("waiting for download risk-control window (%s)", retryAfter.Round(time.Second))
+		return worker.Defer(retryAfter, message)
+	}
+	remoteFailed := false
+	defer func() { release(remoteFailed) }()
 	if _, err := h.states.Apply(ctx, task.SessionID, state.EventDownloadStarted, task.ID, ""); err != nil {
 		return err
 	}
@@ -704,6 +754,7 @@ func (h *Handler) HandleTask(ctx context.Context, task worker.Task, reporter wor
 		"url", sessionInfo.SourceURL,
 		"output_path", filepath.ToSlash(rawDir))
 	if err := h.downloader.Download(ctx, sessionInfo.SourceURL, rawDir, cookieFile); err != nil {
+		remoteFailed = true
 		return err
 	}
 	slog.Info("download completed",

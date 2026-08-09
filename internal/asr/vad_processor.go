@@ -2,8 +2,10 @@ package asr
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os/exec"
 	"regexp"
@@ -14,7 +16,7 @@ import (
 	"hikami-go/internal/executil"
 )
 
-// VADProcessor 封装 ffmpeg silencedetect(扫描静音)+ atrim+concat(按 SilenceMap 精确切音频)调用。
+// VADProcessor 封装 ffmpeg silencedetect(扫描静音)和按 SilenceMap 精确切音频的调用。
 // 不持有状态,可并发调用(每个 session 一个独立输出路径)。
 //
 // 持有 *config.Config 指针(而非 VADConfig 值拷贝),让 handler updateVADConfig 改参后
@@ -26,6 +28,7 @@ type VADProcessor struct {
 	ffmpeg  string // ffmpeg 可执行路径(来自 cfg.FFmpeg,已 resolve)
 	ffprobe string // ffprobe 路径(用 ffprobe 拿 duration,不用 ffmpeg 解析)
 	cfg     *config.Config
+	inaGate chan struct{} // TensorFlow 默认占满单卡显存，ina 分段强制单并发
 }
 
 // NewVADProcessor 创建 VADProcessor。cfg.FFmpeg/FFprobe 应已由 runtime.ResolveFFmpeg 解析。
@@ -34,6 +37,7 @@ func NewVADProcessor(cfg *config.Config) *VADProcessor {
 		ffmpeg:  cfg.FFmpeg,
 		ffprobe: cfg.FFprobe,
 		cfg:     cfg,
+		inaGate: make(chan struct{}, 1),
 	}
 }
 
@@ -138,7 +142,16 @@ func (p *VADProcessor) probeDurationMS(ctx context.Context, audioPath string) (i
 	return int64(sec * 1000), nil
 }
 
-// Trim 用 atrim+concat 按 SilenceMap 的 kept_segments 精确切音频(qoder C-1 关键修订)。
+// 大量短片段使用单次 PCM 流裁剪，避免 atrim+concat 把每帧扇出到数百个分支；
+// 普通静音 VAD 的少量片段仍沿用 atrim+concat。
+const streamTrimSegmentThreshold = 64
+
+const (
+	trimSampleRate     = int64(16000)
+	trimBytesPerSample = int64(2) // s16le mono
+)
+
+// Trim 按 SilenceMap 的 kept_segments 精确切音频(qoder C-1 关键修订)。
 //
 // 不能用 silenceremove:它的输出不含 padding(纯语音硬拼),与 silence_map 的 trimmed 时间线
 // 不一致,会导致反向映射累积漂移。atrim 按 kept.original 范围切,每段含 padding,concat 拼接,
@@ -154,6 +167,9 @@ func (p *VADProcessor) probeDurationMS(ctx context.Context, audioPath string) (i
 func (p *VADProcessor) Trim(ctx context.Context, inputPath, outputPath string, sm *SilenceMap) error {
 	if sm == nil || len(sm.KeptSegments) == 0 {
 		return fmt.Errorf("vad trim: silence map is empty")
+	}
+	if len(sm.KeptSegments) > streamTrimSegmentThreshold {
+		return p.trimPCMStream(ctx, inputPath, outputPath, sm.KeptSegments)
 	}
 	filter := buildAtrimConcatFilter(sm.KeptSegments)
 	cmd := exec.CommandContext(ctx, p.ffmpeg,
@@ -173,6 +189,92 @@ func (p *VADProcessor) Trim(ctx context.Context, inputPath, outputPath string, s
 		return fmt.Errorf("vad trim: ffmpeg failed: %w: %s", err, string(output))
 	}
 	return nil
+}
+
+// trimPCMStream 让一个 ffmpeg 顺序解码为 s16le，Go 在字节流上跳过不保留的
+// 区间，再交给第二个 ffmpeg 编码为 MP3。整个输入只解码一次，复杂度不会随
+// speech 片段数量相乘。
+func (p *VADProcessor) trimPCMStream(ctx context.Context, inputPath, outputPath string, segs []KeptSegment) error {
+	decoder := exec.CommandContext(ctx, p.ffmpeg,
+		"-hide_banner", "-loglevel", "error", "-i", inputPath,
+		"-vn", "-ac", "1", "-ar", strconv.FormatInt(trimSampleRate, 10),
+		"-f", "s16le", "pipe:1",
+	)
+	decoderOut, err := decoder.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("vad trim: decoder stdout: %w", err)
+	}
+	var decoderErr bytes.Buffer
+	decoder.Stderr = &decoderErr
+
+	encoder := exec.CommandContext(ctx, p.ffmpeg,
+		"-y", "-hide_banner", "-loglevel", "error",
+		"-f", "s16le", "-ar", strconv.FormatInt(trimSampleRate, 10), "-ac", "1", "-i", "pipe:0",
+		"-b:a", "64k", "-f", "mp3", outputPath,
+	)
+	encoderIn, err := encoder.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("vad trim: encoder stdin: %w", err)
+	}
+	var encoderErr bytes.Buffer
+	encoder.Stderr = &encoderErr
+	executil.HideWindow(decoder)
+	executil.HideWindow(encoder)
+
+	if err := decoder.Start(); err != nil {
+		return fmt.Errorf("vad trim: start decoder: %w", err)
+	}
+	if err := encoder.Start(); err != nil {
+		_ = decoder.Process.Kill()
+		_ = decoder.Wait()
+		return fmt.Errorf("vad trim: start encoder: %w", err)
+	}
+
+	fail := func(copyErr error) error {
+		_ = encoderIn.Close()
+		_ = decoderOut.Close()
+		_ = decoder.Process.Kill()
+		_ = encoder.Process.Kill()
+		_ = decoder.Wait()
+		_ = encoder.Wait()
+		return fmt.Errorf("vad trim: stream copy: %w (decoder: %s; encoder: %s)",
+			copyErr, strings.TrimSpace(decoderErr.String()), strings.TrimSpace(encoderErr.String()))
+	}
+
+	var cursor int64
+	for _, seg := range segs {
+		start, end := pcmByteRange(seg)
+		if start < cursor || end <= start {
+			return fail(fmt.Errorf("invalid kept segment %d-%d after cursor %d", start, end, cursor))
+		}
+		if _, err := io.CopyN(io.Discard, decoderOut, start-cursor); err != nil {
+			return fail(err)
+		}
+		if _, err := io.CopyN(encoderIn, decoderOut, end-start); err != nil {
+			return fail(err)
+		}
+		cursor = end
+	}
+	if err := encoderIn.Close(); err != nil {
+		return fail(err)
+	}
+	if _, err := io.Copy(io.Discard, decoderOut); err != nil {
+		return fail(err)
+	}
+	if err := decoder.Wait(); err != nil {
+		_ = encoder.Process.Kill()
+		_ = encoder.Wait()
+		return fmt.Errorf("vad trim: decoder failed: %w: %s", err, strings.TrimSpace(decoderErr.String()))
+	}
+	if err := encoder.Wait(); err != nil {
+		return fmt.Errorf("vad trim: encoder failed: %w: %s", err, strings.TrimSpace(encoderErr.String()))
+	}
+	return nil
+}
+
+func pcmByteRange(seg KeptSegment) (int64, int64) {
+	bytesPerMS := trimSampleRate * trimBytesPerSample / 1000
+	return seg.OriginalStartMS * bytesPerMS, seg.OriginalEndMS * bytesPerMS
 }
 
 // buildAtrimConcatFilter 构造 atrim+concat filter_complex 字符串。导出供测试(无需真跑 ffmpeg)。
