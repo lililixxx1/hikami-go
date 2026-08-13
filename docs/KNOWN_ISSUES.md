@@ -402,7 +402,7 @@ GET（`server.go:1271`）用 `safeRecapName("直播回顾_" + slug)` 清洗路�
 ### ISSUE-007：recap provider 返回空 content（2026-08-13 定位真根因 flash+max_tokens 并修复，原判断"间歇性"不准确）
 
 - **发现日期**：2026-08-03
-- **严重程度**：中（间歇性，重试通常成功，但失败时无诊断信息）
+- **严重程度**：中（2026-08-13 改判：根因实为 model 被覆盖成 flash + max_tokens 对 reasoning 模型不足的**确定性**失败，并非间歇；残余真·间歇由 provider 层重试兜底）
 - **发现途径**：救回 8-2 场（`bili_1298779265_live_20260802_204346`）时实测
 
 #### 触发条件
@@ -453,13 +453,13 @@ DeepSeek（`openai_compatible` provider）偶发返回 HTTP 200 但 `choices[0].
 **已修复（2026-08-13）**：
 
 1. **诊断日志**（`internal/recap/provider_openai.go`）：content 空时记录 `finish_reason` + `reasoning_content` 片段 + 响应长度（原诊断缺陷 + 8-3 建议①②）。下次失败 journald 直接可见根因。
-2. **自动重试**（`provider_openai.go` `Generate`）：空 content 自动重试 2 次（共 3 次尝试），应对 DeepSeek 真·间歇（`finish_reason=stop`+空）；HTTP/网络错误不重试。`provider_openai_test.go` 3 个单测覆盖（重试后成功 / 重试耗尽 / HTTP 错误不重试）。
+2. **空 content 兜底重试**（`provider_openai.go` 抽公共 `doOpenAIRequestWithRetry`，`Generate` 与 `GenerateWithTools` 共用）：空 content（含纯空白）按 `finish_reason` 区分处理——`finish_reason=length`（token 预算耗尽）或 `content_filter`（内容安全过滤）属确定性失败，**不重试**直接报错并提示对应治本方向；其余（`stop`+空等）做有界重试（共 3 次尝试）兜底真·间歇；HTTP/网络错误不重试。`provider_openai_test.go` 8 个单测覆盖（重试后成功 / 重试耗尽 / HTTP 不重试 / length 不重试 / content_filter 不重试 / 首调成功不重试 / GenerateWithTools 重试 / truncateForLog 边界）。MCP 工具开启时 recap 走 `GenerateWithTools`，同样享有重试（不再硬失败）。
 3. **配置**（运维）：`runtime_settings.recap_ai` 的 model 改回 `deepseek-v4-pro`、`max_tokens` 16384→32768（给 reasoning 留空间，已验证 8-12 能出 6101 字）。
 4. **救回两场**：8-12（`bili_1298779265_live_20260812_200635`）、8-13（`bili_1298779265_live_20260813_144237`）均已走完 recap→publish→archive 到 `published`。
 
-**finish_reason 诊断口径**（今后排查依据）：
-- `finish_reason=length` + 空 content = reasoning 耗尽 max_tokens → 治本：加大 `max_tokens` 或换更高效 model（flash 对长直播回顾不可用）。
-- `finish_reason=stop` + 空 content（reasoning_content 有内容）= DeepSeek 偶发 → provider 自动重试通常能救。
-- `finish_reason=content_filter` = 内容触发安全过滤 → 检查转写内容。
+**finish_reason 诊断口径**（今后排查依据；关键：DeepSeek 的 finish_reason **不能**单独区分确定性与间歇）：
+- `finish_reason=length` + 空 content = 确定性 reasoning+completion 超过 max_tokens。provider **不重试**（重试无效），直接报错提示加大 `max_tokens` / 换 model。**注**：DeepSeek 在 max_tokens 耗尽时常报 `stop` 而非 `length`（见上实验矩阵），所以 `length` 出现即确定性铁证，但 `stop` **不代表**"非预算问题"。
+- `finish_reason=stop` + 空 content = **歧义**：可能为真·间歇（重试可救），也可能是 max_tokens 不足的确定性失败（DeepSeek 此情形同样报 `stop`）。provider 做有界重试（共 3 次）兜底真·间歇；若重试耗尽仍空，按确定性配置问题排查（检查 model 是否被覆盖、`max_tokens` 是否足够）。
+- `finish_reason=content_filter` + 空 content = 内容触发安全过滤，确定性（同输入同结果），provider **不重试**直接报错 → 检查转写内容（换 model 或调整 prompt）。
 
 **运维教训**：直接用 sqlite `json_set()` 改 `runtime_settings.data` 会把列存储类型从 BLOB 改成 TEXT，导致 Go `*json.RawMessage` Scan 失败、服务崩溃循环（`unsupported Scan, storing driver.Value type string into type *json.RawMessage`）。改 runtime_settings 应走 handler API（`PUT /api/config/recap-ai`），或 `json_set` 后必须 `CAST(... AS BLOB)`。

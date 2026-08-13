@@ -169,7 +169,7 @@ type Provider interface {
 
 ## 测试与质量
 
-- **测试总数**: 113（`grep -c "^func Test"` 函数口径：recap_test.go 74 + template_test.go 27 + 2 个真实 API 端到端 + anthropic_tools_test.go 5 + provider_tools_test.go 5；运行时表驱动展开更多）
+- **测试总数**: 121（`grep -c "^func Test"` 函数口径：recap_test.go 74 + template_test.go 27 + 2 个真实 API 端到端 + anthropic_tools_test.go 5 + provider_tools_test.go 5 + provider_openai_test.go 8；运行时表驱动展开更多）
 
 > **2026-07-22 MCP 工具感知(Phase 1/4)**:`handler.go` 的 `generateRecap` 是回顾生成的 AI 调用入口,根据是否配置 MCP 工具选择路径——有 MCP 工具 + provider 实现 `aiprovider.ToolCapableProvider`→走 `runToolsAwareGenerate`(默认调 `mcp.RunWithTools` agent loop,模型可主动联网查证术语/人名/游戏名),否则普通 `provider.Generate` 零回归(空 tools 等价于 Generate,有契约测试保护)。包级函数变量 `RunToolsAwareGenerate` 由 `main.go` 注入,规避 recap→mcp 反向导入。tool-calling 基础设施(OpenAI/Anthropic provider 的 `GenerateWithTools` 实现与请求体 tools/tool_choice 解析)虽属 `aiprovider`,但其测试文件置于本包(recap 是首要消费方)。
 
@@ -230,6 +230,8 @@ type Provider interface {
 - `anthropic_tools_test.go` -- Anthropic provider tool-calling 测试（5 个用例，2026-07-22 新增）
 
 ## 变更记录 (Changelog)
+
+- 2026-08-13(三):**ISSUE-007 空 content 真根因定位 + 修复**(branch `fix/recap-empty-content-retry-2026-08-13`,经两轮 plan-code-reviewer 审核收敛)。**根因**(非间歇):runtime_settings 把 model 从 pro 覆盖成 flash(reasoning 模型)+ max_tokens=16384 对 reasoning 模型不足(DeepSeek 的 max_tokens 限制 reasoning+completion 总和,且耗尽时常报 `finish_reason=stop` 而非 `length`)。**修复**(`provider_openai.go`,新增 `provider_openai_test.go`):① 抽公共 `doOpenAIRequestWithRetry`,`Generate` 与 `GenerateWithTools` 共用——修工具路径(MCP 开启时 recap 走此)空 content 硬失败的不对称;② 按 `finish_reason` 分流:`length`/`content_filter` 属确定性失败**不重试**直接报错(避免对确定性失败白烧付费调用),其余(`stop`+空等)有界重试共 3 次兜底真·间歇,HTTP 错误不重试;③ 空 content 时记录 finish_reason + raw_head(rune 安全截断)修复原诊断缺陷(丢弃 Raw 不打日志);④ TrimSpace 判空避免空白回顾流向下游。诊断口径在 `docs/KNOWN_ISSUES.md` ISSUE-007 诚实修正:DeepSeek 的 finish_reason 不能单独区分确定性与间歇。新增 8 测试(重试后成功/耗尽/HTTP 不重试/length 不重试/content_filter 不重试/首调成功不重试/GenerateWithTools 重试/truncateForLog 边界),recap 测试 113→**121**。详见 `AGENTS.md` 2026-08-13 changelog + `docs/KNOWN_ISSUES.md` ISSUE-007。
 
 - 2026-07-30(四):**删除自定义时间段回顾功能**(branch `feat/replay-auto-switch-2026-07-30`)。核实关键事实:`recap-partial` 与 `with-range` 是同一功能两个 URL 别名(都调 `recap.CreateTaskWithRange`),前端 UI 删除后该功能无任何消费方;`CreateTaskWithRange` 无其他调用方;续写 continuation 是 HandleTask 内部独立逻辑不受影响。**删除**:`CreateTaskWithRange`(handler.go)+ `canCreateRangeRecap`(只被它用)+ 清理 `canHandleRecap`/`validateRecapPreconditions` 注释引用;`recap_test.go` 删 2 个 `TestCreateTaskWithRange*` 测试(BypassOnRegenStatuses/LocalUnavailable)。同步 handler 删 recap-partial/recap-with-range 端点 + OpenAPI spec 删 path/孤儿 schema。recap 测试 115→**113**(recap_test.go 76→74)。零回归(删除无消费方功能)。详见 `AGENTS.md` 2026-07-30 changelog + `plans/plan-replay-auto-switch-2026-07-30.md`。
 

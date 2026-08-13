@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	"hikami-go/internal/aiprovider"
 	"hikami-go/internal/config"
@@ -40,41 +41,14 @@ func (p *OpenAICompatibleProvider) Generate(ctx context.Context, systemPrompt st
 	if err != nil {
 		return aiprovider.GenerateResult{}, err
 	}
-	// ISSUE-007 加固:DeepSeek 等 reasoning 模型偶发返回空 content(finish_reason=stop 但 content="",
-	// 非网络/HTTP 错误)。空 content 时自动重试,应对 API 间歇抖动。注意:finish_reason=length 的
-	// 确定性 reasoning 耗尽(flash 模型 / max_tokens 不足)重试无效,需靠配置足够大的 max_tokens 治本
-	// (见 docs/KNOWN_ISSUES.md ISSUE-007)。重试受 ctx 取消保护(doOpenAIRequest 用 ctx)。
-	const maxEmptyContentRetries = 2
-	var lastRaw []byte
-	var lastFinishReason string
-	for attempt := 0; attempt <= maxEmptyContentRetries; attempt++ {
-		result, rawData, err := p.doOpenAIRequest(ctx, endpoint, data)
-		if err != nil {
-			return result, err
-		}
-		if result.Content != "" || len(result.ToolCalls) > 0 {
-			result.Content = stripAIPreamble(result.Content)
-			result.Raw = string(rawData)
-			return result, nil
-		}
-		// 空 content:记录并视情况重试(ISSUE-007 诊断加固,原 provider 只回 Raw 不打日志致长期无法定位)
-		lastRaw = rawData
-		lastFinishReason = result.FinishReason
-		if attempt < maxEmptyContentRetries {
-			slog.WarnContext(ctx, "recap provider returned empty content, retrying",
-				"attempt", attempt+1, "max_attempts", maxEmptyContentRetries+1,
-				"finish_reason", result.FinishReason, "raw_len", len(rawData))
-			continue
-		}
+	// ISSUE-007 空 content 兜底重试见 doOpenAIRequestWithRetry(Generate 与 GenerateWithTools 共用)。
+	result, rawData, err := p.doOpenAIRequestWithRetry(ctx, endpoint, data)
+	if err != nil {
+		return aiprovider.GenerateResult{Raw: string(rawData)}, err
 	}
-	rawHead := string(lastRaw)
-	if len(rawHead) > 800 {
-		rawHead = rawHead[:800]
-	}
-	slog.WarnContext(ctx, "recap provider returned empty content, retries exhausted",
-		"finish_reason", lastFinishReason, "raw_len", len(lastRaw), "raw_head", rawHead)
-	return aiprovider.GenerateResult{Raw: string(lastRaw)},
-		fmt.Errorf("recap provider response missing content after %d attempts (finish_reason=%s)", maxEmptyContentRetries+1, lastFinishReason)
+	result.Content = stripAIPreamble(result.Content)
+	result.Raw = string(rawData)
+	return result, nil
 }
 
 // GenerateWithTools 实现 aiprovider.ToolCapableProvider,支持 function calling 多轮对话。
@@ -132,20 +106,12 @@ func (p *OpenAICompatibleProvider) GenerateWithTools(ctx context.Context, req ai
 	if err != nil {
 		return aiprovider.GenerateResult{}, err
 	}
-	result, rawData, err := p.doOpenAIRequest(ctx, endpoint, data)
+	// 与 Generate 共用 ISSUE-007 空 content 兜底重试(MCP 工具开启时 recap 也走本路径,
+	// 空 content 同样需要兜底,而非硬失败)。空 content 的判定含 tool_calls:工具路径下
+	// "content 空 且 无 tool_calls" 才算空响应。
+	result, rawData, err := p.doOpenAIRequestWithRetry(ctx, endpoint, data)
 	if err != nil {
-		return result, err
-	}
-	if result.Content == "" && len(result.ToolCalls) == 0 {
-		rawHead := string(rawData)
-		if len(rawHead) > 800 {
-			rawHead = rawHead[:800]
-		}
-		slog.WarnContext(ctx, "recap provider returned empty content and tool_calls",
-			"finish_reason", result.FinishReason,
-			"raw_len", len(rawData),
-			"raw_head", rawHead)
-		return aiprovider.GenerateResult{Raw: string(rawData)}, fmt.Errorf("recap provider response missing content and tool_calls (finish_reason=%s)", result.FinishReason)
+		return aiprovider.GenerateResult{Raw: string(rawData)}, err
 	}
 	// tool-calling 场景不做 stripAIPreamble(模型可能在工具调用前输出结构化中间内容,
 	// 剥离会破坏 agent loop 的 message 拼接)。
@@ -179,6 +145,70 @@ func openAIMessage(m aiprovider.Message) map[string]any {
 		out["tool_call_id"] = m.ToolCallID
 	}
 	return out
+}
+
+// doOpenAIRequestWithRetry 在 doOpenAIRequest 之上叠加 ISSUE-007 空 content 兜底重试,
+// 由 Generate 与 GenerateWithTools 共用(避免两条路径重试逻辑分叉)。
+//
+// DeepSeek 等 reasoning 模型可能返回 HTTP 200 但正文为空(message.reasoning_content 有内容,
+// 正文未输出)。空 content 成因有不同类别,finish_reason 无法完全区分,按下述策略处理:
+//   - finish_reason="length" 或 "content_filter":确定性失败(前者 token 预算耗尽,后者内容安全
+//     过滤),同输入同结果,重试只会重复同样的失败并多花付费调用,立即终止不重试。
+//   - 其余(stop+空、空 finish_reason 等):可能为真·间歇抖动(重试可救),也可能是 max_tokens
+//     不足的确定性失败——DeepSeek 在该情形常报 stop 而非 length,是其行为特性,代码层无法可靠
+//     区分。对其做有界重试(共 3 次尝试)兜底真·间歇;若根因实为配置不足,重试耗尽后返回带
+//     finish_reason 的错误,治本仍需调大 max_tokens / 换 model(见 docs/KNOWN_ISSUES.md ISSUE-007)。
+//
+// HTTP/网络错误不重试(doOpenAIRequest 返回的 err 直传)。重试无退避(真·间歇通常下次即恢复,
+// 加退避只增延迟,有意为之)。重试受 ctx 取消保护(doOpenAIRequest 用 ctx)。
+// 注:成功判定用 TrimSpace——纯空白 content(如 "   ")也视为空,避免下游拿空白回顾继续流水线。
+func (p *OpenAICompatibleProvider) doOpenAIRequestWithRetry(ctx context.Context, endpoint string, data []byte) (aiprovider.GenerateResult, []byte, error) {
+	const maxEmptyContentRetries = 2
+	var lastResult aiprovider.GenerateResult
+	var lastRaw []byte
+	for attempt := 0; attempt <= maxEmptyContentRetries; attempt++ {
+		result, rawData, err := p.doOpenAIRequest(ctx, endpoint, data)
+		if err != nil {
+			return result, rawData, err
+		}
+		if strings.TrimSpace(result.Content) != "" || len(result.ToolCalls) > 0 {
+			return result, rawData, nil
+		}
+		// 空 content:记录最近一次,供耗尽时的诊断日志与错误使用(ISSUE-007 原诊断缺陷:丢弃 Raw 不打日志)。
+		lastResult = result
+		lastRaw = rawData
+		// 确定性 finish_reason(length=token 预算耗尽 / content_filter=内容安全过滤):
+		// 同输入同结果,重试无效,立即终止(错误信息提示对应治本方向)。
+		if fr := result.FinishReason; fr == "length" || fr == "content_filter" {
+			slog.WarnContext(ctx, "recap provider returned empty content, deterministic finish_reason (not retrying)",
+				"finish_reason", fr, "raw_len", len(rawData), "raw_head", truncateForLog(string(rawData), 800))
+			return result, rawData, fmt.Errorf("recap provider response missing content, finish_reason=%s (deterministic, not retried: length => increase max_tokens/switch model; content_filter => check transcript content)", fr)
+		}
+		if attempt < maxEmptyContentRetries {
+			slog.WarnContext(ctx, "recap provider returned empty content, retrying",
+				"attempt", attempt+1, "max_attempts", maxEmptyContentRetries+1,
+				"finish_reason", result.FinishReason, "raw_len", len(rawData))
+			continue
+		}
+	}
+	// 重试耗尽(各次均为 stop/空 等非 length 空响应)。
+	slog.WarnContext(ctx, "recap provider returned empty content, retries exhausted",
+		"finish_reason", lastResult.FinishReason, "raw_len", len(lastRaw),
+		"raw_head", truncateForLog(string(lastRaw), 800))
+	return lastResult, lastRaw, fmt.Errorf("recap provider response missing content after %d attempts (finish_reason=%s)", maxEmptyContentRetries+1, lastResult.FinishReason)
+}
+
+// truncateForLog 截断字符串到约 max 字节的日志预览,在 rune 边界截断,
+// 避免切断多字节 UTF-8 字符(如中文)产生含替换符的 invalid UTF-8 日志。
+func truncateForLog(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	end := max
+	for end > 0 && !utf8.RuneStart(s[end]) {
+		end--
+	}
+	return s[:end]
 }
 
 // doOpenAIRequest 发送 POST /chat/completions 并解析响应,返回 (结果,原始响应字节,错误)。
