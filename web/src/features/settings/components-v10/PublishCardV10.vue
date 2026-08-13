@@ -40,6 +40,22 @@ const privateOptions = [
   { label: '仅自己可见', value: 1 },
 ]
 
+// HSelect 基于原生 select,change 事件统一返回 string。这里三个 API 字段必须保持
+// JSON number；若直接 v-model 到 config,用户只要操作过下拉框就会把 number 污染成
+// string,导致后端 ShouldBindJSON 返回类型错误。
+const privatePubProxy = computed({
+  get: () => config.value.private_pub,
+  set: (v: string | number) => { config.value.private_pub = Number(v) === 1 ? 1 : 2 },
+})
+const topicIdProxy = computed({
+  get: () => config.value.topic_id,
+  set: (v: string | number) => { config.value.topic_id = Number(v) || 0 },
+})
+const listIdProxy = computed({
+  get: () => config.value.list_id,
+  set: (v: string | number) => { config.value.list_id = Number(v) || 0 },
+})
+
 // 定时发布开关(>0 为开;开时默认当前+2h,关时清 0)
 const timerEnabled = computed({
   get: () => config.value.timer_pub_time > 0,
@@ -174,7 +190,7 @@ defineExpose({ reload: fetchConfig })
     <div class="form-row-inline">
       <label class="form-label">可见范围</label>
       <div class="form-field">
-        <HSelect v-model="config.private_pub" :options="privateOptions" />
+        <HSelect v-model="privatePubProxy" :options="privateOptions" />
         <div class="form-hint">仅自己可见时不支持分享和商业推广。</div>
       </div>
     </div>
@@ -240,7 +256,7 @@ defineExpose({ reload: fetchConfig })
         <label class="form-label">话题</label>
         <div class="form-field">
           <HInput :model-value="topicQuery" placeholder="搜索话题(2 字以上)" @update:model-value="onTopicQuery" />
-          <HSelect v-model="config.topic_id" :options="topicSelectOptions" :disabled="topicsLoading" style="margin-top:8px;" />
+          <HSelect v-model="topicIdProxy" :options="topicSelectOptions" :disabled="topicsLoading" style="margin-top:8px;" />
           <div v-if="topicsLoading" class="form-hint">搜索中…</div>
           <div v-else-if="config.topic_name" class="form-hint">已选:{{ config.topic_name }}</div>
         </div>
@@ -258,7 +274,7 @@ defineExpose({ reload: fetchConfig })
         <label class="form-label">文集</label>
         <div class="form-field">
           <HSelect
-            v-model="config.list_id"
+            v-model="listIdProxy"
             :options="seriesSelectOptions"
             :disabled="seriesLoading"
             @click="loadSeriesList"

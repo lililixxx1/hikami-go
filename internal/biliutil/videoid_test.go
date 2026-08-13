@@ -39,6 +39,39 @@ func TestExtractVideoID_Empty(t *testing.T) {
 	}
 }
 
+func TestExtractVideoPart(t *testing.T) {
+	tests := []struct {
+		url  string
+		part int
+		ok   bool
+	}{
+		{"https://www.bilibili.com/video/BV1xx411c7mD?p=2", 2, true},
+		{"//www.bilibili.com/video/BV1xx411c7mD?p=19", 19, true},
+		{"https://www.bilibili.com/video/BV1xx411c7mD?p=0", 0, false},
+		{"https://www.bilibili.com/video/BV1xx411c7mD?p=abc", 0, false},
+		{"https://www.bilibili.com/video/BV1xx411c7mD", 0, false},
+	}
+	for _, tt := range tests {
+		part, ok := ExtractVideoPart(tt.url)
+		if part != tt.part || ok != tt.ok {
+			t.Errorf("ExtractVideoPart(%q) = (%d, %v), want (%d, %v)", tt.url, part, ok, tt.part, tt.ok)
+		}
+	}
+}
+
+func TestExtractVideoSourceID(t *testing.T) {
+	tests := map[string]string{
+		"https://www.bilibili.com/video/BV1xx411c7mD":      "BV1xx411c7mD",
+		"https://www.bilibili.com/video/BV1xx411c7mD?p=1":  "BV1xx411c7mD_p001",
+		"https://www.bilibili.com/video/BV1xx411c7mD?p=19": "BV1xx411c7mD_p019",
+	}
+	for input, want := range tests {
+		if got := ExtractVideoSourceID(input); got != want {
+			t.Errorf("ExtractVideoSourceID(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestNormalizeSourceURL_StripsTracking(t *testing.T) {
 	in := "https://www.bilibili.com/video/BV1xx411c7mD/?spm_id_from=333.999.0.0&vd_source=abc&p=2#t=10"
 	got := NormalizeSourceURL(in)

@@ -247,6 +247,7 @@ DashScopeConfigResponse:
     - diarization_enabled
     - speaker_count
     - vocabulary_id
+    - temporary_storage_enabled
   properties:
     api_key_env:
       type: string
@@ -269,6 +270,9 @@ DashScopeConfigResponse:
       minimum: 0
     vocabulary_id:
       type: string
+    temporary_storage_enabled:
+      type: boolean
+      description: 是否使用 DashScope 临时 OSS 上传本地 ASR 音频（仅建议开发/低频试跑）
 
 DashScopeConfigRequest:
   type: object
@@ -299,6 +303,9 @@ DashScopeConfigRequest:
       minimum: 0
     vocabulary_id:
       type: string
+    temporary_storage_enabled:
+      type: boolean
+      description: 是否使用 DashScope 临时 OSS
 
 # ───── ASR S3(对象存储)─────
 ASRS3ConfigResponse:
@@ -567,19 +574,20 @@ MCPConfigRequest:
     max_tool_rounds:
       type: integer
 
-# ───── VAD(ASR 前置静音裁剪,2026-07-27)─────
+# ───── VAD / inaSpeechSegmenter(ASR 前置分段)─────
 VADConfigResponse:
   type: object
   description: |
-    GET /api/config/vad 响应。ASR 前置 VAD(Voice Activity Detection)静音裁剪配置。
-    启用后:asr.HandleTask 在调 DashScope 前先用 ffmpeg 裁掉 >min_silence_sec 的静音段,
-    产出 audio.asr.trimmed.mp3 + silence_map.json,ASR 返回后用 silence_map 反向映射回原始时间线。
-    失败/裁剪比过低/ffmpeg 缺 filter → 自动回退原始音频(零回归)。详见 plans/plan-vad-2026-07-27.md。
-  required: [enabled, threshold_db, min_silence_sec, padding_sec, min_output_ratio]
+    GET /api/config/vad 响应。engine=ina 时只保留 speech，裁掉 music/noise/noEnergy；
+    engine=silence 时保持原有 ffmpeg 长静音裁剪。两者都用 silence_map.json 反向映射原始时间线。
+  required: [enabled, engine, threshold_db, min_silence_sec, padding_sec, min_output_ratio, ina_python, ina_script, ina_batch_size, ina_min_speech_sec, ina_merge_gap_sec]
   properties:
     enabled:
       type: boolean
       description: VAD 总开关(默认 true,失败自动回退原始音频)
+    engine:
+      type: string
+      enum: [silence, ina]
     threshold_db:
       type: integer
       minimum: -80
@@ -601,6 +609,21 @@ VADConfigResponse:
       minimum: 0.0001
       maximum: 1
       description: 裁剪后/原始低于此值视为异常,回退原始音频(默认 0.3,防 ffmpeg bug 裁过头)
+    ina_python:
+      type: string
+    ina_script:
+      type: string
+    ina_batch_size:
+      type: integer
+      minimum: 1
+    ina_min_speech_sec:
+      type: number
+      format: float
+      minimum: 0
+    ina_merge_gap_sec:
+      type: number
+      format: float
+      minimum: 0
 
 VADConfigRequest:
   type: object
@@ -611,6 +634,9 @@ VADConfigRequest:
   properties:
     enabled:
       type: boolean
+    engine:
+      type: string
+      enum: [silence, ina]
     threshold_db:
       type: integer
       minimum: -80
@@ -628,6 +654,21 @@ VADConfigRequest:
       format: float
       minimum: 0.0001
       maximum: 1
+    ina_python:
+      type: string
+    ina_script:
+      type: string
+    ina_batch_size:
+      type: integer
+      minimum: 1
+    ina_min_speech_sec:
+      type: number
+      format: float
+      minimum: 0
+    ina_merge_gap_sec:
+      type: number
+      format: float
+      minimum: 0
 
 # ───── Export / Import ─────
 ConfigExportBundle:

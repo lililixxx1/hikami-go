@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"hikami-go/internal/config"
@@ -23,6 +25,53 @@ func TestProbeReportsASRModelAndRequestMode(t *testing.T) {
 	}
 	if status.Capabilities.ASRRequestMode != "file_url" {
 		t.Fatalf("asr request mode = %s", status.Capabilities.ASRRequestMode)
+	}
+}
+
+func TestProbeRecapCodexCLIDoesNotRequireAPIKey(t *testing.T) {
+	t.Setenv("AI_API_KEY", "")
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		FFmpeg:  "ffmpeg",
+		FFprobe: "ffprobe",
+		YTDLP:   "yt-dlp",
+		RecapAI: config.RecapAIConfig{
+			Enabled:  true,
+			Provider: "codex_cli",
+			CLIPath:  executable,
+		},
+	}
+
+	status := Probe(cfg)
+	if !status.Capabilities.RecapGenerate {
+		t.Fatalf("RecapGenerate = false, want true for available Codex CLI without API key; reason=%q", status.Capabilities.Reason)
+	}
+	if strings.Contains(status.Capabilities.Reason, "recap api key not configured") {
+		t.Fatalf("CLI provider must not report missing API key: %q", status.Capabilities.Reason)
+	}
+}
+
+func TestProbeDashScopeTemporaryStorageEnablesASR(t *testing.T) {
+	t.Setenv("DASHSCOPE_API_KEY", "sk-test")
+	cfg := &config.Config{
+		FFmpeg:  "ffmpeg",
+		FFprobe: "ffprobe",
+		YTDLP:   "yt-dlp",
+		DashScope: config.DashScopeConfig{
+			Model:                   "fun-asr",
+			TemporaryStorageEnabled: true,
+		},
+	}
+
+	status := Probe(cfg)
+	if !status.Capabilities.ASRSubmit {
+		t.Fatalf("ASRSubmit = false, want true with API key + DashScope temporary storage; reason=%q", status.Capabilities.Reason)
+	}
+	if !status.ConfigStatus.ASRTempConfigured {
+		t.Fatal("ASRTempConfigured = false, want true for DashScope temporary storage")
 	}
 }
 

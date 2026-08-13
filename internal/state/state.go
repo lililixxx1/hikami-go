@@ -203,6 +203,9 @@ var transitions = map[Status]map[Event]Status{
 		EventNormalizeSucceeded: StatusMediaReady,
 	},
 	StatusFailed: {
+		// 下载失败任务可重试。重试沿用同一 session 和 task ID，因此再次访问
+		// 远端来源前，状态机必须允许 handler 重新进入 downloading。
+		EventDownloadStarted:    StatusDownloading,
 		EventNormalizeSucceeded: StatusMediaReady,
 		EventASRSubmitted:       StatusASRSubmitted,
 		EventASRSucceeded:       StatusASRDone,

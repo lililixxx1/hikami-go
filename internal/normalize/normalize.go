@@ -7,6 +7,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"html"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -128,7 +129,7 @@ func (h *Handler) HandleTask(ctx context.Context, task worker.Task, reporter wor
 	if err := reporter.Progress(ctx, 80, "writing metadata"); err != nil {
 		return err
 	}
-	metadata := buildMetadata(sessionInfo, rawAudioPath, asrAudioPath, len(danmaku))
+	metadata := buildMetadata(sessionInfo, rawAudioPath, asrAudioPath, len(danmaku), rawDurationMS(rawDir))
 	if err := writeJSONAtomic(filepath.Join(packageDir, "metadata.json"), metadata); err != nil {
 		return err
 	}
@@ -500,10 +501,11 @@ type Metadata struct {
 	RawAudioPath string `json:"raw_audio_path"`
 	ASRAudioPath string `json:"asr_audio_path"`
 	DanmakuCount int    `json:"danmaku_count"`
+	DurationMs   int64  `json:"duration_ms,omitempty"`
 	GeneratedAt  string `json:"generated_at"`
 }
 
-func buildMetadata(sessionInfo session.Session, rawAudioPath string, asrAudioPath string, danmakuCount int) Metadata {
+func buildMetadata(sessionInfo session.Session, rawAudioPath string, asrAudioPath string, danmakuCount int, durationMs int64) Metadata {
 	return Metadata{
 		SessionID:    sessionInfo.ID,
 		ChannelID:    sessionInfo.ChannelID,
@@ -517,8 +519,59 @@ func buildMetadata(sessionInfo session.Session, rawAudioPath string, asrAudioPat
 		RawAudioPath: filepath.ToSlash(filepath.Join("raw", filepath.Base(rawAudioPath))),
 		ASRAudioPath: filepath.ToSlash(filepath.Join("asr", filepath.Base(asrAudioPath))),
 		DanmakuCount: danmakuCount,
+		DurationMs:   durationMs,
 		GeneratedAt:  time.Now().Format(time.RFC3339),
 	}
+}
+
+func rawDurationMS(rawDir string) int64 {
+	data, err := os.ReadFile(filepath.Join(rawDir, "metadata.ytdlp.json"))
+	if err == nil {
+		var metadata struct {
+			Duration float64 `json:"duration"`
+			Page     int     `json:"page"`
+			Pages    []struct {
+				Page     int     `json:"page"`
+				Duration float64 `json:"duration"`
+			} `json:"pages"`
+		}
+		if json.Unmarshal(data, &metadata) == nil {
+			if metadata.Duration > 0 {
+				return int64(math.Round(metadata.Duration * 1000))
+			}
+			// yt-dlp/native 的单 P 元数据仍可能包含父视频的完整 pages 列表。
+			// 已选择具体分 P 时应使用该页时长；把所有页相加会误把合集总时长
+			// 标到每个独立场次上。
+			if metadata.Page > 0 {
+				for _, page := range metadata.Pages {
+					if page.Page == metadata.Page && page.Duration > 0 {
+						return int64(math.Round(page.Duration * 1000))
+					}
+				}
+			}
+			var total float64
+			for _, page := range metadata.Pages {
+				if page.Duration > 0 {
+					total += page.Duration
+				}
+			}
+			if total > 0 {
+				return int64(math.Round(total * 1000))
+			}
+		}
+	}
+
+	durations, err := loadPartDurations(rawDir)
+	if err != nil {
+		return 0
+	}
+	var total float64
+	for _, duration := range durations {
+		if duration.DurSecs > 0 {
+			total += duration.DurSecs
+		}
+	}
+	return int64(math.Round(total * 1000))
 }
 
 func writeJSONAtomic(path string, value any) error {

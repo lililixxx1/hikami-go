@@ -21,11 +21,12 @@ import (
 )
 
 type DashScopeTranscriber struct {
-	cfg         *config.Config
-	httpClient  *http.Client
-	rclone      string
-	tempServer  *TempAudioServer
-	s3Publisher *S3Publisher
+	cfg                    *config.Config
+	httpClient             *http.Client
+	rclone                 string
+	tempServer             *TempAudioServer
+	s3Publisher            *S3Publisher
+	dashScopeTempPublisher *DashScopeTempPublisher
 }
 
 type dashScopeLogContextKey string
@@ -42,7 +43,8 @@ func NewConfiguredTranscriber(cfg *config.Config) Transcriber {
 	}
 	hasPublishBackend := cfg.ASRTemp.NativeConfigured() ||
 		cfg.ASRS3.Configured() ||
-		(cfg.ASRTemp.RcloneConfigured() && cfg.ASRTemp.PublicBaseURL != "")
+		(cfg.ASRTemp.RcloneConfigured() && cfg.ASRTemp.PublicBaseURL != "") ||
+		cfg.DashScope.TemporaryStorageEnabled
 	if !hasPublishBackend {
 		return LocalTranscriber{}
 	}
@@ -59,8 +61,15 @@ func NewConfiguredTranscriber(cfg *config.Config) Transcriber {
 			return LocalTranscriber{}
 		}
 		transcriber.s3Publisher = s3p
-	} else {
+	} else if cfg.ASRTemp.RcloneConfigured() && cfg.ASRTemp.PublicBaseURL != "" {
 		transcriber.rclone = cfg.Rclone
+	} else {
+		transcriber.dashScopeTempPublisher = newDashScopeTempPublisher(
+			&http.Client{Timeout: 30 * time.Minute},
+			defaultDashScopeUploadsURL,
+			cfg.DashScope.EffectiveAPIKeyEnv(),
+			cfg.DashScope.Model,
+		)
 	}
 	return transcriber
 }
@@ -189,6 +198,9 @@ func (t *DashScopeTranscriber) publishAudio(ctx context.Context, audioPath strin
 	if t.s3Publisher != nil {
 		return t.s3Publisher.Publish(ctx, audioPath, sessionInfo)
 	}
+	if t.dashScopeTempPublisher != nil {
+		return t.dashScopeTempPublisher.Publish(ctx, audioPath, sessionInfo)
+	}
 	remoteObject := filepath.ToSlash(filepath.Join(t.cfg.ASRTemp.BasePath, sessionInfo.ChannelID, sessionInfo.ID, "audio.asr.mp3"))
 	remotePath := t.cfg.ASRTemp.RcloneRemote + remoteObject
 	command := t.rclone
@@ -213,6 +225,10 @@ func (t *DashScopeTranscriber) cleanupRemote(ctx context.Context, remotePath str
 		_ = t.s3Publisher.Delete(ctx, remotePath)
 		return
 	}
+	if t.dashScopeTempPublisher != nil {
+		// DashScope 临时对象不支持查询或主动删除，会在 48 小时后自动过期。
+		return
+	}
 	command := t.rclone
 	if command == "" {
 		command = "rclone"
@@ -224,7 +240,11 @@ func (t *DashScopeTranscriber) cleanupRemote(ctx context.Context, remotePath str
 
 func (t *DashScopeTranscriber) submit(ctx context.Context, publicURL string, vocabulary map[string]int) (string, map[string]any, error) {
 	body := buildDashScopeSubmitBody(&t.cfg.DashScope, publicURL, vocabulary)
-	raw, err := t.doJSONWithRetry(ctx, http.MethodPost, t.cfg.DashScope.EffectiveASRURL(), body)
+	headers := make(http.Header)
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(publicURL)), "oss://") {
+		headers.Set("X-DashScope-OssResourceResolve", "enable")
+	}
+	raw, err := t.doJSONWithRetryHeaders(ctx, http.MethodPost, t.cfg.DashScope.EffectiveASRURL(), body, headers)
 	if err != nil {
 		return "", nil, err
 	}
@@ -408,10 +428,14 @@ func (e *dashScopeNetworkError) Unwrap() error {
 }
 
 func (t *DashScopeTranscriber) doJSONWithRetry(ctx context.Context, method string, endpoint string, body any) (map[string]any, error) {
+	return t.doJSONWithRetryHeaders(ctx, method, endpoint, body, nil)
+}
+
+func (t *DashScopeTranscriber) doJSONWithRetryHeaders(ctx context.Context, method string, endpoint string, body any, headers http.Header) (map[string]any, error) {
 	delays := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second}
 	var lastErr error
 	for attempt := 0; attempt <= len(delays); attempt++ {
-		raw, err := t.doJSON(ctx, method, endpoint, body)
+		raw, err := t.doJSON(ctx, method, endpoint, body, headers)
 		if err == nil {
 			return raw, nil
 		}
@@ -449,7 +473,7 @@ func shouldRetryDashScopeError(err error) bool {
 	return errors.As(err, &networkErr)
 }
 
-func (t *DashScopeTranscriber) doJSON(ctx context.Context, method string, endpoint string, body any) (map[string]any, error) {
+func (t *DashScopeTranscriber) doJSON(ctx context.Context, method string, endpoint string, body any, headers http.Header) (map[string]any, error) {
 	var reader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -465,6 +489,11 @@ func (t *DashScopeTranscriber) doJSON(ctx context.Context, method string, endpoi
 	request.Header.Set("Authorization", "Bearer "+os.Getenv(t.cfg.DashScope.EffectiveAPIKeyEnv()))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-DashScope-Async", "enable")
+	for name, values := range headers {
+		for _, value := range values {
+			request.Header.Add(name, value)
+		}
+	}
 	response, err := t.httpClient.Do(request)
 	if err != nil {
 		return nil, &dashScopeNetworkError{err: err}

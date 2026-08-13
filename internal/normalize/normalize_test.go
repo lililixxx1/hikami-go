@@ -593,7 +593,7 @@ func TestBuildMetadata(t *testing.T) {
 		UpdatedAt:  "2025-01-01T11:00:00Z",
 	}
 
-	m := buildMetadata(s, "/data/ch-001/test-session/raw/audio.m4a", "/data/ch-001/test-session/asr/audio.asr.mp3", 42)
+	m := buildMetadata(s, "/data/ch-001/test-session/raw/audio.m4a", "/data/ch-001/test-session/asr/audio.asr.mp3", 42, 3600123)
 
 	if m.SessionID != "sess-001" {
 		t.Fatalf("SessionID: expected 'sess-001', got %q", m.SessionID)
@@ -624,6 +624,9 @@ func TestBuildMetadata(t *testing.T) {
 	}
 	if m.DanmakuCount != 42 {
 		t.Fatalf("DanmakuCount: expected 42, got %d", m.DanmakuCount)
+	}
+	if m.DurationMs != 3600123 {
+		t.Fatalf("DurationMs: expected 3600123, got %d", m.DurationMs)
 	}
 	// Verify relative paths
 	if m.RawAudioPath != "raw/audio.m4a" {
@@ -1438,7 +1441,7 @@ func TestWriteJSONAtomicMetadata(t *testing.T) {
 
 func TestBuildMetadataEmptySession(t *testing.T) {
 	s := session.Session{}
-	m := buildMetadata(s, "/data/raw/audio.m4a", "/data/asr/audio.asr.mp3", 0)
+	m := buildMetadata(s, "/data/raw/audio.m4a", "/data/asr/audio.asr.mp3", 0, 0)
 
 	if m.SessionID != "" {
 		t.Errorf("expected empty SessionID, got %q", m.SessionID)
@@ -1461,7 +1464,7 @@ func TestBuildMetadataEmptySession(t *testing.T) {
 func TestBuildMetadataWithSubdirs(t *testing.T) {
 	s := session.Session{ID: "s1", ChannelID: "c1"}
 
-	m := buildMetadata(s, "/a/b/c/ch-001/sess/raw/audio.m4a", "/a/b/c/ch-001/sess/asr/audio.asr.mp3", 5)
+	m := buildMetadata(s, "/a/b/c/ch-001/sess/raw/audio.m4a", "/a/b/c/ch-001/sess/asr/audio.asr.mp3", 5, 0)
 
 	if m.RawAudioPath != "raw/audio.m4a" {
 		t.Errorf("RawAudioPath: expected 'raw/audio.m4a', got %q", m.RawAudioPath)
@@ -1469,6 +1472,49 @@ func TestBuildMetadataWithSubdirs(t *testing.T) {
 	if m.ASRAudioPath != "asr/audio.asr.mp3" {
 		t.Errorf("ASRAudioPath: expected 'asr/audio.asr.mp3', got %q", m.ASRAudioPath)
 	}
+}
+
+func TestRawDurationMS(t *testing.T) {
+	t.Run("yt-dlp metadata", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "metadata.ytdlp.json"), []byte(`{"duration":12916.145}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := rawDurationMS(dir); got != 12916145 {
+			t.Fatalf("rawDurationMS = %d, want 12916145", got)
+		}
+	})
+
+	t.Run("native page metadata", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "metadata.ytdlp.json"), []byte(`{"pages":[{"duration":60},{"duration":2.5}]}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := rawDurationMS(dir); got != 62500 {
+			t.Fatalf("rawDurationMS = %d, want 62500", got)
+		}
+	})
+
+	t.Run("selected page metadata", func(t *testing.T) {
+		dir := t.TempDir()
+		data := `{"page":2,"pages":[{"page":1,"duration":60},{"page":2,"duration":2.5}]}`
+		if err := os.WriteFile(filepath.Join(dir, "metadata.ytdlp.json"), []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := rawDurationMS(dir); got != 2500 {
+			t.Fatalf("rawDurationMS = %d, want selected page duration 2500", got)
+		}
+	})
+
+	t.Run("multi-part fallback", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "part_durations.json"), []byte(`[{"index":1,"dur_secs":10.25},{"index":2,"dur_secs":20.5}]`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := rawDurationMS(dir); got != 30750 {
+			t.Fatalf("rawDurationMS = %d, want 30750", got)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------

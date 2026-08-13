@@ -187,11 +187,23 @@ func (p *Pool) Hub() *Hub {
 }
 
 func (p *Pool) enqueueID(id string) {
+	// 确定性地优先处理停止信号；如果只用一个 select，done 已关闭且 queue 可写时
+	// 可能随机选中 queue，导致服务停止后仍入队。
+	select {
+	case <-p.done:
+		return
+	default:
+	}
 	select {
 	case p.queue <- id:
+	case <-p.done:
+		return
 	default:
 		go func() {
-			p.queue <- id
+			select {
+			case p.queue <- id:
+			case <-p.done:
+			}
 		}()
 	}
 }
@@ -241,6 +253,11 @@ func (p *Pool) runTask(id string) {
 		if ctx.Err() != nil {
 			return
 		}
+		var deferred *DeferredError
+		if errors.As(err, &deferred) {
+			p.deferTask(ctx, task, deferred)
+			return
+		}
 		p.fail(ctx, task.ID, "task failed", err)
 		return
 	}
@@ -254,6 +271,27 @@ func (p *Pool) runTask(id string) {
 		return
 	}
 	p.hub.Broadcast(completed)
+}
+
+func (p *Pool) deferTask(ctx context.Context, task Task, deferred *DeferredError) {
+	delay := deferred.Delay
+	if delay <= 0 {
+		delay = time.Second
+	}
+	message := deferred.Message
+	if message == "" {
+		message = fmt.Sprintf("task deferred for %s", delay.Round(time.Second))
+	}
+	pending, err := p.store.DeferRunning(ctx, task.ID, message)
+	if err != nil {
+		slog.Error("defer running task failed", "task_id", task.ID, "error", err)
+		return
+	}
+	p.hub.Broadcast(pending)
+	slog.Info("task deferred", "task_id", task.ID, "type", task.Type, "delay", delay)
+	time.AfterFunc(delay, func() {
+		p.enqueueID(task.ID)
+	})
 }
 
 func (p *Pool) fail(ctx context.Context, id string, message string, err error) {
@@ -460,10 +498,16 @@ var nonRetryableTypes = map[string]struct{}{
 
 // ShouldAutoRetry 判断任务是否应该自动重试（供 handler 层和 Pool 共用）
 func ShouldAutoRetry(cfg *config.Config, taskType string, attempt int) bool {
-	if cfg == nil || !cfg.Worker.AutoRetry {
+	if cfg == nil {
 		return false
 	}
-	if attempt >= cfg.Worker.MaxRetryAttempts {
+	maxAttempts := cfg.Worker.MaxRetryAttempts
+	if taskType == "download" && cfg.Downloader.AutoRetry {
+		maxAttempts = cfg.Downloader.MaxRetryAttempts
+	} else if !cfg.Worker.AutoRetry {
+		return false
+	}
+	if maxAttempts <= 0 || attempt >= maxAttempts {
 		return false
 	}
 	if _, ok := nonRetryableTypes[taskType]; ok {

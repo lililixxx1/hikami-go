@@ -16,10 +16,16 @@ import { getVADConfig, updateVADConfig } from '@/api/settings'
 const emit = defineEmits<{ saved: [] }>()
 
 const enabled = ref(true)
+const engine = ref<'silence' | 'ina'>('silence')
 const thresholdDb = ref(-40)
 const minSilenceSec = ref(2)
 const paddingSec = ref(0.2)
 const minOutputRatio = ref(0.3)
+const inaPython = ref('python3')
+const inaScript = ref('scripts/ina_segment.py')
+const inaBatchSize = ref(256)
+const inaMinSpeechSec = ref(0.6)
+const inaMergeGapSec = ref(0.4)
 const saving = ref(false)
 
 // HSelect 用 options 数组(threshold 预设五档)
@@ -29,6 +35,10 @@ const thresholdOptions = [
   { label: '-40 dB(推荐)', value: -40 },
   { label: '-45 dB', value: -45 },
   { label: '-50 dB(激进,可能裁掉低音量说话)', value: -50 },
+]
+const engineOptions = [
+  { label: 'inaSpeechSegmenter（语音 / 音乐 / 噪声）', value: 'ina' },
+  { label: 'ffmpeg 静音检测（兼容模式）', value: 'silence' },
 ]
 
 // HInput 的 modelValue 是 string,用 computed 做 string↔number 转换
@@ -44,15 +54,34 @@ const ratioStr = computed({
   get: () => String(minOutputRatio.value),
   set: (v: string) => { minOutputRatio.value = Number(v) || 0 },
 })
+const inaBatchSizeStr = computed({
+  get: () => String(inaBatchSize.value),
+  set: (v: string) => { inaBatchSize.value = Number(v) || 0 },
+})
+const inaMinSpeechStr = computed({
+  get: () => String(inaMinSpeechSec.value),
+  set: (v: string) => { inaMinSpeechSec.value = Number(v) || 0 },
+})
+const inaMergeGapStr = computed({
+  get: () => String(inaMergeGapSec.value),
+  set: (v: string) => { inaMergeGapSec.value = Number(v) || 0 },
+})
 
 async function fetchConfig() {
   try {
     const cfg = await getVADConfig()
     enabled.value = cfg.enabled
+    engine.value = cfg.engine ?? 'silence'
     thresholdDb.value = cfg.threshold_db
     minSilenceSec.value = cfg.min_silence_sec
     paddingSec.value = cfg.padding_sec
     minOutputRatio.value = cfg.min_output_ratio
+    // 滚动升级期间兼容尚未返回 ina 新字段的旧后端。
+    inaPython.value = cfg.ina_python ?? 'python3'
+    inaScript.value = cfg.ina_script ?? 'scripts/ina_segment.py'
+    inaBatchSize.value = cfg.ina_batch_size ?? 256
+    inaMinSpeechSec.value = cfg.ina_min_speech_sec ?? 0.6
+    inaMergeGapSec.value = cfg.ina_merge_gap_sec ?? 0.4
   } catch { /* error shown by interceptor */ }
 }
 
@@ -61,10 +90,16 @@ async function save() {
   try {
     await updateVADConfig({
       enabled: enabled.value,
+      engine: engine.value,
       threshold_db: thresholdDb.value,
       min_silence_sec: minSilenceSec.value,
       padding_sec: paddingSec.value,
       min_output_ratio: minOutputRatio.value,
+      ina_python: inaPython.value,
+      ina_script: inaScript.value,
+      ina_batch_size: inaBatchSize.value,
+      ina_min_speech_sec: inaMinSpeechSec.value,
+      ina_merge_gap_sec: inaMergeGapSec.value,
     })
     HMessage.success('VAD 配置已保存')
     emit('saved')
@@ -81,32 +116,39 @@ defineExpose({ reload: fetchConfig })
 <template>
   <HCard>
     <template #header>
-      <span class="card-title">VAD 静音裁剪</span>
+      <span class="card-title">ASR 前置分段</span>
     </template>
 
     <div class="form-hint" style="margin-bottom: 12px;">
-      启用后,上传 ASR 前会先用 ffmpeg 裁掉直播录音中的长静音段(主播离开 / BGM 间奏 / 换 P),
-      减少计费时长(实测 -40dB/2s 节省 3-10%,BGM 多的直播节省少)。裁剪后音频与时间映射表
+      启用后,上传 ASR 前先在本地分段。inaSpeechSegmenter 模式只保留 speech，裁掉 music、noise
+      和无人声片段；兼容模式只裁长静音。裁剪后音频与时间映射表
       (<code>silence_map.json</code>)会反向映射回原始时间线,所有下游(回顾/术语/弹幕)零改动。
-      任何环节失败会自动回退原始音频,不影响 ASR 成功。
+      分段器故障会自动回退原始音频；明确检测为全程无说话时会跳过付费 ASR。
     </div>
 
     <div class="form-row-inline">
-      <label class="form-label">启用 VAD</label>
+      <label class="form-label">启用分段</label>
       <div class="form-field">
         <HSwitch v-model="enabled" />
-        <span class="field-hint">{{ enabled ? '已启用(推荐)' : '已禁用(用原始音频)' }}</span>
+        <span class="field-hint">{{ enabled ? '已启用' : '已禁用（上传原始音频）' }}</span>
       </div>
     </div>
 
     <div class="form-row-inline">
+      <label class="form-label">分段引擎</label>
+      <div class="form-field">
+        <HSelect v-model="engine" :options="engineOptions" />
+      </div>
+    </div>
+
+    <div v-if="engine === 'silence'" class="form-row-inline">
       <label class="form-label">静音阈值</label>
       <div class="form-field">
         <HSelect v-model="thresholdDb" :options="thresholdOptions" />
       </div>
     </div>
 
-    <div class="form-row-inline">
+    <div v-if="engine === 'silence'" class="form-row-inline">
       <label class="form-label">最小静音时长(秒)</label>
       <div class="form-field">
         <HInput v-model="minSilenceStr" type="number" placeholder="2" />
@@ -122,7 +164,44 @@ defineExpose({ reload: fetchConfig })
       </div>
     </div>
 
-    <div class="form-row-inline">
+    <template v-if="engine === 'ina'">
+      <div class="form-row-inline">
+        <label class="form-label">Python 环境</label>
+        <div class="form-field">
+          <HInput v-model="inaPython" placeholder="python3" />
+          <span class="field-hint">建议使用已安装 inaSpeechSegmenter 与 TensorFlow 的独立虚拟环境</span>
+        </div>
+      </div>
+      <div class="form-row-inline">
+        <label class="form-label">分段脚本</label>
+        <div class="form-field">
+          <HInput v-model="inaScript" placeholder="scripts/ina_segment.py" />
+        </div>
+      </div>
+      <div class="form-row-inline">
+        <label class="form-label">GPU batch</label>
+        <div class="form-field">
+          <HInput v-model="inaBatchSizeStr" type="number" placeholder="256" />
+          <span class="field-hint">高显存 GPU 可使用 256；显存不足时调低</span>
+        </div>
+      </div>
+      <div class="form-row-inline">
+        <label class="form-label">最小说话段(秒)</label>
+        <div class="form-field">
+          <HInput v-model="inaMinSpeechStr" type="number" placeholder="0.6" />
+          <span class="field-hint">忽略更短的 speech 毛刺</span>
+        </div>
+      </div>
+      <div class="form-row-inline">
+        <label class="form-label">合并间隔(秒)</label>
+        <div class="form-field">
+          <HInput v-model="inaMergeGapStr" type="number" placeholder="0.4" />
+          <span class="field-hint">合并相邻说话片段，减少 ffmpeg 切片数量</span>
+        </div>
+      </div>
+    </template>
+
+    <div v-if="engine === 'silence'" class="form-row-inline">
       <label class="form-label">安全比例</label>
       <div class="form-field">
         <HInput v-model="ratioStr" type="number" placeholder="0.3" />

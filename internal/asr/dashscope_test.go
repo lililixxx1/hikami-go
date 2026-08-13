@@ -13,13 +13,15 @@ import (
 // urlCapturingTransport 捕获 HTTP 请求的 URL,返回预设响应。
 // 用于验证 DashScopeTranscriber 实际请求的 URL 是否走了 Effective 兜底。
 type urlCapturingTransport struct {
-	capturedURL string
-	captured    chan string
-	response    string
+	capturedURL    string
+	capturedHeader http.Header
+	captured       chan string
+	response       string
 }
 
 func (t *urlCapturingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	t.capturedURL = req.URL.String()
+	t.capturedHeader = req.Header.Clone()
 	if t.captured != nil {
 		t.captured <- t.capturedURL
 	}
@@ -28,6 +30,21 @@ func (t *urlCapturingTransport) RoundTrip(req *http.Request) (*http.Response, er
 		Body:       io.NopCloser(strings.NewReader(t.response)),
 		Header:     make(http.Header),
 	}, nil
+}
+
+func TestSubmitWithTemporaryOSSURLSetsResolveHeader(t *testing.T) {
+	transport := &urlCapturingTransport{response: `{"output":{"task_id":"task-oss"}}`}
+	transcriber := &DashScopeTranscriber{
+		cfg:        &config.Config{DashScope: config.DashScopeConfig{ASRURL: "https://dashscope.example.com/asr"}},
+		httpClient: &http.Client{Transport: transport},
+	}
+
+	if _, _, err := transcriber.submit(context.Background(), "oss://dashscope-instant/example/audio.asr.mp3", nil); err != nil {
+		t.Fatalf("submit() error = %v", err)
+	}
+	if got := transport.capturedHeader.Get("X-DashScope-OssResourceResolve"); got != "enable" {
+		t.Fatalf("X-DashScope-OssResourceResolve = %q, want enable", got)
+	}
 }
 
 // TestSubmitUsesEffectiveASRURL 验证 DashScopeTranscriber.submit 在 cfg.ASRURL 为空时

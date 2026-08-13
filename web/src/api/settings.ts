@@ -140,19 +140,31 @@ export function updateMCPConfig(config: MCPConfigUpdate): Promise<MCPConfig> {
 // 见 plans/plan-vad-2026-07-27.md Phase 7。
 export interface VADConfig {
   enabled: boolean
+  engine: 'silence' | 'ina'
   threshold_db: number
   min_silence_sec: number
   padding_sec: number
   min_output_ratio: number
+  ina_python: string
+  ina_script: string
+  ina_batch_size: number
+  ina_min_speech_sec: number
+  ina_merge_gap_sec: number
 }
 
 // VADConfig 的 PUT 请求(partial,presence-aware:nil 字段不改)。
 export interface VADConfigUpdate {
   enabled?: boolean
+  engine?: 'silence' | 'ina'
   threshold_db?: number
   min_silence_sec?: number
   padding_sec?: number
   min_output_ratio?: number
+  ina_python?: string
+  ina_script?: string
+  ina_batch_size?: number
+  ina_min_speech_sec?: number
+  ina_merge_gap_sec?: number
 }
 
 export function getVADConfig(): Promise<VADConfig> {

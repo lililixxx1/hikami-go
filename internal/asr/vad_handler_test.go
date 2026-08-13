@@ -135,3 +135,22 @@ func TestHandleTask_OriginalSegmentsPreserved_WhenNoVAD(t *testing.T) {
 		t.Errorf("segments.json = %s, want start_ms preserved at 1000 (no remap when VAD nil)", string(data))
 	}
 }
+
+func TestRemapResultTimelineRebuildsSRT(t *testing.T) {
+	sm := &SilenceMap{KeptSegments: []KeptSegment{
+		{OriginalStartMS: 281000, OriginalEndMS: 291000, TrimmedStartMS: 0, TrimmedEndMS: 10000},
+	}}
+	result := Result{
+		SRT: "1\n00:00:01,000 --> 00:00:02,000\nhello\n",
+		Segments: []map[string]any{
+			{"start_ms": int64(1000), "end_ms": int64(2000), "text": "hello"},
+		},
+	}
+	remapResultTimeline(&result, sm)
+	if got := result.Segments[0]["start_ms"]; got != int64(282000) {
+		t.Fatalf("start_ms = %v, want 282000", got)
+	}
+	if !strings.Contains(result.SRT, "00:04:42,000 --> 00:04:43,000") {
+		t.Fatalf("SRT was not rebuilt on original timeline: %q", result.SRT)
+	}
+}

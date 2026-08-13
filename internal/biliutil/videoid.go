@@ -3,8 +3,10 @@ package biliutil
 import (
 	"crypto/sha1"
 	"encoding/hex"
+	"fmt"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -54,6 +56,44 @@ func ExtractVideoID(rawURL string) string {
 	}
 	h := sha1.Sum([]byte(normalized))
 	return hex.EncodeToString(h[:])[:16]
+}
+
+// ExtractVideoPart 返回 URL 的 p 查询参数显式选择的 B 站分 P（从 1 开始）。
+// 没有合法正数 p 的 URL 视为选择整个视频。
+func ExtractVideoPart(rawURL string) (int, bool) {
+	s := strings.TrimSpace(rawURL)
+	if s == "" {
+		return 0, false
+	}
+	if !strings.Contains(s, "://") {
+		if strings.HasPrefix(s, "//") {
+			s = "https:" + s
+		} else {
+			s = "https://" + strings.TrimPrefix(s, "/")
+		}
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return 0, false
+	}
+	part, err := strconv.Atoi(strings.TrimSpace(u.Query().Get("p")))
+	if err != nil || part <= 0 {
+		return 0, false
+	}
+	return part, true
+}
+
+// ExtractVideoSourceID 构造场次级来源标识。显式带 p 的 B 站多 P URL 必须与
+// 整个 BV 及其它分 P 区分；普通 URL 继续沿用 ExtractVideoID 语义。
+func ExtractVideoSourceID(rawURL string) string {
+	videoID := ExtractVideoID(rawURL)
+	if videoID == "" || !bvPattern.MatchString(videoID) {
+		return videoID
+	}
+	if part, ok := ExtractVideoPart(rawURL); ok {
+		return fmt.Sprintf("%s_p%03d", videoID, part)
+	}
+	return videoID
 }
 
 // NormalizeSourceURL 规范化视频链接：去 fragment、剔除跟踪参数、去首尾空白。

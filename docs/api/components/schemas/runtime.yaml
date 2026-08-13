@@ -106,8 +106,8 @@ Capabilities:
     recap_generate:
       type: boolean
       description: |
-        回顾生成可用。需 recap.enabled + recap api key 已设 + provider 可用
-        (claude_cli/codex_cli 看命令可用;openai_compatible/anthropic 看密钥)。
+        回顾生成可用。需 recap.enabled + provider 可用；
+        claude_cli/codex_cli 使用 CLI 自身登录态，openai_compatible/anthropic 需要 API key。
     webdav_upload:
       type: boolean
       description: WebDAV 上传可用(原生配置 或 rclone 兜底)

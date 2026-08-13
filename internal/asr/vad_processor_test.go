@@ -325,3 +325,10 @@ func TestBuildAtrimConcatFilter_SingleSegment(t *testing.T) {
 		t.Errorf("single segment concat=n=1 missing, got: %s", got)
 	}
 }
+
+func TestPCMByteRange(t *testing.T) {
+	start, end := pcmByteRange(KeptSegment{OriginalStartMS: 1000, OriginalEndMS: 2500})
+	if start != 32000 || end != 80000 {
+		t.Fatalf("pcmByteRange = (%d, %d), want (32000, 80000)", start, end)
+	}
+}
