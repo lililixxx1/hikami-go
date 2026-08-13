@@ -229,6 +229,14 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
 
 ## 变更记录
 
+- 2026-08-13(三):**recap 空 content 真根因定位 + 修复 — 纠正 ISSUE-007「间歇性」误判,实为 flash 模型 + max_tokens 对 reasoning 模型不足的确定性失败**(systematic-debugging 多轮;改 `internal/recap/provider_openai.go` + 新增 `provider_openai_test.go`,运维改 `runtime_settings` + 救回 8-12/8-13 两场)。**触发**:用户问「昨天和今天的回顾怎么没有发」。DB+日志查 8-12(`bili_1298779265_live_20260812_200635`)、8-13(`bili_1298779265_live_20260813_144237`)两场均 `failed`,错误 `recap provider response missing content`,但 ASR/音频/弹幕全完好。
+
+  **根因(完整实验矩阵锁定,推翻 ISSUE-007 的「间歇性」判断)**:① `runtime_settings.recap_ai` 把 model 从 `config.yaml` 的 `deepseek-v4-pro` 覆盖成 `deepseek-v4-flash`;flash 是 reasoning 模型,面对完整 `defaultSystemPrompt`(90 行约束)+ 长转写 reasoning 爆炸(16382 token 占满 max_tokens 16384)→ 正文空。② `max_tokens=16384` 对 reasoning 模型不够:DeepSeek 的 max_tokens **限制 reasoning+completion 总和**(非仅 completion),pro 对长内容 reasoning 1900~6698+,多时 + 正文 > 16384 → 空 content(DeepSeek 报 `finish_reason=stop` 非 `length`,行为特性)。8-3 误判间歇因当时内容短(pro+16384 够)+ 诊断缺陷看不到 finish_reason。
+
+  **修复**:① **诊断日志**(provider_openai.go):content 空时记录 finish_reason + reasoning_content 片段 + 响应长度(修复 ISSUE-007 原诊断缺陷「丢弃 Raw 不打日志」,8-3 建议①②落地);② **自动重试**(Generate):空 content 自动重试 2 次(共 3 次),应对 DeepSeek 真·间歇(stop+空);HTTP 错误不重试;`provider_openai_test.go` 3 测试(重试后成功/耗尽/HTTP 不重试);③ **配置**(运维):model 改回 pro、max_tokens 16384→32768(给 reasoning 留空间,验证 8-12 出 6101 字)。救回 8-12/8-13 均 `published`。
+
+  **运维教训**:直接用 sqlite `json_set()` 改 `runtime_settings.data` 会把列类型 BLOB→TEXT,致 Go `*json.RawMessage` Scan 失败、服务崩溃循环(`unsupported Scan, storing driver.Value type string into type *json.RawMessage`);改 runtime_settings 应走 handler API(`PUT /api/config/recap-ai`)或 `json_set` 后 `CAST(... AS BLOB)`(本次中招已修)。**测试**:recap 113→**116**(+3 provider_openai 重试测试)。**验证**:`go test ./internal/recap/...` 全过、`go vet`/`gofmt` 干净、embedded_web 编译成功(27MB)。详见 `docs/KNOWN_ISSUES.md` ISSUE-007 2026-08-13 更新段(含 finish_reason 诊断口径:length=reasoning 耗尽靠 max_tokens 治本 / stop+空=DeepSeek 偶发重试可救 / content_filter=内容过滤)。
+
 - 2026-08-08(五):**b23.tv 短链解析修复 — 回放类标题变 BV 兜底 + 弹幕缺失**(codex 两阶段 r16 NEEDS_FIX → r17 APPROVED,路由 pppzzz,session `019fdfac-a63f-7752-a4c6-dd6a62ad69b0`;新增 `internal/biliutil/shortlink.go` + `shortlink_test.go`,改 `internal/download/download.go` + `download_test.go`)。**触发**:8-7 救场时用官方录播链接 `https://b23.tv/AJIsbvW`(b23.tv 短链)下载,音频正常(yt-dlp 自动跟随 302 重定向),但**回顾文档无弹幕、标题变 BV 号兜底**。用户问「为什么回顾文档中没有弹幕的内容,是不是没有下载弹幕」。
 
   **根因(经代码追踪确认)**:项目 BV 号提取依赖正则 `BV[1-9A-HJ-NP-Za-km-z]{10}`(`biliutil/videoid.go:14` 的 `bvPattern` + `download/native.go:34` 的 `nativeBVPattern`),而 b23.tv 短链 URL **不含 BV 号字面量**,需 HTTP 302 重定向到 `https://www.bilibili.com/video/BVxxx` 才能拿到。**yt-dlp 自己跟随重定向所以音频能下,但项目 Go 代码的 BV 提取不跟随** → ① `ExtractVideoID` 走 sha1[:16] 兜底(去重键不稳定);② `ResolveDownloadTitle` 用 sha1 sourceID 查 view API 返回 -400 → 退回 BV 号显示;③ `singlePCid` 内部 `extractNativeBVID` 正则匹配不到 BV → cid=0 → 命中 `:182-184` WARN "no cid resolved, skip danmaku" **跳过弹幕抓取**。

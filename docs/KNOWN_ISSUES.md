@@ -399,7 +399,7 @@ GET（`server.go:1271`）用 `safeRecapName("直播回顾_" + slug)` 清洗路�
 
 > **已修复（2026-07-11）**：PUT 路径已改用 `safeRecapName`，与 GET 一致。新增 `TestRecapContentRoundTrip` 测试覆盖含空格 slug 的读写一致性。
 
-### ISSUE-007：recap provider 偶发返回空 content，错误丢失原始响应难以诊断
+### ISSUE-007：recap provider 返回空 content（2026-08-13 定位真根因 flash+max_tokens 并修复，原判断"间歇性"不准确）
 
 - **发现日期**：2026-08-03
 - **严重程度**：中（间歇性，重试通常成功，但失败时无诊断信息）
@@ -429,3 +429,37 @@ DeepSeek（`openai_compatible` provider）偶发返回 HTTP 200 但 `choices[0].
   1. 永久保留「recap 失败时记录原始响应」的可观测性改进（`handler.go` 错误分支补 `slog.ErrorContext(..., "raw_response", result.Raw)`），下次失败即捕获样本。
   2. `parseChatCompletionResult`（`provider_openai.go:176`）记录 `finish_reason`，空 content 时结合 finish_reason 判断（`length` = token 截断，`content_filter` = 内容过滤，`stop` = 模型异常）。
   3. 确认 `deepseek-v4-pro` 是否为 DeepSeek 官方有效模型名（官方文档标准名为 `deepseek-chat`/`deepseek-reasoner`）；若非官方名，考虑 `EffectiveModel` 兜底或配置校正。
+
+---
+
+#### 2026-08-13 更新：定位真正根因（非间歇）+ 已修复
+
+8-12、8-13 两场回顾再次失败，深入调查（直接 curl 复现 + 加诊断日志看生产真实响应）**推翻了"间歇性"判断**，真正根因是两个叠加的确定性配置问题：
+
+- **根因① model 被运行时配置覆盖成 flash**：`config.yaml` 原为 `deepseek-v4-pro`，但 `runtime_settings.recap_ai` 覆盖成了 `deepseek-v4-flash`。flash 是 reasoning 模型，面对完整 `defaultSystemPrompt`（90 行约束）+ 长转写时，reasoning 爆炸（16382 token 占满 max_tokens 16384），正文来不及输出 → content 空。
+- **根因② max_tokens=16384 对 reasoning 模型不够**：DeepSeek 的 `max_tokens` **限制 reasoning + completion 的总和**（非仅 completion）。pro 对长内容 reasoning 消耗不稳定（实测 1900~6698+ token），当 reasoning 多 + 正文 > 16384 时被截成空 content（DeepSeek 报 `finish_reason=stop` 而非 `length`，是其行为特性）。
+
+**完整实验矩阵**（直接调 DeepSeek API 复现，铁证）：
+
+| model | system prompt | reasoning token | content | 结果 |
+|-------|--------------|-----------------|---------|------|
+| flash | 完整 default（90 行） | 16382（占满 16384） | 0 字 | ❌ |
+| pro | 完整 default（8-12 超长 64K 字符） | 6698 | 10738（总和 17436 > 16384） | ❌ |
+| pro | 完整 default（8-13 中等 25K 字符） | 6323 | 9944（总和 16267 < 16384） | ✅ |
+| pro/flash | 简化 system | <6000 | 4500-5700 | ✅ |
+
+**为什么 8-3 误判为间歇**：8-2 那场内容较短（pro + 16384 勉强够），重跑成功；当时未看到 finish_reason/reasoning_content（诊断缺陷），无法区分 `length`（确定性 reasoning 耗尽）与 `stop+空`（真·间歇），笼统归为"间歇"。8-3 建议的治本方向 ①②（记录 Raw + finish_reason）在本次实施，正是这次能定位根因的关键。
+
+**已修复（2026-08-13）**：
+
+1. **诊断日志**（`internal/recap/provider_openai.go`）：content 空时记录 `finish_reason` + `reasoning_content` 片段 + 响应长度（原诊断缺陷 + 8-3 建议①②）。下次失败 journald 直接可见根因。
+2. **自动重试**（`provider_openai.go` `Generate`）：空 content 自动重试 2 次（共 3 次尝试），应对 DeepSeek 真·间歇（`finish_reason=stop`+空）；HTTP/网络错误不重试。`provider_openai_test.go` 3 个单测覆盖（重试后成功 / 重试耗尽 / HTTP 错误不重试）。
+3. **配置**（运维）：`runtime_settings.recap_ai` 的 model 改回 `deepseek-v4-pro`、`max_tokens` 16384→32768（给 reasoning 留空间，已验证 8-12 能出 6101 字）。
+4. **救回两场**：8-12（`bili_1298779265_live_20260812_200635`）、8-13（`bili_1298779265_live_20260813_144237`）均已走完 recap→publish→archive 到 `published`。
+
+**finish_reason 诊断口径**（今后排查依据）：
+- `finish_reason=length` + 空 content = reasoning 耗尽 max_tokens → 治本：加大 `max_tokens` 或换更高效 model（flash 对长直播回顾不可用）。
+- `finish_reason=stop` + 空 content（reasoning_content 有内容）= DeepSeek 偶发 → provider 自动重试通常能救。
+- `finish_reason=content_filter` = 内容触发安全过滤 → 检查转写内容。
+
+**运维教训**：直接用 sqlite `json_set()` 改 `runtime_settings.data` 会把列存储类型从 BLOB 改成 TEXT，导致 Go `*json.RawMessage` Scan 失败、服务崩溃循环（`unsupported Scan, storing driver.Value type string into type *json.RawMessage`）。改 runtime_settings 应走 handler API（`PUT /api/config/recap-ai`），或 `json_set` 后必须 `CAST(... AS BLOB)`。

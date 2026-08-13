@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -39,16 +40,41 @@ func (p *OpenAICompatibleProvider) Generate(ctx context.Context, systemPrompt st
 	if err != nil {
 		return aiprovider.GenerateResult{}, err
 	}
-	result, rawData, err := p.doOpenAIRequest(ctx, endpoint, data)
-	if err != nil {
-		return result, err
+	// ISSUE-007 加固:DeepSeek 等 reasoning 模型偶发返回空 content(finish_reason=stop 但 content="",
+	// 非网络/HTTP 错误)。空 content 时自动重试,应对 API 间歇抖动。注意:finish_reason=length 的
+	// 确定性 reasoning 耗尽(flash 模型 / max_tokens 不足)重试无效,需靠配置足够大的 max_tokens 治本
+	// (见 docs/KNOWN_ISSUES.md ISSUE-007)。重试受 ctx 取消保护(doOpenAIRequest 用 ctx)。
+	const maxEmptyContentRetries = 2
+	var lastRaw []byte
+	var lastFinishReason string
+	for attempt := 0; attempt <= maxEmptyContentRetries; attempt++ {
+		result, rawData, err := p.doOpenAIRequest(ctx, endpoint, data)
+		if err != nil {
+			return result, err
+		}
+		if result.Content != "" || len(result.ToolCalls) > 0 {
+			result.Content = stripAIPreamble(result.Content)
+			result.Raw = string(rawData)
+			return result, nil
+		}
+		// 空 content:记录并视情况重试(ISSUE-007 诊断加固,原 provider 只回 Raw 不打日志致长期无法定位)
+		lastRaw = rawData
+		lastFinishReason = result.FinishReason
+		if attempt < maxEmptyContentRetries {
+			slog.WarnContext(ctx, "recap provider returned empty content, retrying",
+				"attempt", attempt+1, "max_attempts", maxEmptyContentRetries+1,
+				"finish_reason", result.FinishReason, "raw_len", len(rawData))
+			continue
+		}
 	}
-	if result.Content == "" && len(result.ToolCalls) == 0 {
-		return aiprovider.GenerateResult{Raw: string(rawData)}, fmt.Errorf("recap provider response missing content")
+	rawHead := string(lastRaw)
+	if len(rawHead) > 800 {
+		rawHead = rawHead[:800]
 	}
-	result.Content = stripAIPreamble(result.Content)
-	result.Raw = string(rawData)
-	return result, nil
+	slog.WarnContext(ctx, "recap provider returned empty content, retries exhausted",
+		"finish_reason", lastFinishReason, "raw_len", len(lastRaw), "raw_head", rawHead)
+	return aiprovider.GenerateResult{Raw: string(lastRaw)},
+		fmt.Errorf("recap provider response missing content after %d attempts (finish_reason=%s)", maxEmptyContentRetries+1, lastFinishReason)
 }
 
 // GenerateWithTools 实现 aiprovider.ToolCapableProvider,支持 function calling 多轮对话。
@@ -111,7 +137,15 @@ func (p *OpenAICompatibleProvider) GenerateWithTools(ctx context.Context, req ai
 		return result, err
 	}
 	if result.Content == "" && len(result.ToolCalls) == 0 {
-		return aiprovider.GenerateResult{Raw: string(rawData)}, fmt.Errorf("recap provider response missing content and tool_calls")
+		rawHead := string(rawData)
+		if len(rawHead) > 800 {
+			rawHead = rawHead[:800]
+		}
+		slog.WarnContext(ctx, "recap provider returned empty content and tool_calls",
+			"finish_reason", result.FinishReason,
+			"raw_len", len(rawData),
+			"raw_head", rawHead)
+		return aiprovider.GenerateResult{Raw: string(rawData)}, fmt.Errorf("recap provider response missing content and tool_calls (finish_reason=%s)", result.FinishReason)
 	}
 	// tool-calling 场景不做 stripAIPreamble(模型可能在工具调用前输出结构化中间内容,
 	// 剥离会破坏 agent loop 的 message 拼接)。
