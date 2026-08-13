@@ -837,13 +837,13 @@ func TestExportBundleVADOmittable(t *testing.T) {
 	}
 }
 
-// TestImportConfigVADRoundTrip 验证 VAD 段导入 round-trip(merge 策略)。
+// TestImportConfigVADRoundTrip 验证 VAD 段导入 round-trip(merge 策略),含 inaSpeechSegmenter 新字段。
 func TestImportConfigVADRoundTrip(t *testing.T) {
 	server := newTestServer(t)
-	// 导入含 vad 段的 bundle
+	// 导入含 vad 段的 bundle(含 engine + ina_* 新字段)
 	body := `{
 		"version":"1",
-		"vad":{"enabled":false,"threshold_db":-50,"min_silence_sec":3.0,"padding_sec":0.5,"min_output_ratio":0.5}
+		"vad":{"enabled":false,"engine":"ina","threshold_db":-50,"min_silence_sec":3.0,"padding_sec":0.5,"min_output_ratio":0.5,"ina_python":"/opt/ina/python","ina_script":"/opt/ina/seg.py","ina_batch_size":128,"ina_min_speech_sec":0.8,"ina_merge_gap_sec":0.5}
 	}`
 	resp := performRequest(server, http.MethodPost, "/api/config/import?strategy=merge", body)
 	if resp.Code != http.StatusOK {
@@ -866,10 +866,32 @@ func TestImportConfigVADRoundTrip(t *testing.T) {
 	if server.cfg.VAD.MinOutputRatio != 0.5 {
 		t.Errorf("VAD.MinOutputRatio = %v, want 0.5", server.cfg.VAD.MinOutputRatio)
 	}
+	if server.cfg.VAD.Engine != "ina" {
+		t.Errorf("VAD.Engine = %q, want ina (imported)", server.cfg.VAD.Engine)
+	}
+	if server.cfg.VAD.InaPython != "/opt/ina/python" {
+		t.Errorf("VAD.InaPython = %q, want /opt/ina/python", server.cfg.VAD.InaPython)
+	}
+	if server.cfg.VAD.InaScript != "/opt/ina/seg.py" {
+		t.Errorf("VAD.InaScript = %q, want /opt/ina/seg.py", server.cfg.VAD.InaScript)
+	}
+	if server.cfg.VAD.InaBatchSize != 128 {
+		t.Errorf("VAD.InaBatchSize = %d, want 128", server.cfg.VAD.InaBatchSize)
+	}
+	if server.cfg.VAD.InaMinSpeechSec != 0.8 {
+		t.Errorf("VAD.InaMinSpeechSec = %v, want 0.8", server.cfg.VAD.InaMinSpeechSec)
+	}
+	if server.cfg.VAD.InaMergeGapSec != 0.5 {
+		t.Errorf("VAD.InaMergeGapSec = %v, want 0.5", server.cfg.VAD.InaMergeGapSec)
+	}
 
-	// runtime_settings 表里应有 vad section
-	if got := runtimeSettingsSection(t, server, "vad"); got == "" {
-		t.Errorf("vad section not persisted to runtime_settings")
+	// runtime_settings 表里应有 vad section,且 JSON 包含 ina 字段(整段替换不会抹掉)
+	persisted := runtimeSettingsSection(t, server, "vad")
+	if persisted == "" {
+		t.Fatalf("vad section not persisted to runtime_settings")
+	}
+	if !strings.Contains(persisted, "ina_python") || !strings.Contains(persisted, "\"engine\"") {
+		t.Errorf("persisted vad section dropped ina fields: %s", persisted)
 	}
 }
 
@@ -896,6 +918,70 @@ func TestImportConfigOldBundleLeavesVADUntouched(t *testing.T) {
 	if got := runtimeSettingsSection(t, server, "vad"); got != "" {
 		t.Errorf("旧 bundle 写入 vad section(应零回归): %s", got)
 	}
+}
+
+// TestExportConfigVADIncludesInaFields 验证 vadToExport 把 inaSpeechSegmenter 新字段
+// (engine + ina_*)投影进导出 DTO。修复 config_export 遗漏 ina 字段(同 ISSUE-005 MCP 段)。
+func TestExportConfigVADIncludesInaFields(t *testing.T) {
+	vad := config.VADConfig{
+		Enabled:         true,
+		Engine:          "ina",
+		ThresholdDB:     -50,
+		MinSilenceSec:   3.0,
+		PaddingSec:      0.5,
+		MinOutputRatio:  0.5,
+		InaPython:       "/opt/ina/python",
+		InaScript:       "/opt/ina/seg.py",
+		InaBatchSize:    128,
+		InaMinSpeechSec: 0.8,
+		InaMergeGapSec:  0.5,
+	}
+	dto := vadToExport(vad)
+
+	// 模拟落盘往返:marshal → unmarshal,验证 JSON tag 与字段完整。
+	data, err := json.Marshal(dto)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back config.VADSectionDTO
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	want := func(p *string, v string, name string) {
+		t.Helper()
+		if p == nil || *p != v {
+			t.Errorf("%s = %v, want %q", name, p, v)
+		}
+	}
+	wantInt := func(p *int, v int, name string) {
+		t.Helper()
+		if p == nil || *p != v {
+			t.Errorf("%s = %v, want %d", name, p, v)
+		}
+	}
+	wantFloat := func(p *float64, v float64, name string) {
+		t.Helper()
+		if p == nil || *p != v {
+			t.Errorf("%s = %v, want %v", name, p, v)
+		}
+	}
+	wantBool := func(p *bool, v bool, name string) {
+		t.Helper()
+		if p == nil || *p != v {
+			t.Errorf("%s = %v, want %v", name, p, v)
+		}
+	}
+	wantBool(back.Enabled, true, "enabled")
+	want(back.Engine, "ina", "engine")
+	wantInt(back.ThresholdDB, -50, "threshold_db")
+	wantFloat(back.MinSilenceSec, 3.0, "min_silence_sec")
+	wantFloat(back.PaddingSec, 0.5, "padding_sec")
+	wantFloat(back.MinOutputRatio, 0.5, "min_output_ratio")
+	want(back.InaPython, "/opt/ina/python", "ina_python")
+	want(back.InaScript, "/opt/ina/seg.py", "ina_script")
+	wantInt(back.InaBatchSize, 128, "ina_batch_size")
+	wantFloat(back.InaMinSpeechSec, 0.8, "ina_min_speech_sec")
+	wantFloat(back.InaMergeGapSec, 0.5, "ina_merge_gap_sec")
 }
 
 // TestExportBundleReplaySectionPresent 验证 replay 段序列化 round-trip(2026-07-30)。

@@ -61,6 +61,33 @@ type WebDAVExportSection struct {
 	PasswordEnv string `json:"password_env"`
 }
 
+func vadToExport(vad config.VADConfig) *config.VADSectionDTO {
+	enabled := vad.Enabled
+	engine := vad.Engine
+	threshold := vad.ThresholdDB
+	minSilence := vad.MinSilenceSec
+	padding := vad.PaddingSec
+	ratio := vad.MinOutputRatio
+	inaPython := vad.InaPython
+	inaScript := vad.InaScript
+	inaBatchSize := vad.InaBatchSize
+	inaMinSpeech := vad.InaMinSpeechSec
+	inaMergeGap := vad.InaMergeGapSec
+	return &config.VADSectionDTO{
+		Enabled:         &enabled,
+		Engine:          &engine,
+		ThresholdDB:     &threshold,
+		MinSilenceSec:   &minSilence,
+		PaddingSec:      &padding,
+		MinOutputRatio:  &ratio,
+		InaPython:       &inaPython,
+		InaScript:       &inaScript,
+		InaBatchSize:    &inaBatchSize,
+		InaMinSpeechSec: &inaMinSpeech,
+		InaMergeGapSec:  &inaMergeGap,
+	}
+}
+
 func webdavToExport(c config.WebDAVConfig) *WebDAVExportSection {
 	return &WebDAVExportSection{
 		Remote:      c.Remote,
@@ -308,18 +335,9 @@ func (s *Server) handleExportConfig(ctx *gin.Context) {
 	s.publishMu.RLock()
 	vad := s.cfg.VAD
 	s.publishMu.RUnlock()
-	vadEnabled := vad.Enabled
-	vadThreshold := vad.ThresholdDB
-	vadMinSilence := vad.MinSilenceSec
-	vadPadding := vad.PaddingSec
-	vadRatio := vad.MinOutputRatio
-	bundle.VAD = &config.VADSectionDTO{
-		Enabled:        &vadEnabled,
-		ThresholdDB:    &vadThreshold,
-		MinSilenceSec:  &vadMinSilence,
-		PaddingSec:     &vadPadding,
-		MinOutputRatio: &vadRatio,
-	}
+	// inaSpeechSegmenter 段(engine + ina_*)必须与 5 个旧字段一起投影,否则配置备份
+	// 导出会静默丢弃 ina 配置,换机导入后 engine 回退 silence(同 ISSUE-005 MCP 段遗漏)。
+	bundle.VAD = vadToExport(vad)
 
 	// Replay 段:无密钥,直接投影 DTO(指针+omitempty,旧 bundle 缺段为 nil,零回归,2026-07-30)。
 	replay := s.cfg.Replay
@@ -559,6 +577,9 @@ func (s *Server) handleImportConfig(ctx *gin.Context) {
 		if dto.Enabled != nil {
 			nextVAD.Enabled = *dto.Enabled
 		}
+		if dto.Engine != nil {
+			nextVAD.Engine = *dto.Engine
+		}
 		if dto.ThresholdDB != nil {
 			nextVAD.ThresholdDB = *dto.ThresholdDB
 		}
@@ -570,6 +591,21 @@ func (s *Server) handleImportConfig(ctx *gin.Context) {
 		}
 		if dto.MinOutputRatio != nil {
 			nextVAD.MinOutputRatio = *dto.MinOutputRatio
+		}
+		if dto.InaPython != nil {
+			nextVAD.InaPython = *dto.InaPython
+		}
+		if dto.InaScript != nil {
+			nextVAD.InaScript = *dto.InaScript
+		}
+		if dto.InaBatchSize != nil {
+			nextVAD.InaBatchSize = *dto.InaBatchSize
+		}
+		if dto.InaMinSpeechSec != nil {
+			nextVAD.InaMinSpeechSec = *dto.InaMinSpeechSec
+		}
+		if dto.InaMergeGapSec != nil {
+			nextVAD.InaMergeGapSec = *dto.InaMergeGapSec
 		}
 		sections = append(sections, sectionDTO{"vad", dto})
 	}
