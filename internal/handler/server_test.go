@@ -3165,7 +3165,9 @@ func TestDeleteCookieAccountInUseRejected(t *testing.T) {
 		t.Fatalf("want 409 for referenced account, got %d body=%s", rec.Code, rec.Body.String())
 	}
 	// 409 提示必须带引用方主播名(修复前 errors.Unwrap 只能取回英文哨兵,主播名丢失)。
-	if !strings.Contains(rec.Body.String(), "ref") {
+	// 断言用完整 "(referenced by: ref)" 片段:单查 "ref" 子串会被哨兵文本里的
+	// "referenced" 误命中,无判别性(审核 Minor)。
+	if !strings.Contains(rec.Body.String(), "(referenced by: ref)") {
 		t.Fatalf("body should contain referencing channel name, got %s", rec.Body.String())
 	}
 	if strings.Contains(rec.Body.String(), "still referenced by channel") {

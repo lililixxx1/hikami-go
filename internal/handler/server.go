@@ -1638,9 +1638,12 @@ func writeError(ctx *gin.Context, err error) {
 		ctx.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 	case errors.Is(err, biliutil.ErrAccountInUse):
 		// err 是 ErrAccountInUse 经 %w 包装并追加 "(referenced by: 主播名)" 的错误;
-		// errors.Unwrap 只能取回英文哨兵本身(丢失主播名),故从 err.Error() 剥掉哨兵
-		// 前缀取出引用明细部分。
-		detail := strings.TrimSpace(strings.TrimPrefix(err.Error(), biliutil.ErrAccountInUse.Error()))
+		// errors.Unwrap 只能取回英文哨兵本身(丢失主播名),故取 err.Error() 中哨兵文本
+		// 之后的部分作为引用明细(strings.Cut 只取后缀,前缀式包装同样兼容)。
+		detail := ""
+		if _, after, found := strings.Cut(err.Error(), biliutil.ErrAccountInUse.Error()); found {
+			detail = strings.TrimSpace(after)
+		}
 		if detail != "" {
 			detail = " " + detail
 		}
