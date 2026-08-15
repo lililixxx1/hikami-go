@@ -119,6 +119,7 @@ defineExpose({ reload: fetchConfig })
         <div class="input-group">
           <HInput
             v-model="apiKey"
+            type="password"
             placeholder="留空则保留已保存密钥"
           />
           <HPill :variant="config.api_key_set ? 'success' : 'danger'">

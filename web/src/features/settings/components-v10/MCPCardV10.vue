@@ -7,7 +7,7 @@
   - 内置项「启用」= 按 key 有无(后端 registerBuiltins 只看 key 是否非空,无独立开关);
     env 字段几乎不需改,折叠进「高级」。
   保存后后端热重载连接(无需重启)。未配置或失败时降级普通 AI 调用(零回归)。
-  L3 视觉验证,无单测(参照 ToolsCardV10)。
+  有快照级单测(MCPCardV10.test.ts,M9 2026-08-15 随 stdio hint 一并补)。
 -->
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
