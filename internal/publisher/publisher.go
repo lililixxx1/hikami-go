@@ -637,8 +637,20 @@ func extractSummary(md string, maxLen int) string {
 		}
 	}
 	s := strings.TrimSpace(text.String())
-	if len(s) > maxLen {
-		s = s[:maxLen] + "..."
+	return truncateRunes(s, maxLen)
+}
+
+// truncateRunes 按符文边界截断并追加省略号(L7,2026-08-15):extractSummary 此前
+// 用字节截断(s[:maxLen]),中文摘要会截在 UTF-8 序列中间产出非法字节串,
+// B 站创作中心侧表现为乱码。maxLen 语义从「字节数」放宽为「字符数」
+// (B 站摘要限制按字符计),符文数未超限时原样返回。
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
 	}
-	return s
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "..."
 }

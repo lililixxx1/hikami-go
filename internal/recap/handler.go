@@ -546,6 +546,21 @@ func (h *Handler) CreateRegenTask(ctx context.Context, pool *worker.Pool, sessio
 	return task, err
 }
 
+// sourceTypeLabel 把 session 来源类型映射为用户可读的直播形态名称(L6,2026-08-15),
+// 用于填充模板变量 {{live_type}};未知类型返回空串(渲染为空,保持旧行为)。
+func sourceTypeLabel(sourceType string) string {
+	switch sourceType {
+	case "live_record":
+		return "直播录制"
+	case "download":
+		return "回放下载"
+	case "import":
+		return "本地导入"
+	default:
+		return ""
+	}
+}
+
 func readSessionMetadata(dir string) *sessionMetadata {
 	data, err := os.ReadFile(filepath.Join(dir, "package", "metadata.json"))
 	if err != nil {
@@ -659,6 +674,9 @@ func (h *Handler) HandleTask(ctx context.Context, task worker.Task, reporter wor
 		Slug:        sessionInfo.Slug,
 		Title:       sessionInfo.Title,
 		FanName:     resolved.FanName,
+		// L6(2026-08-15):{{live_type}} 此前从未赋值,模板引用它永远渲染为空;
+		// 按 source_type 映射确定性的来源标注兜底(原设想的 AI 分类未实现)。
+		LiveType: sourceTypeLabel(sessionInfo.SourceType),
 	}
 	if sessionInfo.StartedAt != "" {
 		if t, err := time.Parse(time.RFC3339, sessionInfo.StartedAt); err == nil {

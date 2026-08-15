@@ -847,3 +847,29 @@ func resolvedJSONKeys(m map[string]json.RawMessage) []string {
 	}
 	return keys
 }
+
+// TestSourceTypeLabel L6(2026-08-15):{{live_type}} 此前从未赋值(模板引用永远渲染
+// 为空),现按 session source_type 映射来源标注;未知类型保持空串(旧行为)。
+func TestSourceTypeLabel(t *testing.T) {
+	cases := map[string]string{
+		"live_record": "直播录制",
+		"download":    "回放下载",
+		"import":      "本地导入",
+		"unknown":     "",
+	}
+	for in, want := range cases {
+		if got := sourceTypeLabel(in); got != want {
+			t.Errorf("sourceTypeLabel(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestRenderTemplateLiveType L6:钉死 {{live_type}} 占位符的渲染管线
+// (handler 填充 vars.LiveType + RenderTemplate 替换两环缺一不可)。
+func TestRenderTemplateLiveType(t *testing.T) {
+	vars := &TemplateVars{LiveType: "直播录制"}
+	got := RenderTemplate("这是一场{{live_type}}的回顾", vars, nil)
+	if got != "这是一场直播录制的回顾" {
+		t.Fatalf("rendered = %q, want live_type 替换生效", got)
+	}
+}

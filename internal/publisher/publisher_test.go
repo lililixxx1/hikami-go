@@ -145,6 +145,12 @@ func TestExtractSummary(t *testing.T) {
 			want:   "短文本",
 		},
 		{
+			name:   "chinese truncation respects rune boundary (L7)",
+			md:     "一二三四五六七八九十壹贰叁",
+			maxLen: 5,
+			want:   "一二三四五...",
+		},
+		{
 			name:   "empty content",
 			md:     "# Title\n## Sub\n> Quote",
 			maxLen: 100,
