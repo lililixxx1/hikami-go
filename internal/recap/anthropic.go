@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -52,12 +53,10 @@ func (p *AnthropicProvider) Generate(ctx context.Context, systemPrompt string, p
 			{"role": "user", "content": prompt},
 		},
 	}
-	result, rawData, err := p.doAnthropicRequest(ctx, apiKey, endpoint, body)
+	// M8(2026-08-15 全项目审核):与 OpenAI 路径对齐的 ISSUE-007 空 content 兜底重试。
+	result, rawData, err := p.doAnthropicRequestWithRetry(ctx, apiKey, endpoint, body)
 	if err != nil {
 		return result, err
-	}
-	if result.Content == "" && len(result.ToolCalls) == 0 {
-		return aiprovider.GenerateResult{Raw: string(rawData)}, errors.New("anthropic response missing content")
 	}
 	result.Content = stripAIPreamble(result.Content)
 	result.Raw = string(rawData)
@@ -113,12 +112,11 @@ func (p *AnthropicProvider) GenerateWithTools(ctx context.Context, req aiprovide
 		body["tool_choice"] = map[string]any{"type": "auto"}
 	}
 
-	result, rawData, err := p.doAnthropicRequest(ctx, apiKey, endpoint, body)
+	// 空 content 兜底重试(GenerateWithTools 同样受益,M8);agent loop 中间轮的
+	// "空正文+tool_use"由 wrapper 的 ToolCalls 判定放行。
+	result, rawData, err := p.doAnthropicRequestWithRetry(ctx, apiKey, endpoint, body)
 	if err != nil {
 		return result, err
-	}
-	if result.Content == "" && len(result.ToolCalls) == 0 {
-		return aiprovider.GenerateResult{Raw: string(rawData)}, errors.New("anthropic response missing content and tool_use")
 	}
 	// tool-calling 场景不做 stripAIPreamble(同 OpenAI 理由)。
 	result.Raw = string(rawData)
@@ -178,6 +176,49 @@ func (p *AnthropicProvider) anthropicEndpoint() string {
 		baseURL = "https://api.anthropic.com/v1"
 	}
 	return baseURL + "/messages"
+}
+
+// doAnthropicRequestWithRetry 在 doAnthropicRequest 之上叠加 ISSUE-007 空 content 兜底
+// 重试,由 Generate 与 GenerateWithTools 共用,语义对齐 doOpenAIRequestWithRetry(M8,
+// 2026-08-15 全项目审核)。Anthropic 的 stop_reason 枚举:end_turn/max_tokens/stop_sequence/
+// tool_use(见官方 messages API 文档),与 OpenAI 的 finish_reason 名不同但语义对应:
+//   - stop_reason="max_tokens":确定性 token 预算耗尽,重试无效,立即终止并提示调大
+//     max_tokens / 换 model(对应 OpenAI 的 finish_reason="length")。
+//   - 其余空 content(end_turn+空等):可能为真·间歇抖动,有界重试共 3 次尝试兜底;
+//     耗尽后返回带 stop_reason 的错误。
+//
+// HTTP/网络错误不重试。成功判定含 tool_calls(agent loop 中间轮仅有 tool_use 无文本,
+// 属协议正常态)。重试受 ctx 取消保护(doAnthropicRequest 用 ctx)。
+func (p *AnthropicProvider) doAnthropicRequestWithRetry(ctx context.Context, apiKey, endpoint string, body map[string]any) (aiprovider.GenerateResult, []byte, error) {
+	const maxEmptyContentRetries = 2
+	var lastResult aiprovider.GenerateResult
+	var lastRaw []byte
+	for attempt := 0; attempt <= maxEmptyContentRetries; attempt++ {
+		result, rawData, err := p.doAnthropicRequest(ctx, apiKey, endpoint, body)
+		if err != nil {
+			return result, rawData, err
+		}
+		if strings.TrimSpace(result.Content) != "" || len(result.ToolCalls) > 0 {
+			return result, rawData, nil
+		}
+		lastResult = result
+		lastRaw = rawData
+		if fr := result.FinishReason; fr == "max_tokens" {
+			slog.WarnContext(ctx, "anthropic provider returned empty content, deterministic stop_reason (not retrying)",
+				"stop_reason", fr, "raw_len", len(rawData), "raw_head", truncateForLog(string(rawData), 800))
+			return result, rawData, fmt.Errorf("anthropic response missing content, stop_reason=%s (deterministic, not retried: increase max_tokens/switch model)", fr)
+		}
+		if attempt < maxEmptyContentRetries {
+			slog.WarnContext(ctx, "anthropic provider returned empty content, retrying",
+				"attempt", attempt+1, "max_attempts", maxEmptyContentRetries+1,
+				"stop_reason", result.FinishReason, "raw_len", len(rawData))
+			continue
+		}
+	}
+	slog.WarnContext(ctx, "anthropic provider returned empty content, retries exhausted",
+		"stop_reason", lastResult.FinishReason, "raw_len", len(lastRaw),
+		"raw_head", truncateForLog(string(lastRaw), 800))
+	return lastResult, lastRaw, fmt.Errorf("anthropic response missing content after %d attempts (stop_reason=%s)", maxEmptyContentRetries+1, lastResult.FinishReason)
 }
 
 // doAnthropicRequest 发送 POST /messages 并解析响应,Generate 与 GenerateWithTools 共用。
