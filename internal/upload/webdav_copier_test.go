@@ -1,9 +1,15 @@
 package upload
 
 import (
+	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
+
+	"hikami-go/internal/config"
 )
 
 func TestJoinWebDAVPath_MultipleParts(t *testing.T) {
@@ -87,5 +93,27 @@ func TestIsWebDAVNotExist_OtherError(t *testing.T) {
 	// 其他错误返回 false
 	if isWebDAVNotExist(errors.New("other")) {
 		t.Fatalf("expected false for other error")
+	}
+}
+
+func TestWebDAVCopierTimeoutApplied(t *testing.T) {
+	// M13:服务端挂起无响应时,客户端必须在注入的超时处中断,不再永久阻塞。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	cfg := &config.WebDAVConfig{URL: srv.URL, Username: "u", Password: "p"}
+	copier := newWebDAVCopierWithTimeout(cfg, 50*time.Millisecond)
+
+	start := time.Now()
+	err := copier.Fetch(context.Background(), "slug", t.TempDir())
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected timeout error from slow server")
+	}
+	if elapsed >= 500*time.Millisecond {
+		t.Fatalf("request should abort at ~50ms injected timeout, took %v", elapsed)
 	}
 }

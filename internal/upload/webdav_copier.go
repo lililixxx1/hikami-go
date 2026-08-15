@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"hikami-go/internal/config"
 
@@ -19,11 +20,23 @@ type WebDAVCopier struct {
 	basePath string
 }
 
+// webdavDefaultTimeout 是生产 WebDAV 客户端的整体超时。http.Client.Timeout 覆盖
+// 单个请求完整周期(含 body 传输),200MB 级 mp3 + 慢链路需给足;不引入 ctx 改造
+// (gowebdav API 不接受 ctx),超时消除「服务端无响应时永久挂起」(M13,2026-08-15 审核)。
+const webdavDefaultTimeout = 30 * time.Minute
+
 func NewWebDAVCopier(cfg *config.WebDAVConfig) *WebDAVCopier {
+	return newWebDAVCopierWithTimeout(cfg, webdavDefaultTimeout)
+}
+
+// newWebDAVCopierWithTimeout 超时参数化仅供同包测试注入短超时,生产走 NewWebDAVCopier。
+func newWebDAVCopierWithTimeout(cfg *config.WebDAVConfig, timeout time.Duration) *WebDAVCopier {
+	client := gowebdav.NewClient(cfg.URL, cfg.Username, cfg.EffectivePassword())
+	client.SetTimeout(timeout)
 	return &WebDAVCopier{
 		// EffectivePassword 遵循 tombstone（managed 时不回落 config.yaml 明文），
 		// 与 GET 响应/能力探测一致（r12 Effective* 闭环）。
-		client:   gowebdav.NewClient(cfg.URL, cfg.Username, cfg.EffectivePassword()),
+		client:   client,
 		basePath: strings.Trim(cfg.BasePath, "/"),
 	}
 }
