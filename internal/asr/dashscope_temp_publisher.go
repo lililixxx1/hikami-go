@@ -55,7 +55,7 @@ func newDashScopeTempPublisher(client *http.Client, uploadsURL, apiKeyEnv, model
 	}
 }
 
-func (p *DashScopeTempPublisher) Publish(ctx context.Context, audioPath string, _ session.Session) (string, string, error) {
+func (p *DashScopeTempPublisher) Publish(ctx context.Context, audioPath string, sess session.Session) (string, string, error) {
 	info, err := os.Stat(audioPath)
 	if err != nil {
 		return "", "", fmt.Errorf("dashscope temporary upload: stat audio: %w", err)
@@ -78,6 +78,12 @@ func (p *DashScopeTempPublisher) Publish(ctx context.Context, audioPath string, 
 	}
 
 	filename := filepath.Base(audioPath)
+	// L13(2026-08-15):objectKey 加 session ID 前缀——所有场次的临时音频都叫
+	// audio.asr.mp3,共用同一 objectKey 会在 DashScope OSS 端互相覆盖/冲突;
+	// 同一场重跑复用同一 key(幂等覆盖,无害)。零值 session(旧测试路径)保持原文件名。
+	if sess.ID != "" {
+		filename = sess.ID + "_" + filename
+	}
 	objectKey := strings.TrimRight(policy.UploadDir, "/") + "/" + filename
 	if err := p.upload(ctx, policy, objectKey, audioPath, info.Size()); err != nil {
 		return "", "", err

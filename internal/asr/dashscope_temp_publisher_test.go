@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"hikami-go/internal/session"
@@ -49,10 +50,15 @@ func TestDashScopeTempPublisherPublish(t *testing.T) {
 				"OSSAccessKeyId":         "temp-ak",
 				"policy":                 "signed-policy",
 				"Signature":              "signed-value",
-				"key":                    "dashscope-instant/account/date/id/audio.asr.mp3",
 				"x-oss-object-acl":       "private",
 				"x-oss-forbid-overwrite": "true",
 				"success_action_status":  "200",
+			}
+			// key 随调用变化(L13:零值 session 原文件名/带 session 加前缀),
+			// 单独校验前缀目录与 audio.asr.mp3 结尾。
+			if key := r.FormValue("key"); !strings.HasPrefix(key, "dashscope-instant/account/date/id/") ||
+				!strings.HasSuffix(key, "audio.asr.mp3") {
+				t.Errorf("form key = %q, want .../audio.asr.mp3 under upload_dir", key)
 			}
 			for name, want := range checks {
 				if got := r.FormValue(name); got != want {
@@ -90,6 +96,16 @@ func TestDashScopeTempPublisherPublish(t *testing.T) {
 	wantURL := "oss://dashscope-instant/account/date/id/audio.asr.mp3"
 	if gotURL != wantURL || remotePath != wantURL {
 		t.Fatalf("Publish() = (%q, %q), want (%q, %q)", gotURL, remotePath, wantURL, wantURL)
+	}
+	// L13(2026-08-15):带 session 的调用 objectKey 应加 sessionID 前缀,
+	// 不同场次的临时音频不再共用同一 OSS key 互相覆盖;同场重跑复用同 key 幂等。
+	sessURL, sessRemote, err := publisher.Publish(context.Background(), audioPath, session.Session{ID: "sess_l13"})
+	if err != nil {
+		t.Fatalf("Publish(session) error = %v", err)
+	}
+	wantSessURL := "oss://dashscope-instant/account/date/id/sess_l13_audio.asr.mp3"
+	if sessURL != wantSessURL || sessRemote != wantSessURL {
+		t.Fatalf("Publish(session) = (%q, %q), want (%q, %q)", sessURL, sessRemote, wantSessURL, wantSessURL)
 	}
 }
 
