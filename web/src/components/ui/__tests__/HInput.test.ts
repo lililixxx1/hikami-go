@@ -22,4 +22,17 @@ describe('HInput', () => {
     const wrapper = mount(HInput, { props: { modelValue: '', disabled: true } })
     expect(wrapper.find('input').attributes('disabled')).toBeDefined()
   })
+  it('passes type prop to inner input (H5: password/number 等不再落到 label 被忽略)', () => {
+    const wrapper = mount(HInput, { props: { modelValue: '', type: 'password' } })
+    expect(wrapper.find('input').attributes('type')).toBe('password')
+  })
+  it('defaults type to text and omits list attr when not provided', () => {
+    const wrapper = mount(HInput, { props: { modelValue: '' } })
+    expect(wrapper.find('input').attributes('type')).toBe('text')
+    expect(wrapper.find('input').attributes('list')).toBeUndefined()
+  })
+  it('associates datalist via list prop', () => {
+    const wrapper = mount(HInput, { props: { modelValue: '', list: 'dl-glossary' } })
+    expect(wrapper.find('input').attributes('list')).toBe('dl-glossary')
+  })
 })
