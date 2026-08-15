@@ -72,6 +72,28 @@ func TestExtractVideoSourceID(t *testing.T) {
 	}
 }
 
+func TestSourceIDWithPart(t *testing.T) {
+	tests := []struct {
+		name    string
+		videoID string
+		url     string
+		want    string
+	}{
+		// 列表器自定义 ID(不匹配 BV 正则)也原样保留,仅追加 p 后缀——
+		// discover 锚定 entry.ID 的去重语义与历史 session 连续(L14)。
+		{"custom id with part", "BV1", "https://www.bilibili.com/video/BV1xx411c7mD?p=2", "BV1_p002"},
+		{"custom id no part", "BV1", "https://www.bilibili.com/video/BV1xx411c7mD", "BV1"},
+		{"valid bv with part matches ExtractVideoSourceID", "BV1xx411c7mD", "https://www.bilibili.com/video/BV1xx411c7mD?p=1", "BV1xx411c7mD_p001"},
+		{"empty id falls back to url", "", "https://www.bilibili.com/video/BV1xx411c7mD?p=3", "BV1xx411c7mD_p003"},
+		{"invalid p ignored", "BV1", "https://www.bilibili.com/video/BV1xx411c7mD?p=abc", "BV1"},
+	}
+	for _, tt := range tests {
+		if got := SourceIDWithPart(tt.videoID, tt.url); got != tt.want {
+			t.Errorf("%s: SourceIDWithPart(%q, %q) = %q, want %q", tt.name, tt.videoID, tt.url, got, tt.want)
+		}
+	}
+}
+
 func TestNormalizeSourceURL_StripsTracking(t *testing.T) {
 	in := "https://www.bilibili.com/video/BV1xx411c7mD/?spm_id_from=333.999.0.0&vd_source=abc&p=2#t=10"
 	got := NormalizeSourceURL(in)

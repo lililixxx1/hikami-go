@@ -423,16 +423,22 @@ func (m *Manager) DiscoverChannel(ctx context.Context, item channel.Channel) ([]
 		if !ok {
 			startedAt, _ = biliutil.ReplayDateFromTitle(entry.Title)
 		}
+		// L14(2026-08-15):多 P 合集的 entry.ID 全是同一个 BV,SourceID 裸用
+		// 会互相去重吞分 P;URL 带 ?p= 时追加 _pNNN 后缀,与
+		// download.CreateFromURL 的 ExtractVideoSourceID 口径一致。锚定
+		// entry.ID(非 BV 格式 ID 保持原样,与历史 session 去重连续);
+		// resolveTitle 仍用裸 entry.ID(view API 不认分 P 后缀)。
+		sourceID := biliutil.SourceIDWithPart(entry.ID, entryURL(entry))
 		createdSession, created, err := m.sessions.CreateDownload(ctx, session.CreateDownloadInput{
 			ChannelID: item.ID,
-			SourceID:  entry.ID,
+			SourceID:  sourceID,
 			Title:     title,
 			SourceURL: entryURL(entry),
 			StartedAt: startedAt,
 		})
 		result := Result{
 			ChannelID: item.ID,
-			SourceID:  entry.ID,
+			SourceID:  sourceID,
 			Title:     title,
 			Created:   created,
 		}
@@ -592,7 +598,8 @@ func (m *Manager) previewFromEntries(ctx context.Context, in PreviewInput, cooki
 			slog.Info("discover preview accepted replay", "channel_id", in.ChannelID, "source_id", p.entry.ID, "title", title)
 			results[p.index] = Result{
 				ChannelID: in.ChannelID,
-				SourceID:  p.entry.ID,
+				// L14:同 DiscoverChannel,SourceID 含分 P 后缀去重才不吞分 P。
+				SourceID:  biliutil.SourceIDWithPart(p.entry.ID, entryURL(p.entry)),
 				Title:     title,
 				SourceURL: entryURL(p.entry),
 			}

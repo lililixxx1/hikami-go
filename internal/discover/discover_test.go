@@ -466,6 +466,53 @@ func TestDiscoverChannelResolvesEmptyTitle(t *testing.T) {
 	}
 }
 
+// multiPartLister 模拟多 P 合集:yt-dlp --flat-playlist 对多 P 视频返回的
+// entry.ID 全是同一个 BV,只有 WebpageURL 的 ?p= 区分分 P(L14 场景)。
+type multiPartLister struct{}
+
+func (multiPartLister) List(ctx context.Context, sourceURL string, cookieFile string) ([]Entry, error) {
+	return []Entry{
+		{ID: "BV1xx411c7mD", Title: "【直播回放】上篇", WebpageURL: "https://www.bilibili.com/video/BV1xx411c7mD?p=1"},
+		{ID: "BV1xx411c7mD", Title: "【直播回放】下篇", WebpageURL: "https://www.bilibili.com/video/BV1xx411c7mD?p=2"},
+	}, nil
+}
+
+// TestDiscoverChannelMultiPartSourceIDsDistinct 钉死 L14:多 P 合集两个分 P
+// 共享同一 BV,SourceID 必须带 _p001/_p002 后缀互相区分——旧实现 SourceID
+// 裸用 entry.ID,第二个分 P 命中 (channel,source_type,source_id) 唯一约束
+// 被去重吞掉,且与 download.CreateFromURL 的 ExtractVideoSourceID 口径脱节。
+func TestDiscoverChannelMultiPartSourceIDsDistinct(t *testing.T) {
+	database := newDiscoverTestDB(t)
+	pool := worker.NewPool(worker.NewStore(database), worker.NewHub(), 1, nil)
+	manager := NewManager(
+		channel.NewStore(database),
+		session.NewStore(database),
+		pool,
+		multiPartLister{},
+	)
+
+	ch, err := channel.NewStore(database).Get(context.Background(), "huize")
+	if err != nil {
+		t.Fatalf("get channel: %v", err)
+	}
+	results, err := manager.DiscoverChannel(context.Background(), ch)
+	if err != nil {
+		t.Fatalf("discover channel: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results count = %d, want 2 (两个分 P 都要产出): %+v", len(results), results)
+	}
+	wantIDs := []string{"BV1xx411c7mD_p001", "BV1xx411c7mD_p002"}
+	for i, want := range wantIDs {
+		if results[i].SourceID != want {
+			t.Errorf("results[%d].SourceID = %q, want %q", i, results[i].SourceID, want)
+		}
+		if !results[i].Created {
+			t.Errorf("results[%d].Created = false, want true (分 P 不应被同 BV 去重吞掉)", i)
+		}
+	}
+}
+
 // TestPreviewChannelResolvesEmptyTitle 验证 PreviewChannel 也解析空标题。
 func TestPreviewChannelResolvesEmptyTitle(t *testing.T) {
 	database := newDiscoverTestDB(t)

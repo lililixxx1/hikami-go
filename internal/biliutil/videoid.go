@@ -96,6 +96,20 @@ func ExtractVideoSourceID(rawURL string) string {
 	return videoID
 }
 
+// SourceIDWithPart 在调用方已持有视频 ID(如 yt-dlp entry.ID,可能是列表器
+// 自定义格式、不保证匹配 BV 正则)时构造场次级来源标识:URL 显式带 p 则追加
+// 与 ExtractVideoSourceID 一致的 _pNNN 分 P 后缀,否则原样返回 videoID。
+// 后缀格式与 ExtractVideoSourceID 单一来源,保证两条路径去重口径一致。
+func SourceIDWithPart(videoID, rawURL string) string {
+	if videoID == "" {
+		return ExtractVideoSourceID(rawURL)
+	}
+	if part, ok := ExtractVideoPart(rawURL); ok {
+		return fmt.Sprintf("%s_p%03d", videoID, part)
+	}
+	return videoID
+}
+
 // NormalizeSourceURL 规范化视频链接：去 fragment、剔除跟踪参数、去首尾空白。
 // 用于把"同一视频的不同形态链接"统一为稳定的存储值，作为去重与下载目标。
 func NormalizeSourceURL(rawURL string) string {
