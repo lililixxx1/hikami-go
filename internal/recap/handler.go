@@ -844,7 +844,13 @@ func (h *Handler) HandleTask(ctx context.Context, task worker.Task, reporter wor
 		h.notifyMgr.Send(ctx, notify.EventRecapDone, "回顾已生成",
 			fmt.Sprintf("频道 %s 的回顾已生成", sessionInfo.ChannelID))
 	}
-	return reporter.Progress(ctx, 95, "recap completed")
+	// X1(2026-08-15 全项目审核):Apply(EventRecapSucceeded) 已成功、onSuccess 自动链已触发,
+	// 此处进度上报失败若返回错误会让任务 failed、session 从 recap_done 被降级——
+	// 已生成的回顾与下游自动链跟着断裂。降级为告警,返回 nil。
+	if err := reporter.Progress(ctx, 95, "recap completed"); err != nil {
+		slog.WarnContext(ctx, "post-success progress report failed", "task_id", task.ID, "error", err)
+	}
+	return nil
 }
 
 func (h *Handler) sessionDir(sessionInfo session.Session) string {

@@ -232,7 +232,12 @@ func (h *Handler) HandleTask(ctx context.Context, task worker.Task, reporter wor
 		h.onSuccess(ctx, task)
 	}
 
-	return reporter.Progress(ctx, 95, "publish completed")
+	// X1:ApplyWithPublishTarget 已成功(状态 published)、onSuccess 自动归档已触发,
+	// 进度上报失败降级为告警,不再让已成功的发布被任务失败回卷。
+	if err := reporter.Progress(ctx, 95, "publish completed"); err != nil {
+		slog.WarnContext(ctx, "post-success progress report failed", "task_id", task.ID, "error", err)
+	}
+	return nil
 }
 
 // publishRecap 执行「读取最新 recap → 转 opus → 存草稿 → (publish 模式)发布」核心流程，

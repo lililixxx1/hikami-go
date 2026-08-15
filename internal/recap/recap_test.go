@@ -1856,3 +1856,39 @@ func TestHandleTaskEmptyContentLengthRescuedByContinuation(t *testing.T) {
 		t.Fatalf("recap md should contain continuation content, got: %s", string(data)[:min(200, len(string(data)))])
 	}
 }
+
+// failAt95Reporter 模拟进度管道在收尾阶段(≥95%)断裂(X1 场景)。
+type failAt95Reporter struct{}
+
+func (failAt95Reporter) Progress(ctx context.Context, progress int, message string) error {
+	if progress >= 95 {
+		return errors.New("progress pipe broken")
+	}
+	return nil
+}
+
+func TestHandleTaskPostSuccessProgressFailureDoesNotFailTask(t *testing.T) {
+	// X1:Apply(EventRecapSucceeded) 成功后的进度上报失败,不应让任务 failed、
+	// session 被降级、onSuccess 自动链断裂——降级为告警返回 nil。
+	fix := setupRecapTest(t)
+	setupRecapReadySession(t, fix, string(state.StatusASRDone))
+
+	successFired := false
+	h := NewHandler(fix.cfg, fix.sessions, fix.states, LocalProvider{}, fix.glossaryStore, nil, nil)
+	h.SetOnSuccess(func(ctx context.Context, task worker.Task) { successFired = true })
+
+	task := worker.Task{ID: "x1-recap", ChannelID: "ch1", SessionID: "ch1_live_20260101_120000", Type: TaskType, Payload: "{}"}
+	if err := h.HandleTask(context.Background(), task, failAt95Reporter{}); err != nil {
+		t.Fatalf("HandleTask should succeed despite post-success progress failure: %v", err)
+	}
+	sess, getErr := fix.sessions.Get(context.Background(), task.SessionID)
+	if getErr != nil {
+		t.Fatalf("get session: %v", getErr)
+	}
+	if sess.Status != string(state.StatusRecapDone) {
+		t.Fatalf("session status = %q, want recap_done (not rolled back)", sess.Status)
+	}
+	if !successFired {
+		t.Fatal("onSuccess auto-chain should still fire")
+	}
+}

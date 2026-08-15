@@ -1618,3 +1618,41 @@ func writeTestCookieFileAt(t *testing.T, path, sessdata, dedeUserID string) {
 		t.Fatalf("write cookie: %v", err)
 	}
 }
+
+// failAt95PublisherReporter 模拟进度管道在收尾阶段(≥95%)断裂(X1 场景)。
+type failAt95PublisherReporter struct{}
+
+func (failAt95PublisherReporter) Progress(ctx context.Context, progress int, message string) error {
+	if progress >= 95 {
+		return errors.New("progress pipe broken")
+	}
+	return nil
+}
+
+func TestHandleTask_PostSuccessProgressFailureDoesNotFailTask(t *testing.T) {
+	// X1:ApplyWithPublishTarget 成功后的进度上报失败,不应让已成功的发布被任务失败回卷。
+	h := newTestHelper(t)
+	ctx := context.Background()
+
+	cookiePath := h.createCookieFile("")
+	ch, sess := h.setupSessionAndChannel(ctx, cookiePath)
+	h.createRecapMarkdown(ch, sess, "# 直播回顾\n\n内容。")
+
+	fake := &fakeOpusClient{}
+	handler := NewHandler(h.cfg, h.sessions, h.states, h.channels, fake)
+	successFired := false
+	handler.SetOnSuccess(func(ctx context.Context, task worker.Task) { successFired = true })
+
+	task := h.enqueueTask(ctx, sess)
+	if err := handler.HandleTask(ctx, task, failAt95PublisherReporter{}); err != nil {
+		t.Fatalf("HandleTask 应在上报失败后仍成功: %v", err)
+	}
+
+	updated, _ := h.sessions.Get(ctx, sess.ID)
+	if updated.Status != string(state.StatusPublished) {
+		t.Fatalf("Status = %q, want %q (不被回卷)", updated.Status, state.StatusPublished)
+	}
+	if !successFired {
+		t.Fatal("onSuccess 自动归档链应照常触发")
+	}
+}
