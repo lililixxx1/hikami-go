@@ -883,6 +883,60 @@ func TestHandleTaskCDNBudgetExhaustedWithAudioFinishesSuccess(t *testing.T) {
 	}
 }
 
+// TestHandleTaskMixedCDNAndReconnectSegmentsUnique M5(2026-08-15 全项目审核):
+// 同一场直播混走「CDN 重试」与「afterRecord 重连」两类分支时,分段文件名必须全局唯一。
+// 修复前 CDN 分支用 cdnAttempt+1 命名(首次为 part.2)、重连分支用 attemptsUsed+1(首次为
+// part.1),两个独立计数器的取值区间重叠:本场景 4 次录制在旧代码下产出
+// [audio.m4a(未落盘), part.2, part.1, part.2] —— 第 4 次(CDN 重试段)与第 2 次同名,
+// 覆盖丢失 segA。统一 segmentSeq 后应为 part.1/2/3,三段内容全部保留。
+func TestHandleTaskMixedCDNAndReconnectSegmentsUnique(t *testing.T) {
+	manager, _, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = true
+	manager.cfg.LiveRecord.MaxReconnect = 3
+	manager.cfg.LiveRecord.ReconnectDelay = 1
+	// CheckLive 4 次:preflight=true;CDN 重试段(part.1)后=true(触发重连);
+	// part.2 后=true(再重连);part.3 后=false(下播,正常收尾)。
+	c := &statefulLiveClient{tb: t, lives: []bool{true, true, true, false}}
+	manager.client = c
+	defer c.assertFullyConsumed()
+	recorder := &mixedCDNReconnectRecorder{}
+	manager.audio = recorder
+	stubFFmpegConcat(t)
+
+	running := mustCreateRunningTask(t, pool)
+	if err := manager.HandleTask(context.Background(), running, noopReporter{}); err != nil {
+		t.Fatalf("handle task: %v", err)
+	}
+
+	if len(recorder.outputs) != 4 {
+		t.Fatalf("recorder outputs = %d, want 4, paths=%+v", len(recorder.outputs), recorder.outputs)
+	}
+	rawDir := filepath.Join(manager.cfg.OutputRoot, "huize", "live_20260427_120000", "raw")
+	audioPath := filepath.Join(rawDir, "audio.m4a")
+	// 统一编号:CDN 重试段 part.1、两次重连段 part.2/part.3(旧代码为 part.2/part.1/part.2 碰撞)。
+	wantPaths := []string{
+		reconnectAudioSegmentPath(audioPath, 1),
+		reconnectAudioSegmentPath(audioPath, 2),
+		reconnectAudioSegmentPath(audioPath, 3),
+	}
+	for i, want := range wantPaths {
+		if recorder.outputs[i+1] != want {
+			t.Fatalf("recorder output[%d] = %q, want %q (all: %+v)", i+1, recorder.outputs[i+1], want, recorder.outputs)
+		}
+	}
+	// 三段内容都必须保留(修复前 part.2 被 CDN 段与重连段复用,先录的内容被覆盖丢失)。
+	content, err := os.ReadFile(audioPath)
+	if err != nil {
+		t.Fatalf("read finalized audio: %v", err)
+	}
+	for _, seg := range []string{"segA", "segB", "segC"} {
+		if !strings.Contains(string(content), seg) {
+			t.Fatalf("finalized audio lost segment %q: %q", seg, string(content))
+		}
+	}
+}
+
 // TestHandleTaskSelectStreamBudgetExhaustedWithAudioFinishesSuccess 验证 selectFailedPending
 // 分支预算耗尽时的对称守卫（2026-08-08 统一收口修复）：首段录到有效音频后，重连 selectStream
 // 失败直到 attemptsUsed >= maxReconnect 耗尽 —— 有已录音频应走成功收尾保留音频，而非旧代码的
@@ -1435,6 +1489,22 @@ func (r *recordOnceThenCDNFailRecorder) Record(ctx context.Context, stream Strea
 		return os.WriteFile(outputPath, []byte("segment-1\n"), 0o644)
 	}
 	return errors.New("open live stream: http status 404")
+}
+
+// mixedCDNReconnectRecorder 模拟「首段 CDN 404 → CDN 重试成功(clean EOF) → 两次
+// afterRecord 重连成功(clean EOF)」的混合场景:第 1 次调用返回 CDN 瞬时错误不写文件,
+// 之后每次写互不相同的内容并返回 nil。用于 M5 分段编号唯一性测试。
+type mixedCDNReconnectRecorder struct {
+	outputs []string
+}
+
+func (r *mixedCDNReconnectRecorder) Record(ctx context.Context, stream StreamInfo, outputPath string) error {
+	r.outputs = append(r.outputs, outputPath)
+	if len(r.outputs) == 1 {
+		return errors.New("open live stream: http status 404")
+	}
+	contents := map[int]string{2: "segA\n", 3: "segB\n", 4: "segC\n"}
+	return os.WriteFile(outputPath, []byte(contents[len(r.outputs)]), 0o644)
 }
 
 // interruptingOnceRecorder 首次 Record 失败、之后成功，配合 probeErrorClient 验证

@@ -812,6 +812,13 @@ func (m *Manager) HandleTask(ctx context.Context, task worker.Task, reporter wor
 	// 避免短窗口(3×reconnectDelay)内全部失败。cdnAttempt 用于指数退避计算(base*2^n)。
 	cdnRetryBudget := 5
 	cdnAttempt := 0
+	// M5(2026-08-15 全项目审核):重连分段统一编号。旧代码 CDN 分支用 cdnAttempt+1、
+	// 重连分支用 attemptsUsed+1 两个独立计数器命名 part 文件,取值区间重叠(前者 2..6、
+	// 后者 1..maxReconnect+1),同一场景混走两类分支时会产出同名 audio.part.N.m4a 互相
+	// 覆盖丢音频。segmentSeq 是所有分支共享的唯一次序号(每次实际录制新分段前自增)。
+	// part 文件名是瞬态产物(最终 finalizeAudioSegments 合并进 audio.m4a),编号语义变化
+	// 无下游影响。cdnAttempt/attemptsUsed 保留,但只分别用于退避计算与预算判定。
+	segmentSeq := 0
 	// 异常 #1:selectStream 失败时置位,下一轮跳过 decideAfterRecord(否则它会重新 CheckLive,
 	// 在流断边缘态的瞬时抖动下误判 live:false 而提前放弃)。
 	selectFailedPending := false
@@ -865,7 +872,8 @@ reconnect:
 				err = sErr
 				continue
 			}
-			segmentPath := reconnectAudioSegmentPath(audioPath, cdnAttempt+1)
+			segmentSeq++
+			segmentPath := reconnectAudioSegmentPath(audioPath, segmentSeq)
 			m.updateCurrentOutputPath(task.ChannelID, segmentPath)
 			segErr := m.recordAudio(runCtx, stream, segmentPath, reportRecording)
 			addAudioSegment(segmentPath)
@@ -903,7 +911,8 @@ reconnect:
 				err = sErr
 				continue
 			}
-			segmentPath := reconnectAudioSegmentPath(audioPath, attemptsUsed+1)
+			segmentSeq++
+			segmentPath := reconnectAudioSegmentPath(audioPath, segmentSeq)
 			m.updateCurrentOutputPath(task.ChannelID, segmentPath)
 			segErr := m.recordAudio(runCtx, stream, segmentPath, reportRecording)
 			addAudioSegment(segmentPath)
@@ -987,7 +996,8 @@ reconnect:
 			continue
 		}
 
-		segmentPath := reconnectAudioSegmentPath(audioPath, attemptsUsed+1)
+		segmentSeq++
+		segmentPath := reconnectAudioSegmentPath(audioPath, segmentSeq)
 		m.updateCurrentOutputPath(task.ChannelID, segmentPath)
 		segErr := m.recordAudio(runCtx, stream, segmentPath, reportRecording)
 		addAudioSegment(segmentPath)
