@@ -1021,20 +1021,29 @@ reconnect:
 
 	if err != nil {
 		if errors.Is(runCtx.Err(), context.Canceled) {
-			if finalizeErr := m.finalizeAudioSegments(ctx, audioPath, audioSegments); finalizeErr != nil {
+			// 取消来源两条:Manager.Stop(只取消 runCtx,任务 ctx 存活——本特例为此设计);
+			// Pool.Cancel(POST /api/tasks/:id/cancel,取消任务 ctx,runCtx 随之失效)。后者下用
+			// 原 ctx 收尾三步必败 → session 卡 recording → 频道永久 ErrAlreadyRecording、无自愈
+			// (2026-08-15 全项目审核 H3)。收尾统一改用脱离取消链的派生 ctx:WithoutCancel 保留
+			// values 仅剥离取消链,2 分钟超时防泄漏;Manager.Stop 路径(ctx 未取消)同样安全。
+			// 注:任务级取消时 HandleTask 返回 nil 后 runTask 因 ctx.Err()!=nil 提前返回,
+			// 任务保持 cancelled(用户主动取消 = 保留音频停止,音频照送 normalize)。
+			finCtx, finCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+			defer finCancel()
+			if finalizeErr := m.finalizeAudioSegments(finCtx, audioPath, audioSegments); finalizeErr != nil {
 				return finalizeErr
 			}
-			if updateErr := m.sessions.UpdateEndedAt(ctx, task.SessionID, time.Now()); updateErr != nil {
+			if updateErr := m.sessions.UpdateEndedAt(finCtx, task.SessionID, time.Now()); updateErr != nil {
 				slog.Warn("update live record ended_at failed", "session_id", task.SessionID, "error", updateErr)
 			}
-			if _, applyErr := m.states.Apply(ctx, task.SessionID, state.EventLiveRecordSucceeded, task.ID, ""); applyErr != nil {
+			if _, applyErr := m.states.Apply(finCtx, task.SessionID, state.EventLiveRecordSucceeded, task.ID, ""); applyErr != nil {
 				return applyErr
 			}
-			if _, enqueueErr := m.enqueueNormalize(ctx, task); enqueueErr != nil {
+			if _, enqueueErr := m.enqueueNormalize(finCtx, task); enqueueErr != nil {
 				return enqueueErr
 			}
 			logLiveRecordFinished(task.ChannelID, task.SessionID, recordStartedAt, audioPath)
-			return reporter.Progress(ctx, 95, "live recording stopped")
+			return reporter.Progress(finCtx, 95, "live recording stopped")
 		}
 		return err
 	}

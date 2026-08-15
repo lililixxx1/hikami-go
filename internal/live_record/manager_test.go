@@ -927,6 +927,66 @@ func TestHandleTaskSelectStreamBudgetExhaustedWithAudioFinishesSuccess(t *testin
 	}
 }
 
+// cancelAfterFirstRecordRecorder 首次 Record 写入有效分段后,取消注入的任务 ctx 并返回
+// 录制失败 —— 复刻 Pool.Cancel(POST /api/tasks/:id/cancel)在首段录制中途生效的场景。
+type cancelAfterFirstRecordRecorder struct {
+	outputs []string
+	cancel  context.CancelFunc
+}
+
+func (r *cancelAfterFirstRecordRecorder) Record(ctx context.Context, stream StreamInfo, outputPath string) error {
+	r.outputs = append(r.outputs, outputPath)
+	if err := os.WriteFile(outputPath, []byte("segment-1\n"), 0o644); err != nil {
+		return err
+	}
+	r.cancel()
+	return errors.New("stream interrupted by cancel")
+}
+
+// TestHandleTaskTaskCancelledAfterAudioPreservesAndFinalizes 验证 H3(2026-08-15 全项目审核):
+// 任务级取消(任务 ctx 与 runCtx 一同失效)发生在已录到有效音频后,收尾三步(合并分段/
+// 推进状态/入队 normalize)必须用脱离取消链的派生 ctx 完成——修复前收尾全用已取消的 ctx,
+// session 卡 recording、频道永久 ErrAlreadyRecording 且无自愈。
+func TestHandleTaskTaskCancelledAfterAudioPreservesAndFinalizes(t *testing.T) {
+	manager, database, pool := newTestManager(t)
+	defer pool.Stop()
+	manager.cfg.LiveRecord.AutoReconnect = true
+	manager.cfg.LiveRecord.MaxReconnect = 3
+	manager.cfg.LiveRecord.ReconnectDelay = 1
+	manager.client = fakeClient{}
+
+	taskCtx, taskCancel := context.WithCancel(context.Background())
+	defer taskCancel()
+	manager.audio = &cancelAfterFirstRecordRecorder{cancel: taskCancel}
+	stubFFmpegConcat(t)
+
+	running := mustCreateRunningTask(t, pool)
+	err := manager.HandleTask(taskCtx, running, noopReporter{})
+	if err != nil {
+		t.Fatalf("handle task: %v, want nil (task cancelled with recorded audio → finalize with detached ctx)", err)
+	}
+
+	// 收尾成功:audio.m4a 合并保留首段内容。
+	rawDir := filepath.Join(manager.cfg.OutputRoot, "huize", "live_20260427_120000", "raw")
+	audioPath := filepath.Join(rawDir, "audio.m4a")
+	content, readErr := os.ReadFile(audioPath)
+	if readErr != nil {
+		t.Fatalf("read finalized audio: %v", readErr)
+	}
+	if !strings.Contains(string(content), "segment-1") {
+		t.Fatalf("audio content = %q, want segment-1 preserved after task cancel", string(content))
+	}
+
+	// normalize 已入队(修复前 enqueueNormalize 用已取消 ctx 必败,什么都不入队)。
+	var normalizeCount int
+	if qErr := database.QueryRow("SELECT COUNT(*) FROM tasks WHERE session_id='session_1' AND type='normalize'").Scan(&normalizeCount); qErr != nil {
+		t.Fatalf("query normalize tasks: %v", qErr)
+	}
+	if normalizeCount != 1 {
+		t.Fatalf("normalize tasks = %d, want 1 (enqueued via detached ctx)", normalizeCount)
+	}
+}
+
 // TestCdnBackoff 验证异常 #2 的指数退避公式(base*2^n,上限 60s)。
 func TestCdnBackoff(t *testing.T) {
 	tests := []struct {
