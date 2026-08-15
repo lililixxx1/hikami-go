@@ -3238,6 +3238,63 @@ type mcpConfigResponse struct {
 	MaxToolRounds int                       `json:"max_tool_rounds"`
 }
 
+// mcpHeaderRedacted 是 GET /api/config/mcp 对 Authorization 类 header 的脱敏哨兵。
+// PUT 回传该哨兵时按下标还原为已存值(M2,2026-08-15 全项目审核)。
+const mcpHeaderRedacted = "__REDACTED__"
+
+// redactMCPHeaders 把 Authorization 类 header(大小写无关)值替换为哨兵,
+// 避免配置回显泄漏明文鉴权头。其余 header 原样返回;nil 保持 nil。
+func redactMCPHeaders(headers map[string]string) map[string]string {
+	if headers == nil {
+		return nil
+	}
+	out := make(map[string]string, len(headers))
+	for k, v := range headers {
+		if strings.EqualFold(k, "Authorization") {
+			out[k] = mcpHeaderRedacted
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
+// restoreMCPRedactedHeaders 把回传 server 数组中值为哨兵的 Authorization header 还原为
+// 旧配置的明文。前端回传的是 GET 返回的同序数组,按下标匹配与 PUT 的整数组替换语义自洽;
+// 改名+回传哨兵按下标仍能找回旧值(按 name 匹配会在改名场景丢密钥,复审修正)。值非哨兵
+// 视为用户新填,正常更新;下标超出旧数组(新增 server)或旧配置无此 header 时删除哨兵,
+// 避免哨兵字符串落库成有效凭据。
+func restoreMCPRedactedHeaders(in []config.MCPServerConfig, old []config.MCPServerConfig) []config.MCPServerConfig {
+	for i := range in {
+		if i >= len(old) || in[i].Headers == nil {
+			continue
+		}
+		for k, v := range in[i].Headers {
+			if !strings.EqualFold(k, "Authorization") || v != mcpHeaderRedacted {
+				continue
+			}
+			if oldV, ok := lookupHeaderFold(old[i].Headers, k); ok {
+				in[i].Headers[k] = oldV
+			} else {
+				delete(in[i].Headers, k)
+			}
+		}
+	}
+	return in
+}
+
+// lookupHeaderFold 大小写无关地在 headers 中查 key。
+func lookupHeaderFold(headers map[string]string, key string) (string, bool) {
+	if v, ok := headers[key]; ok {
+		return v, true
+	}
+	for k, v := range headers {
+		if strings.EqualFold(k, key) {
+			return v, true
+		}
+	}
+	return "", false
+}
 func newMCPConfigResponse(cfg config.Config) mcpConfigResponse {
 	servers := make([]mcpServerConfigResponse, 0, len(cfg.MCP.Servers))
 	for _, sv := range cfg.MCP.Servers {
@@ -3250,7 +3307,7 @@ func newMCPConfigResponse(cfg config.Config) mcpConfigResponse {
 			Env:        sv.Env,
 			Enabled:    sv.Enabled,
 			TimeoutSec: sv.TimeoutSec,
-			Headers:    sv.Headers,
+			Headers:    redactMCPHeaders(sv.Headers),
 		})
 	}
 	return mcpConfigResponse{
@@ -3302,7 +3359,8 @@ func (s *Server) updateMCPConfig(ctx *gin.Context) {
 		next.Enabled = *input.Enabled
 	}
 	if input.Servers != nil {
-		next.Servers = *input.Servers
+		// 回传数组中的 Authorization 哨兵还原为已存明文(M2),再整数组替换。
+		next.Servers = restoreMCPRedactedHeaders(*input.Servers, next.Servers)
 	}
 	if input.MaxToolRounds != nil {
 		next.MaxToolRounds = *input.MaxToolRounds

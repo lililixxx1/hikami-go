@@ -320,9 +320,12 @@ func TestMCPConfigRoundTrip(t *testing.T) {
 	if !strings.Contains(putRec.Body.String(), `"srv1"`) {
 		t.Fatalf("响应应含 server srv1, got: %s", putRec.Body.String())
 	}
-	// headers 注入往返:响应应含提交的 Authorization 头
-	if !strings.Contains(putRec.Body.String(), `"Authorization":"Bearer y"`) {
-		t.Fatalf("响应应含 server headers, got: %s", putRec.Body.String())
+	// headers 注入往返:Authorization 脱敏为哨兵,不再回显明文(M2)
+	if !strings.Contains(putRec.Body.String(), `"Authorization":"__REDACTED__"`) {
+		t.Fatalf("响应应含脱敏 Authorization 哨兵, got: %s", putRec.Body.String())
+	}
+	if strings.Contains(putRec.Body.String(), "Bearer y") {
+		t.Fatalf("PUT 响应不应回显 Authorization 明文(M2), got: %s", putRec.Body.String())
 	}
 
 	// 4. GET 回读一致(round-trip)
@@ -333,8 +336,11 @@ func TestMCPConfigRoundTrip(t *testing.T) {
 	if !strings.Contains(getRec2.Body.String(), `"brave_api_key_set":true`) {
 		t.Fatalf("GET 回读应反映已设置, got: %s", getRec2.Body.String())
 	}
-	if !strings.Contains(getRec2.Body.String(), `"Authorization":"Bearer y"`) {
-		t.Fatalf("GET 回读应含 server headers, got: %s", getRec2.Body.String())
+	if !strings.Contains(getRec2.Body.String(), `"Authorization":"__REDACTED__"`) {
+		t.Fatalf("GET 回读应含脱敏哨兵(M2), got: %s", getRec2.Body.String())
+	}
+	if strings.Contains(getRec2.Body.String(), "Bearer y") {
+		t.Fatalf("GET 回读不应泄漏 Authorization 明文(M2), got: %s", getRec2.Body.String())
 	}
 
 	// 5. runtime_settings 表持久化了 mcp section
@@ -3204,5 +3210,94 @@ func TestCopyChannelConfigCopiesSourceValues(t *testing.T) {
 	}
 	if autoASR != 1 {
 		t.Fatalf("dst auto_asr = %d, want 1 (source value)", autoASR)
+	}
+}
+
+// --- M2(2026-08-15 全项目审核):MCP Authorization 脱敏 + 哨兵还原 ---
+
+func TestMCPConfigRedactedHeaderRoundTrip(t *testing.T) {
+	server := newTestServer(t)
+
+	// 1. 配置一个带 Authorization 的 server
+	putBody := `{"enabled":true,"servers":[{"name":"srv1","transport":"http","url":"http://localhost:9090","enabled":true,"headers":{"Authorization":"Bearer real-secret","X-Custom":"ok"}}]}`
+	if rec := performRequest(server, http.MethodPut, "/api/config/mcp", putBody); rec.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// 2. GET 回传哨兵(前端"不改只保存"场景)→ 原值保留,新 header 正常更新
+	roundTrip := `{"enabled":true,"servers":[{"name":"srv1","transport":"http","url":"http://localhost:9090","enabled":true,"headers":{"Authorization":"__REDACTED__","X-Custom":"changed"}}]}`
+	if rec := performRequest(server, http.MethodPut, "/api/config/mcp", roundTrip); rec.Code != http.StatusOK {
+		t.Fatalf("PUT round-trip status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// 3. 数据库里的 Authorization 仍是明文原值(哨兵被还原),X-Custom 已更新
+	var headersJSON string
+	if err := server.runtimeCfg.DB().QueryRow(
+		"SELECT data FROM runtime_settings WHERE section='mcp'").Scan(&headersJSON); err != nil {
+		t.Fatalf("read mcp section: %v", err)
+	}
+	if !strings.Contains(headersJSON, "Bearer real-secret") {
+		t.Fatalf("哨兵应还原为原明文(不改只保存场景), got: %s", headersJSON)
+	}
+	if strings.Contains(headersJSON, "__REDACTED__") {
+		t.Fatalf("哨兵不应落库, got: %s", headersJSON)
+	}
+	if !strings.Contains(headersJSON, "changed") {
+		t.Fatalf("非哨兵 header 应正常更新, got: %s", headersJSON)
+	}
+
+	// 4. GET 再次回读仍脱敏
+	rec := performRequest(server, http.MethodGet, "/api/config/mcp", "")
+	if strings.Contains(rec.Body.String(), "real-secret") {
+		t.Fatalf("GET 不应泄漏明文, got: %s", rec.Body.String())
+	}
+}
+
+func TestMCPConfigRedactedHeaderRenameKeepsSecret(t *testing.T) {
+	server := newTestServer(t)
+
+	// 配置 server
+	putBody := `{"enabled":true,"servers":[{"name":"old-name","transport":"http","url":"http://a","enabled":true,"headers":{"Authorization":"Bearer keep-me"}}]}`
+	if rec := performRequest(server, http.MethodPut, "/api/config/mcp", putBody); rec.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// 改名 + 回传哨兵(按下标还原,按 name 匹配会在此场景丢密钥——复审修正点)
+	renamed := `{"enabled":true,"servers":[{"name":"new-name","transport":"http","url":"http://a","enabled":true,"headers":{"Authorization":"__REDACTED__"}}]}`
+	if rec := performRequest(server, http.MethodPut, "/api/config/mcp", renamed); rec.Code != http.StatusOK {
+		t.Fatalf("PUT rename status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var headersJSON string
+	if err := server.runtimeCfg.DB().QueryRow(
+		"SELECT data FROM runtime_settings WHERE section='mcp'").Scan(&headersJSON); err != nil {
+		t.Fatalf("read mcp section: %v", err)
+	}
+	if !strings.Contains(headersJSON, "Bearer keep-me") {
+		t.Fatalf("改名+哨兵场景应按下标保留原值, got: %s", headersJSON)
+	}
+	if !strings.Contains(headersJSON, "new-name") {
+		t.Fatalf("改名应生效, got: %s", headersJSON)
+	}
+}
+
+func TestMCPConfigNewHeaderValueUpdates(t *testing.T) {
+	server := newTestServer(t)
+	putBody := `{"enabled":true,"servers":[{"name":"srv1","transport":"http","url":"http://a","enabled":true,"headers":{"Authorization":"Bearer old"}}]}`
+	if rec := performRequest(server, http.MethodPut, "/api/config/mcp", putBody); rec.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// 回传非哨兵新值 → 正常更新为用户填写的新凭据
+	updated := `{"enabled":true,"servers":[{"name":"srv1","transport":"http","url":"http://a","enabled":true,"headers":{"Authorization":"Bearer brand-new"}}]}`
+	if rec := performRequest(server, http.MethodPut, "/api/config/mcp", updated); rec.Code != http.StatusOK {
+		t.Fatalf("PUT status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var headersJSON string
+	if err := server.runtimeCfg.DB().QueryRow(
+		"SELECT data FROM runtime_settings WHERE section='mcp'").Scan(&headersJSON); err != nil {
+		t.Fatalf("read mcp section: %v", err)
+	}
+	if !strings.Contains(headersJSON, "Bearer brand-new") || strings.Contains(headersJSON, "Bearer old") {
+		t.Fatalf("非哨兵新值应覆盖旧值, got: %s", headersJSON)
 	}
 }
