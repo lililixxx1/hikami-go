@@ -3164,8 +3164,12 @@ func TestDeleteCookieAccountInUseRejected(t *testing.T) {
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("want 409 for referenced account, got %d body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "引用") {
-		t.Fatalf("body should explain the reference, got %s", rec.Body.String())
+	// 409 提示必须带引用方主播名(修复前 errors.Unwrap 只能取回英文哨兵,主播名丢失)。
+	if !strings.Contains(rec.Body.String(), "ref") {
+		t.Fatalf("body should contain referencing channel name, got %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "still referenced by channel") {
+		t.Fatalf("body should not leak english sentinel text, got %s", rec.Body.String())
 	}
 
 	// 解除引用后可删

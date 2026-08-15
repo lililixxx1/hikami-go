@@ -408,6 +408,9 @@ func TestCookieAccountStore_DeleteInUseRejected(t *testing.T) {
 	}
 	if err := store.Delete(context.Background(), id); !errors.Is(err, ErrAccountInUse) {
 		t.Fatalf("delete referenced account: err = %v, want ErrAccountInUse", err)
+	} else if !strings.Contains(err.Error(), "m12") {
+		// 错误消息必须带引用方主播名(handler 409 文案依赖它)。
+		t.Fatalf("err should contain referencing channel name, got %s", err.Error())
 	}
 	if _, err := database.ExecContext(context.Background(), "DELETE FROM channels WHERE id='ch_m12'"); err != nil {
 		t.Fatalf("remove channel: %v", err)

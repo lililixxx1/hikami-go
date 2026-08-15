@@ -1637,7 +1637,14 @@ func writeError(ctx *gin.Context, err error) {
 	case errors.Is(err, biliutil.ErrAccountUIDDuplicate):
 		ctx.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 	case errors.Is(err, biliutil.ErrAccountInUse):
-		ctx.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("该账号仍被主播的发布/下载账号设置引用(%v),请先在主播管理中解除引用后再删除", errors.Unwrap(err))})
+		// err 是 ErrAccountInUse 经 %w 包装并追加 "(referenced by: 主播名)" 的错误;
+		// errors.Unwrap 只能取回英文哨兵本身(丢失主播名),故从 err.Error() 剥掉哨兵
+		// 前缀取出引用明细部分。
+		detail := strings.TrimSpace(strings.TrimPrefix(err.Error(), biliutil.ErrAccountInUse.Error()))
+		if detail != "" {
+			detail = " " + detail
+		}
+		ctx.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("该账号仍被主播的发布/下载账号设置引用%s,请先在主播管理中解除引用后再删除", detail)})
 	case errors.Is(err, biliutil.ErrNoDefaultAccount):
 		ctx.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 	case errors.Is(err, biliutil.ErrInvalidCookiePath):
