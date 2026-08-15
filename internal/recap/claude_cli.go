@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strings"
 	"time"
 
 	"hikami-go/internal/aiprovider"
@@ -37,7 +38,7 @@ func (p *ClaudeCLIProvider) Generate(ctx context.Context, systemPrompt string, p
 	defer cancel()
 
 	fullPrompt := "--- System Instructions ---\n" + systemPrompt + "\n\n--- User Request ---\n" + prompt
-	args := []string{"--model", recapModelFromContext(ctx, p.cfg.RecapAI.Model), "--output-format", "json"}
+	args := claudeCLIArgs(recapModelFromContext(ctx, p.cfg.RecapAI.Model))
 	cmd := exec.CommandContext(ctx, cliPath, args...)
 	executil.HideWindow(cmd)
 	cmd.Stdin = bytes.NewReader([]byte(fullPrompt))
@@ -60,6 +61,17 @@ func (p *ClaudeCLIProvider) Generate(ctx context.Context, systemPrompt string, p
 		Content: content,
 		Raw:     raw,
 	}, nil
+}
+
+// claudeCLIArgs 组装 claude CLI 参数。model 为空时不传 --model(交由 CLI 自身默认模型),
+// 否则空 model 会拼成 `--model ""` 导致 CLI 报错(M7,2026-08-15 全项目审核;
+// 对齐 codexCLIArgs 的条件追加)。
+func claudeCLIArgs(model string) []string {
+	var args []string
+	if model = strings.TrimSpace(model); model != "" {
+		args = append(args, "--model", model)
+	}
+	return append(args, "--output-format", "json")
 }
 
 type claudeCLIResponse struct {
