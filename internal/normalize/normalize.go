@@ -341,11 +341,12 @@ func parseXMLDanmaku(path, source string, timeOffsetMS int64) ([]DanmakuItem, er
 			Source:         source,
 		}
 
-		// user_hash is field[6], danmaku_id is field[7]
-		if len(fields) >= 8 {
-			item.UserID = fields[7] // use danmaku_id as user_id
-		}
+		// p 属性布局:time,mode,fontsize,color,send_ts,pool,user_hash,dmid。
+		// user_id 取 fields[6](user_hash)——fields[7] 是 dmid(每条弹幕唯一),
+		// 当 user_id 用会把同一用户的多条弹幕算成多个用户,污染弹幕统计去重
+		// (M10,2026-08-15 全项目审核)。
 		if len(fields) >= 7 {
+			item.UserID = fields[6]  // user_hash
 			item.RawTime = fields[4] // send timestamp
 		}
 

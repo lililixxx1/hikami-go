@@ -662,16 +662,16 @@ func TestParseXMLDanmakuUserIDAndRawTime(t *testing.T) {
 		{
 			name:        "8 fields with user_id and raw_time",
 			pAttr:       "12.5,1,25,FFFFFF,1700000000,0,abc123,987654",
-			wantUserID:  "987654",
+			wantUserID:  "abc123",
 			wantRawTime: "1700000000",
 			wantTimeMS:  12500,
 			wantColor:   "#FFFFFF",
 			wantText:    "full fields",
 		},
 		{
-			name:        "7 fields with raw_time but no user_id",
+			name:        "7 fields with uhash as user_id (M10)",
 			pAttr:       "5.0,1,25,AABBCC,1700000000,0,abc123",
-			wantUserID:  "",
+			wantUserID:  "abc123",
 			wantRawTime: "1700000000",
 			wantTimeMS:  5000,
 			wantColor:   "#AABBCC",
@@ -709,7 +709,7 @@ func TestParseXMLDanmakuUserIDAndRawTime(t *testing.T) {
 		{
 			name:        "negative time still parsed",
 			pAttr:       "-1.5,1,25,FFFFFF,0,0,hash,id",
-			wantUserID:  "id",
+			wantUserID:  "hash",
 			wantRawTime: "0",
 			wantTimeMS:  -1500,
 			wantColor:   "#FFFFFF",
@@ -2051,5 +2051,35 @@ func TestConvertAtomicEmptyOutput(t *testing.T) {
 	tmpPath := outputPath + ".tmp"
 	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
 		t.Errorf("expected .tmp to be cleaned up after empty output error")
+	}
+}
+
+func TestParseXMLDanmakuSameUserHashDeduplicated(t *testing.T) {
+	// M10:同一 user_hash(fields[6])的多条弹幕应视作同一用户;dmid(fields[7])各不相同,
+	// 修复前被当 user_id 导致每条弹幕都是"独立用户"。
+	dir := t.TempDir()
+	path := filepath.Join(dir, "danmaku.xml")
+	writeXMLDanmaku(t, path, []string{
+		"<d p=\"1.0,1,25,FFFFFF,1700000000,0,alicehash,1001\">hello</d>",
+		"<d p=\"2.0,1,25,FFFFFF,1700000001,0,alicehash,1002\">again</d>",
+		"<d p=\"3.0,1,25,FFFFFF,1700000002,0,bobhash,1003\">hi</d>",
+	})
+
+	got, err := parseXMLDanmaku(path, "replay", 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("want 3 items, got %d", len(got))
+	}
+	users := make(map[string]bool)
+	for _, item := range got {
+		users[item.UserID] = true
+	}
+	if len(users) != 2 {
+		t.Fatalf("want 2 unique users (alicehash/bobhash), got %d: %v", len(users), users)
+	}
+	if !users["alicehash"] || !users["bobhash"] {
+		t.Fatalf("want alicehash+bobhash, got %v", users)
 	}
 }
