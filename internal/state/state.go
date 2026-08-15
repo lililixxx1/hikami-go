@@ -205,7 +205,12 @@ var transitions = map[Status]map[Event]Status{
 	StatusFailed: {
 		// 下载失败任务可重试。重试沿用同一 session 和 task ID，因此再次访问
 		// 远端来源前，状态机必须允许 handler 重新进入 downloading。
-		EventDownloadStarted:    StatusDownloading,
+		EventDownloadStarted: StatusDownloading,
+		// import/live_record 失败重试同理(M6,2026-08-15 全项目审核):重试沿用同一
+		// session/task,必须允许重新进入 importing/recording;live_record 重跑另受
+		// ensureStartAllowed/ErrAlreadyLive 自然约束,不构成并发风险。
+		EventImportStarted:     StatusImporting,
+		EventLiveRecordStarted: StatusRecording,
 		EventNormalizeSucceeded: StatusMediaReady,
 		EventASRSubmitted:       StatusASRSubmitted,
 		EventASRSucceeded:       StatusASRDone,

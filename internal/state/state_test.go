@@ -82,6 +82,10 @@ func TestNextValidTransitions(t *testing.T) {
 		// 下载失败任务 -> downloading（手动/自动重试）
 		{"failed + download_started -> downloading", StatusFailed, EventDownloadStarted, StatusDownloading},
 
+		// import/live_record 失败任务同理可重试(M6,2026-08-15 全项目审核)
+		{"failed + import_started -> importing", StatusFailed, EventImportStarted, StatusImporting},
+		{"failed + live_record_started -> recording", StatusFailed, EventLiveRecordStarted, StatusRecording},
+
 		// media_ready -> asr_submitted
 		{"media_ready + asr_submitted -> asr_submitted", StatusMediaReady, EventASRSubmitted, StatusASRSubmitted},
 
