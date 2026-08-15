@@ -406,4 +406,3 @@ func TestStoreUpdatePayload(t *testing.T) {
 		t.Fatalf("update missing task: err = %v, want ErrTaskNotFound", err)
 	}
 }
-

@@ -1810,3 +1810,29 @@ func TestAnnotateUnknownPublishOutcome(t *testing.T) {
 	}
 }
 
+// TestHandleTask_FailedSessionRetryAccepted M11 审核跟进:publish 失败把 recap_done
+// 降级 failed(无 bypass),重试必须被 canHandlePublish 放行——否则「发布超时→人工
+// 确认→重试」闭环在 UI 上无路可走(修复前 failed 被 HandleTask 首行守卫拒绝)。
+func TestHandleTask_FailedSessionRetryAccepted(t *testing.T) {
+	h := newTestHelper(t)
+	ctx := context.Background()
+
+	cookiePath := h.createCookieFile("retry")
+	ch, sess := h.setupSessionAndChannel(ctx, cookiePath)
+	h.createRecapMarkdown(ch, sess, "# 直播回顾\n\n这是回顾内容。")
+
+	// 推进到 failed(模拟上一次 publish 超时失败后的状态)。
+	if _, err := h.states.Apply(ctx, sess.ID, state.EventTaskFailed, "", "publish timeout"); err != nil {
+		t.Fatalf("apply task_failed: %v", err)
+	}
+
+	handler := NewHandler(h.cfg, h.sessions, h.states, h.channels, &fakeOpusClient{})
+	task := h.enqueueTask(ctx, sess)
+	if err := handler.HandleTask(ctx, task, &noopReporter{}); err != nil {
+		t.Fatalf("failed 场次的重试 publish 应被放行: %v", err)
+	}
+	updated, _ := h.sessions.Get(ctx, sess.ID)
+	if updated.Status != string(state.StatusPublished) {
+		t.Fatalf("status = %q, want published (failed→published 状态机合法)", updated.Status)
+	}
+}

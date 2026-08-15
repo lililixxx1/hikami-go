@@ -452,7 +452,13 @@ func annotateUnknownPublishOutcome(err error) error {
 }
 
 func canHandlePublish(status string) bool {
-	return status == string(state.StatusRecapDone) || status == string(state.StatusUploaded)
+	// failed 允许(M11 审核跟进,2026-08-15):publish 失败会把 recap_done 降级 failed,
+	// 而 ResetFailedSession 只接受 ASR 失败——不放开 failed 的话,「发布超时→人工到
+	// 创作中心确认→重试」的闭环(M11②/③)在 UI 上无路可走。与 canHandleRecap 的
+	// failed 放行对齐;publish 任务只可能由 recap_done/uploaded 场次创建,放行 failed
+	// 不会误触发新发布,只会让既有失败任务可重试(状态机 failed→published 合法)。
+	return status == string(state.StatusRecapDone) || status == string(state.StatusUploaded) ||
+		status == string(state.StatusFailed)
 }
 
 func (h *Handler) resolvePublishCookie(ctx context.Context, ch channel.Channel) (*BiliCookie, error) {
