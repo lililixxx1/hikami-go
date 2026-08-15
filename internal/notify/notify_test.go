@@ -330,9 +330,11 @@ func TestSendDetachedFromCallerCancel(t *testing.T) {
 			return nil
 		},
 	}
+	// 先取消再 Send:修复前 notifier 必收到 context.Canceled(确定性失败),
+	// 修复后 WithoutCancel 剥离取消链(确定性通过)——不依赖 goroutine 调度时序。
+	cancel()
 	m := NewManager(notifier, []string{EventTaskFailed})
 	m.Send(callerCtx, EventTaskFailed, "title", "body")
-	cancel()
 
 	select {
 	case <-done:
