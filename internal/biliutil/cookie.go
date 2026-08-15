@@ -149,7 +149,15 @@ func CheckCookieExpiry(cookiePath string) (isExpired bool, daysLeft int, expires
 	scanner := bufio.NewScanner(strings.NewReader(string(plain)))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
+		if line == "" {
+			continue
+		}
+		// #HttpOnly_<domain> 是 Netscape 格式的 HttpOnly 标记行而非注释,SESSDATA 几乎总是
+		// 带该前缀(cookie_writer 自己写出的文件就带),跳过会导致过期检查永远返回"无信息"
+		// (2026-08-15 全项目审核 H6)。剥离逻辑与 LoadCookie 保持一致。
+		if strings.HasPrefix(line, "#HttpOnly_") {
+			line = strings.TrimPrefix(line, "#HttpOnly_")
+		} else if strings.HasPrefix(line, "#") {
 			continue
 		}
 		fields := strings.Split(line, "\t")
