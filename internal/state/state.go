@@ -209,8 +209,8 @@ var transitions = map[Status]map[Event]Status{
 		// import/live_record 失败重试同理(M6,2026-08-15 全项目审核):重试沿用同一
 		// session/task,必须允许重新进入 importing/recording;live_record 重跑另受
 		// ensureStartAllowed/ErrAlreadyLive 自然约束,不构成并发风险。
-		EventImportStarted:     StatusImporting,
-		EventLiveRecordStarted: StatusRecording,
+		EventImportStarted:      StatusImporting,
+		EventLiveRecordStarted:  StatusRecording,
 		EventNormalizeSucceeded: StatusMediaReady,
 		EventASRSubmitted:       StatusASRSubmitted,
 		EventASRSucceeded:       StatusASRDone,

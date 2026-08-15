@@ -167,16 +167,27 @@ func pathHasPrefix(path, prefix string) bool {
 // Delete removes an account. 仍被主播的 publish_account_id/download_account_id
 // 引用时返回 ErrAccountInUse(handler 映射 409,提示先解除引用)。
 func (s *CookieAccountStore) Delete(ctx context.Context, id int64) error {
-	var refCount int
-	if err := s.db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM channels WHERE publish_account_id = ? OR download_account_id = ?",
-		id, id).Scan(&refCount); err != nil {
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT name FROM channels WHERE publish_account_id = ? OR download_account_id = ?", id, id)
+	if err != nil {
 		return err
 	}
-	if refCount > 0 {
-		return fmt.Errorf("%w (referenced by %d channel(s))", ErrAccountInUse, refCount)
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return err
+		}
+		names = append(names, name)
 	}
-	_, err := s.db.ExecContext(ctx, "DELETE FROM bili_cookie_accounts WHERE id = ?", id)
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(names) > 0 {
+		return fmt.Errorf("%w (referenced by: %s)", ErrAccountInUse, strings.Join(names, ", "))
+	}
+	_, err = s.db.ExecContext(ctx, "DELETE FROM bili_cookie_accounts WHERE id = ?", id)
 	return err
 }
 

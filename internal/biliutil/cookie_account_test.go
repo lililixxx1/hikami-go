@@ -426,7 +426,7 @@ func TestResolveCookie_ChannelOverrideUnavailableFallsBackToDefault(t *testing.T
 		CookieFile: filepath.Join(dir, "missing_override.txt"),
 	})
 	defaultPath := writeValidCookie(t, dir, "resolve_default.txt")
-	defaultID, _ := store.Create(context.Background(), &CookieAccount{
+	store.Create(context.Background(), &CookieAccount{
 		UID:               7102,
 		Nickname:          "全局默认",
 		CookieFile:        defaultPath,
@@ -443,7 +443,6 @@ func TestResolveCookie_ChannelOverrideUnavailableFallsBackToDefault(t *testing.T
 	if err != nil {
 		t.Fatalf("resolve cookie: %v", err)
 	}
-	_ = defaultID
 	if cookie.SESSDATA != "testdata" {
 		t.Fatalf("SESSDATA = %q, want testdata (global default after override degraded)", cookie.SESSDATA)
 	}
