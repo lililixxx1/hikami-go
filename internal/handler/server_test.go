@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"hikami-go/internal/archive"
 	"hikami-go/internal/asr"
 	"hikami-go/internal/biliutil"
@@ -3050,4 +3052,86 @@ func TestNotifyTestEndpointSendError(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "webhook unreachable") {
 		t.Fatalf("body should contain error reason, got %s", rec.Body.String())
 	}
+}
+
+// --- /ws token 鉴权(H1,2026-08-15 全项目审核) ---
+
+// newWSTestServer 启动真实 HTTP 服务承载 /ws 路由(gorilla 升级需要 Hijacker,
+// httptest.Recorder 不支持),token 在构造后注入 cfg(adminToken() 每次请求时读取)。
+func newWSTestServer(t *testing.T, token string) *httptest.Server {
+	t.Helper()
+	server := newTestServer(t)
+	server.cfg.Web.AdminToken = token
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.Router().ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func wsDial(t *testing.T, ts *httptest.Server, query string, header http.Header) (*websocket.Conn, *http.Response, error) {
+	t.Helper()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws" + query
+	dialer := websocket.Dialer{HandshakeTimeout: 2 * time.Second}
+	return dialer.Dial(wsURL, header)
+}
+
+func TestWebSocketRequiresTokenWhenConfigured(t *testing.T) {
+	ts := newWSTestServer(t, "secret-token")
+
+	// 无凭据 → 401(修复前:任何人可连)
+	conn, resp, err := wsDial(t, ts, "", nil)
+	if err == nil {
+		conn.Close()
+		t.Fatal("dial without credentials should fail")
+	}
+	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("want 401, got resp=%v", resp)
+	}
+}
+
+func TestWebSocketQueryTokenAccepted(t *testing.T) {
+	ts := newWSTestServer(t, "secret-token")
+
+	// 浏览器路径:?token= 正确值 → 升级成功
+	conn, resp, err := wsDial(t, ts, "?token=secret-token", nil)
+	if err != nil {
+		t.Fatalf("dial with correct query token should succeed: %v (resp=%v)", err, resp)
+	}
+	defer conn.Close()
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("want 101, got %d", resp.StatusCode)
+	}
+
+	// 错误值 → 401
+	badConn, badResp, badErr := wsDial(t, ts, "?token=wrong", nil)
+	if badErr == nil {
+		badConn.Close()
+		t.Fatal("dial with wrong query token should fail")
+	}
+	if badResp == nil || badResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("want 401 for wrong token, got resp=%v", badResp)
+	}
+}
+
+func TestWebSocketHeaderTokenAccepted(t *testing.T) {
+	ts := newWSTestServer(t, "secret-token")
+
+	// 非浏览器路径:X-Admin-Token header → 升级成功
+	conn, resp, err := wsDial(t, ts, "", http.Header{"X-Admin-Token": {"secret-token"}})
+	if err != nil {
+		t.Fatalf("dial with X-Admin-Token should succeed: %v (resp=%v)", err, resp)
+	}
+	defer conn.Close()
+}
+
+func TestWebSocketNoTokenConfiguredAllowsAnonymous(t *testing.T) {
+	// token 为空(loopback 默认部署)→ 行为不变:匿名连接成功
+	ts := newWSTestServer(t, "")
+
+	conn, resp, err := wsDial(t, ts, "", nil)
+	if err != nil {
+		t.Fatalf("dial without token configured should succeed: %v (resp=%v)", err, resp)
+	}
+	defer conn.Close()
 }

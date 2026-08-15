@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -1544,6 +1545,21 @@ func (s *Server) deleteFailedSessions(ctx *gin.Context) {
 }
 
 func (s *Server) websocket(ctx *gin.Context) {
+	// /ws 挂在裸 router 上(adminTokenMiddleware 只覆盖 /api 组),鉴权必须在升级前补上,
+	// 否则配 token 部署下任何人可连 WS 收任务事件流(2026-08-15 全项目审核 H1)。
+	// 浏览器 WebSocket API 无法自定义 header → token 经 query 传递;
+	// 非浏览器客户端仍可用 X-Admin-Token / Authorization Bearer(复用 extractAdminToken)。
+	// token 为空(loopback 默认部署)行为不变:放行。
+	if token := s.adminToken(); token != "" {
+		presented := extractAdminToken(ctx)
+		if presented == "" {
+			presented = strings.TrimSpace(ctx.Query("token"))
+		}
+		if subtle.ConstantTimeCompare([]byte(presented), []byte(token)) != 1 {
+			ctx.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing or invalid admin token"})
+			return
+		}
+	}
 	conn, err := s.upgrader.Upgrade(ctx.Writer, ctx.Request, nil)
 	if err != nil {
 		return
@@ -1559,6 +1575,9 @@ func (s *Server) websocket(ctx *gin.Context) {
 			if !ok {
 				return
 			}
+			// 服务端不读任何 WS 消息,写 deadline 是唯一的写端泄漏防护:
+			// 客户端 TCP 半开时 WriteJSON 会无限阻塞卡死该连接的 goroutine(L1)。
+			_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := conn.WriteJSON(event); err != nil {
 				return
 			}

@@ -1,6 +1,7 @@
 import { ref, onUnmounted } from 'vue'
 import mitt from 'mitt'
 import type { TaskProgressEvent } from '@/api/types-derived'
+import { useAdminToken } from '@/composables/useAdminToken'
 
 type Events = {
   task_progress: TaskProgressEvent
@@ -26,13 +27,22 @@ export function useWebSocket(url?: string) {
 
   const wsUrl = url || `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`
 
+  // H1(2026-08-15 全项目审核):服务端 /ws 要求 admin token。浏览器 WebSocket API
+  // 无法自定义 header → token 经 query 传递;必须在每次 connect() 时重读——
+  // AdminTokenCardV10 存在运行期设置/清除 token 的入口,若在初始化时一次算好,
+  // 运行期改 token 不会反映到 URL,会导致 401 重连死循环。
+  const { token } = useAdminToken()
+
   function connect(): void {
     if (disposed) return
     if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
       return
     }
 
-    ws = new WebSocket(wsUrl)
+    const urlWithToken = token.value
+      ? `${wsUrl}?token=${encodeURIComponent(token.value)}`
+      : wsUrl
+    ws = new WebSocket(urlWithToken)
 
     ws.onopen = () => {
       connected.value = true
