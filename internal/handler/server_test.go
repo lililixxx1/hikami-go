@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -3017,5 +3018,36 @@ func TestOnboardingDismissThenNotNeeded(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"needed":false`) {
 		t.Fatalf("after dismiss should report needed=false, got: %s", rec.Body.String())
+	}
+}
+
+type stubNotifyManager struct {
+	sendTestErr error
+}
+
+func (s *stubNotifyManager) Send(ctx context.Context, eventType, title, body string) {}
+func (s *stubNotifyManager) Configured() bool                                        { return true }
+func (s *stubNotifyManager) SendTest(ctx context.Context, title, body string) error {
+	return s.sendTestErr
+}
+
+func TestNotifyTestEndpointNotConfigured(t *testing.T) {
+	// H7 配套:newTestServer 未注入 notifyManagers → notifyMgr 为 nil → 409
+	server := newTestServer(t)
+	rec := performRequest(server, http.MethodPost, "/api/notify/test", "")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("want 409, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestNotifyTestEndpointSendError(t *testing.T) {
+	server := newTestServer(t)
+	server.notifyMgr = &stubNotifyManager{sendTestErr: errors.New("webhook unreachable")}
+	rec := performRequest(server, http.MethodPost, "/api/notify/test", "")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("want 500, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "webhook unreachable") {
+		t.Fatalf("body should contain error reason, got %s", rec.Body.String())
 	}
 }

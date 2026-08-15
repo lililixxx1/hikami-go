@@ -2,6 +2,7 @@ package notify
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -307,5 +308,97 @@ func typeof(v any) string {
 		return "*notify.ServerChanNotifier"
 	default:
 		return "unknown"
+	}
+}
+
+// ---------------------------------------------------------------------------
+// H7(2026-08-15 全项目审核):Send 脱离调用方取消链
+// ---------------------------------------------------------------------------
+
+func TestSendDetachedFromCallerCancel(t *testing.T) {
+	// 调用方 ctx 在 Send 返回后立刻取消,通知仍应发出且 notifier 收到未取消的 ctx。
+	callerCtx, cancel := context.WithCancel(context.Background())
+
+	var gotCtxErr error
+	var called atomic.Int32
+	done := make(chan struct{})
+	notifier := &mockNotifier{
+		sendFn: func(ctx context.Context, title, body string) error {
+			called.Add(1)
+			gotCtxErr = ctx.Err()
+			close(done)
+			return nil
+		},
+	}
+	m := NewManager(notifier, []string{EventTaskFailed})
+	m.Send(callerCtx, EventTaskFailed, "title", "body")
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("notifier was not called within 2s after caller cancel")
+	}
+	if called.Load() != 1 {
+		t.Fatalf("notifier called %d times, want 1", called.Load())
+	}
+	if gotCtxErr != nil {
+		t.Fatalf("notifier ctx should not be canceled, got %v", gotCtxErr)
+	}
+}
+
+func TestSendTimeoutApplied(t *testing.T) {
+	old := sendTimeout
+	sendTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { sendTimeout = old })
+
+	called := make(chan error, 1)
+	notifier := &mockNotifier{
+		sendFn: func(ctx context.Context, title, body string) error {
+			<-ctx.Done()
+			err := ctx.Err()
+			called <- err
+			return err
+		},
+	}
+	m := NewManager(notifier, []string{EventTaskFailed})
+	m.Send(context.Background(), EventTaskFailed, "t", "b")
+
+	select {
+	case err := <-called:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("want DeadlineExceeded, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("notifier not called within 2s")
+	}
+}
+
+func TestSendTestBypassesEventsFilterAndConfigured(t *testing.T) {
+	if NoopManager.Configured() {
+		t.Fatal("NoopManager.Configured should be false")
+	}
+	unconfigured := NewManager(nil, []string{EventRecordStart})
+	if unconfigured.Configured() {
+		t.Fatal("manager without notifier should not be Configured")
+	}
+	if err := unconfigured.SendTest(context.Background(), "t", "b"); err == nil {
+		t.Fatal("SendTest on unconfigured manager should error")
+	}
+
+	var called atomic.Int32
+	n := &mockNotifier{sendFn: func(ctx context.Context, title, body string) error {
+		called.Add(1)
+		return nil
+	}}
+	m := NewManager(n, []string{EventRecordStart}) // events 不含 "test"
+	if !m.Configured() {
+		t.Fatal("manager with notifier should be Configured")
+	}
+	if err := m.SendTest(context.Background(), "t", "b"); err != nil {
+		t.Fatalf("SendTest error: %v", err)
+	}
+	if called.Load() != 1 {
+		t.Fatalf("SendTest should bypass events filter, called=%d", called.Load())
 	}
 }

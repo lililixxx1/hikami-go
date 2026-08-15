@@ -87,6 +87,8 @@ type Server struct {
 	configGen          atomic.Uint64
 	notifyMgr          interface {
 		Send(ctx context.Context, eventType, title, body string)
+		Configured() bool
+		SendTest(ctx context.Context, title, body string) error
 	}
 	// mcpManager 是 MCP 搜索工具管理器(Phase 3 的 internal/mcp.Manager 实现此接口)。
 	// nil 表示未启用 MCP;handler 在 PUT 配置后调 Reload 热重载。
@@ -120,6 +122,8 @@ func NewServer(
 	cookieAccounts *biliutil.CookieAccountStore,
 	notifyManagers ...interface {
 		Send(ctx context.Context, eventType, title, body string)
+		Configured() bool
+		SendTest(ctx context.Context, title, body string) error
 	},
 ) *Server {
 	gin.SetMode(gin.ReleaseMode)
@@ -1575,11 +1579,17 @@ func (s *Server) SetMCPManager(m interface {
 }
 
 func (s *Server) handleNotifyTest(ctx *gin.Context) {
-	if s.notifyMgr == nil {
+	// main.go 对未启用通知的场景注入 NoopManager(非 nil),旧判 nil 永假;
+	// 且旧实现走 Send(ctx,"test",…) 会被 events 白名单过滤("test" 不在事件枚举),
+	// 端点恒 200 但实际什么都没发(2026-08-15 全项目审核 H7 配套)。
+	if s.notifyMgr == nil || !s.notifyMgr.Configured() {
 		ctx.JSON(http.StatusConflict, gin.H{"error": "notify not configured"})
 		return
 	}
-	s.notifyMgr.Send(ctx.Request.Context(), "test", "Hikami-Go 通知测试", "如果你收到这条消息，说明通知配置正确")
+	if err := s.notifyMgr.SendTest(ctx.Request.Context(), "Hikami-Go 通知测试", "如果你收到这条消息，说明通知配置正确"); err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("测试通知发送失败: %v", err)})
+		return
+	}
 	ctx.JSON(http.StatusOK, gin.H{"message": "测试通知已发送"})
 }
 
