@@ -977,7 +977,8 @@ func TestHandleTaskTaskCancelledAfterAudioPreservesAndFinalizes(t *testing.T) {
 		t.Fatalf("audio content = %q, want segment-1 preserved after task cancel", string(content))
 	}
 
-	// normalize 已入队(修复前 enqueueNormalize 用已取消 ctx 必败,什么都不入队)。
+	// normalize 已入队(修复前收尾链更早死于 states.Apply——BeginTx 对已取消 ctx 直接
+	// context canceled,同样什么都入不了队)。
 	var normalizeCount int
 	if qErr := database.QueryRow("SELECT COUNT(*) FROM tasks WHERE session_id='session_1' AND type='normalize'").Scan(&normalizeCount); qErr != nil {
 		t.Fatalf("query normalize tasks: %v", qErr)
