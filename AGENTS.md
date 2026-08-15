@@ -229,6 +229,21 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
 
 ## 变更记录
 
+- 2026-08-16(日):**2026-08-15 全项目审核修复批次收尾 — 7 High + 14 Medium + 3 跨域 + 14 Low 全部落地,35 commit(`1c1898e..84c5e34`),P2 最后 8 项(L8-L15)于本日完成**。上游:2026-08-14/15 两轮审核(12 提交增量 + 全项目 40k 行 Go/23k 行前端,7 High 全部双方确认)→ 修复计划 `plans/plan-full-review-fixes-2026-08-15.md`(plan-code-reviewer 三轮审核 r3 APPROVED,25 步实施顺序)。前 24 步(H1-H7/M1-M14/X1-X2/L2-L7/L15)已于 08-15 落地,本日完成剩余 P2 与终态验证:
+
+  **本日 4 个 commit(P2 收尾)**:
+  - `eeccf00` **L13**:DashScope temp publisher 对象键加 session ID 前缀——所有场次的临时音频都叫 `audio.asr.mp3`,共用同一 objectKey 在 OSS 端互相覆盖;同场重跑复用同 key 幂等(12 提交增量审核遗留项)。
+  - `e3f0e27` **L14**:discover 多 P 合集 SourceID 追加分 P 后缀——多 P 的 entry.ID 全是同一 BV,裸用会命中 `(channel,source_type,source_id)` 唯一约束把第二个分 P 吞掉。新 `biliutil.SourceIDWithPart(videoID, rawURL)`(与 `ExtractVideoSourceID` 单一来源化 `_pNNN` 格式,对齐 `download.CreateFromURL` 口径)。**计划偏差(实施时验证发现)**:计划原方案直接换 `ExtractVideoSourceID(entryURL(entry))`,但该函数对不匹配 BV 正则的 ID 走 sha1 兜底,会改变「entry.ID 原样」的既有去重口径(与生产库历史 session 脱节),改为锚定 entry.ID 只追加 p 后缀,零回归。
+  - `84c5e34` **L8-L12 前端五项**:L8 tasks store 照抄 sessions 范式加 inflight 去重(新增 `tasks.test.ts` 3 例);L9 新 `useSessionPagination` composable——列表被轮询/WS 收缩后 currentPage 收敛到新最后一页,不再渲染空表(5 例);L10 openRecap 迁入新 `useRecapDrawerContent`(onRecapSaved 同款 id 双重守卫),旧场次迟到响应不再覆盖新场次内容/loading(6 例);L11 DiscoverPreviewDrawer watch items 引用变化清空勾选,再次「发现」不再把旧下标映射到新条目(+1 例);L12 `/tasks` redirect 映射 `session_id→?sid=`(路由表抽出为 `export const routes` 供 memory history 测试,5 例)+ ImportSessionDrawer「查看任务」直推 `/recaps?sid=`。
+
+  **08-15 已落地的前 24 步(索引,详情见各 commit)**:H2 onboarding(`1c1898e`)/H6 cookie 过期(`d4cd2fb`)/H7 notify ctx(`be96bcb`+`ad7d935`)/H4 MCP 空回顾守卫(`82f1584`)/H5 HInput attrs(`5cc7c00`)/H3 live_record 死 ctx(`fe442c5`)/H1 /ws 鉴权(`b728dcc`);M1(`122698d`)/M2(`4175fa5`)/M3(`c514c16`)/M4(`dc3a902`)/M5(`96c4e17`)/M6(`7e229a4`)/M7(`1929c27`)/M8(`c19adc3`)/M9(`8b410b5`)/M10(`69704b5`)/M11(`6db0537`+`358cae1`)/M12(`5cc309e`+3 返工)/M13(`91cf02d`)/M14(`3cc882d`+`594028c`);X1(`5753771`)/X2(`9e13e40`);L2-L5/L15(`6d33ccd`)/L6/L7(`deb0f05`)。L1 并入 H1、L16 并入 H7。
+
+  **明确不修项**(8 项,理由见计划 §4):db per-connection PRAGMA、channel id `..` 穿越一层、secrets 明文存储口径、WS 心跳/a11y 债、ina MinOutputRatio、DashScope submit 重试重复计费(归 ISSUE-006)、downloader 风控热更新(只留 SetLimiter 注入点)、轮询上限 10min。
+
+  **验证**:`go vet ./...` 干净、`embedded_web` 编译通过、`go test ./...` 除 2 个记载的 Windows 进程检测 flake(`TestIsProcessAlive`/`TestRecoverRunningLiveRecordAdopts`,live_record+worker 包)外全过;前端 type-check 0 error、vitest **36 文件 242 测试全过**、`npm run build` 成功。H1/H3 手工冒烟(token 连 /ws、录制中取消/重启)与 L14 真实多 P 合集冒烟未做,留给下次实机验证。
+
+  **测试计数变化**(批前 → 批后,含 08-15 各步):config 48→49、fsutil 4→5、runtime 26→31、biliutil 90→98、worker 47→54、handler 104→126、discover 36→37、download 70→76、live_record 91→93、normalize 69→71、asr 98→107、recap 113→136、upload 38→40、publisher 68→74、notify 12→15、cmd 0→4、web 29 文件 212→36 文件 242。**各模块 CLAUDE.md 的正文测试段/changelog 尚未同步本批**(35 commit 均未触碰文档),留待下次 `/init-project` 批量对账。
+
 - 2026-08-13(三):**recap 空 content 真根因定位 + 修复 — 纠正 ISSUE-007「间歇性」误判,实为 flash 模型 + max_tokens 对 reasoning 模型不足的确定性失败**(systematic-debugging 多轮;改 `internal/recap/provider_openai.go` + 新增 `provider_openai_test.go`,运维改 `runtime_settings` + 救回 8-12/8-13 两场)。**触发**:用户问「昨天和今天的回顾怎么没有发」。DB+日志查 8-12(`bili_1298779265_live_20260812_200635`)、8-13(`bili_1298779265_live_20260813_144237`)两场均 `failed`,错误 `recap provider response missing content`,但 ASR/音频/弹幕全完好。
 
   **根因(完整实验矩阵锁定,推翻 ISSUE-007 的「间歇性」判断)**:① `runtime_settings.recap_ai` 把 model 从 `config.yaml` 的 `deepseek-v4-pro` 覆盖成 `deepseek-v4-flash`;flash 是 reasoning 模型,面对完整 `defaultSystemPrompt`(90 行约束)+ 长转写 reasoning 爆炸(16382 token 占满 max_tokens 16384)→ 正文空。② `max_tokens=16384` 对 reasoning 模型不够:DeepSeek 的 max_tokens **限制 reasoning+completion 总和**(非仅 completion),pro 对长内容 reasoning 1900~6698+,多时 + 正文 > 16384 → 空 content(DeepSeek 报 `finish_reason=stop` 非 `length`,行为特性)。8-3 误判间歇因当时内容短(pro+16384 够)+ 诊断缺陷看不到 finish_reason。

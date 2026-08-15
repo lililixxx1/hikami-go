@@ -463,3 +463,7 @@ DeepSeek（`openai_compatible` provider）偶发返回 HTTP 200 但 `choices[0].
 - `finish_reason=content_filter` + 空 content = 内容触发安全过滤，确定性（同输入同结果），provider **不重试**直接报错 → 检查转写内容（换 model 或调整 prompt）。
 
 **运维教训**：直接用 sqlite `json_set()` 改 `runtime_settings.data` 会把列存储类型从 BLOB 改成 TEXT，导致 Go `*json.RawMessage` Scan 失败、服务崩溃循环（`unsupported Scan, storing driver.Value type string into type *json.RawMessage`）。改 runtime_settings 应走 handler API（`PUT /api/config/recap-ai`），或 `json_set` 后必须 `CAST(... AS BLOB)`。
+
+#### 2026-08-16 更新：MCP 工具路径空回顾绕行收口（H4）
+
+provider 层重试只覆盖「模型返回空 content」；**MCP agent loop 耗尽路径**（`mcp/loop.go` maxRounds 用尽后 `return result, nil`，Content 为空且无 error）此前绕过所有守卫直达落盘/发布。2026-08-15 修复（commit `82f1584`，全项目审核 H4）：`recap/handler.go` 生成后补空 content 终判，MCP 路径空回顾不再穿透。ISSUE-007 至此两个入口（provider 空响应、agent loop 耗尽）均已收口。
