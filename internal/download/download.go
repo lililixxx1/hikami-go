@@ -552,6 +552,13 @@ func (h *Handler) SetShortLinkResolver(fn func(ctx context.Context, client biliu
 	h.shortLinkResolver = fn
 }
 
+// SetLimiter 替换内部风控限流器。当前 limiter 在 NewHandler 构造期固化(cfg.Downloader
+// 快照,无运行期 PUT 端点可改),本注入点为后续「downloader 风控参数热更新」功能铺路
+// (X2 降级项,2026-08-15 全项目审核:端点+DTO+runtimeconfig 段+DB 白名单另立计划)。
+func (h *Handler) SetLimiter(l *downloadLimiter) {
+	h.limiter = l
+}
+
 // SetCookieAccountStore 注入账号池，使下载支持账号化 cookie 解析
 // （账号池 → 默认下载账号 → 主播 legacy download_cookie_file）。
 // 未注入时退化为只用 ch.DownloadCookieFile（旧行为）。
