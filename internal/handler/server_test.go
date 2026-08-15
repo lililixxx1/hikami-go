@@ -3135,3 +3135,39 @@ func TestWebSocketNoTokenConfiguredAllowsAnonymous(t *testing.T) {
 	}
 	defer conn.Close()
 }
+
+func TestDeleteCookieAccountInUseRejected(t *testing.T) {
+	server, database := newTestServerWithCookieAccounts(t, t.TempDir())
+
+	var accountID int64
+	if err := database.QueryRowContext(context.Background(), `
+		INSERT INTO bili_cookie_accounts (uid, nickname, cookie_file, is_default_download, is_default_publish, created_at, updated_at)
+		VALUES (?, ?, '', 0, 0, ?, ?)
+		RETURNING id`,
+		42, "in-use", time.Now().Format(time.RFC3339), time.Now().Format(time.RFC3339),
+	).Scan(&accountID); err != nil {
+		t.Fatalf("insert account: %v", err)
+	}
+	// 主播引用该账号作为发布账号
+	if _, err := database.ExecContext(context.Background(),
+		"INSERT INTO channels (id, name, uid, live_room_id, publish_account_id) VALUES ('ch_ref', 'ref', 1, 1, ?)", accountID); err != nil {
+		t.Fatalf("insert channel: %v", err)
+	}
+
+	rec := performRequest(server, http.MethodDelete, fmt.Sprintf("/api/cookie-accounts/%d", accountID), "")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("want 409 for referenced account, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "引用") {
+		t.Fatalf("body should explain the reference, got %s", rec.Body.String())
+	}
+
+	// 解除引用后可删
+	if _, err := database.ExecContext(context.Background(), "DELETE FROM channels WHERE id='ch_ref'"); err != nil {
+		t.Fatalf("delete channel: %v", err)
+	}
+	rec = performRequest(server, http.MethodDelete, fmt.Sprintf("/api/cookie-accounts/%d", accountID), "")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("want 204 after unreferenced, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}

@@ -389,3 +389,62 @@ func TestCookieAccountStoreWritesLocalTimezoneTimestamps(t *testing.T) {
 	_, u = readTimes(id2)
 	mustBeLocalRFC3339(t, u)
 }
+
+func TestCookieAccountStore_DeleteInUseRejected(t *testing.T) {
+	database := newAccountTestDB(t)
+	dir := t.TempDir()
+	store := NewCookieAccountStore(database, dir)
+	cookiePath := writeValidCookie(t, dir, "acc_inuse.txt")
+
+	id, _ := store.Create(context.Background(), &CookieAccount{
+		UID:        7001,
+		Nickname:   "被引用",
+		CookieFile: cookiePath,
+	})
+	// 主播引用该账号(publish_account_id)后删除应被拒;解除引用后可删。
+	if _, err := database.ExecContext(context.Background(),
+		"INSERT INTO channels (id, name, uid, live_room_id, publish_account_id) VALUES ('ch_m12', 'm12', 1, 1, ?)", id); err != nil {
+		t.Fatalf("insert channel: %v", err)
+	}
+	if err := store.Delete(context.Background(), id); !errors.Is(err, ErrAccountInUse) {
+		t.Fatalf("delete referenced account: err = %v, want ErrAccountInUse", err)
+	}
+	if _, err := database.ExecContext(context.Background(), "DELETE FROM channels WHERE id='ch_m12'"); err != nil {
+		t.Fatalf("remove channel: %v", err)
+	}
+	if err := store.Delete(context.Background(), id); err != nil {
+		t.Fatalf("delete after unreferenced: %v", err)
+	}
+}
+
+func TestResolveCookie_ChannelOverrideUnavailableFallsBackToDefault(t *testing.T) {
+	store, dir := newTestStoreWithDir(t)
+	// level-1 override 账号的 cookie 文件不存在(不可读)→ 告警后降级全局默认(M12)。
+	brokenOverride, _ := store.Create(context.Background(), &CookieAccount{
+		UID:        7101,
+		Nickname:   "失效覆盖",
+		CookieFile: filepath.Join(dir, "missing_override.txt"),
+	})
+	defaultPath := writeValidCookie(t, dir, "resolve_default.txt")
+	defaultID, _ := store.Create(context.Background(), &CookieAccount{
+		UID:               7102,
+		Nickname:          "全局默认",
+		CookieFile:        defaultPath,
+		IsDefaultDownload: true,
+	})
+
+	cookie, err := store.ResolveCookie(
+		context.Background(),
+		sql.NullInt64{Int64: brokenOverride, Valid: true},
+		sql.NullInt64{},
+		"download",
+		"",
+	)
+	if err != nil {
+		t.Fatalf("resolve cookie: %v", err)
+	}
+	_ = defaultID
+	if cookie.SESSDATA != "testdata" {
+		t.Fatalf("SESSDATA = %q, want testdata (global default after override degraded)", cookie.SESSDATA)
+	}
+}

@@ -1636,6 +1636,8 @@ func writeError(ctx *gin.Context, err error) {
 		ctx.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 	case errors.Is(err, biliutil.ErrAccountUIDDuplicate):
 		ctx.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+	case errors.Is(err, biliutil.ErrAccountInUse):
+		ctx.JSON(http.StatusConflict, gin.H{"error": "该账号仍被主播的发布/下载账号设置引用,请先在主播管理中解除引用后再删除"})
 	case errors.Is(err, biliutil.ErrNoDefaultAccount):
 		ctx.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 	case errors.Is(err, biliutil.ErrInvalidCookiePath):

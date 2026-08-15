@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"time"
@@ -15,6 +16,9 @@ var (
 	ErrAccountUIDDuplicate = errors.New("cookie account uid already exists")
 	ErrNoDefaultAccount    = errors.New("no default cookie account configured")
 	ErrInvalidCookiePath   = errors.New("invalid cookie path")
+	// ErrAccountInUse: 主播的 publish/download account_id 仍指向该账号时 Delete 拒绝,
+	// 避免删除后主播静默回退全局默认账号、行为难以排查(M12,2026-08-15 审核)。
+	ErrAccountInUse = errors.New("cookie account is still referenced by channel publish/download settings")
 )
 
 // CookieAccount represents a B站 account stored in the database.
@@ -160,8 +164,18 @@ func pathHasPrefix(path, prefix string) bool {
 	return strings.HasPrefix(path, prefix+string(filepath.Separator))
 }
 
-// Delete removes an account.
+// Delete removes an account. 仍被主播的 publish_account_id/download_account_id
+// 引用时返回 ErrAccountInUse(handler 映射 409,提示先解除引用)。
 func (s *CookieAccountStore) Delete(ctx context.Context, id int64) error {
+	var refCount int
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM channels WHERE publish_account_id = ? OR download_account_id = ?",
+		id, id).Scan(&refCount); err != nil {
+		return err
+	}
+	if refCount > 0 {
+		return fmt.Errorf("%w (referenced by %d channel(s))", ErrAccountInUse, refCount)
+	}
 	_, err := s.db.ExecContext(ctx, "DELETE FROM bili_cookie_accounts WHERE id = ?", id)
 	return err
 }
@@ -252,7 +266,17 @@ func (s *CookieAccountStore) ResolveCookie(ctx context.Context, downloadAccountI
 	if accountID.Valid {
 		a, err := s.GetByID(ctx, accountID.Int64)
 		if err == nil && a != nil {
-			return LoadCookie(a.CookieFile)
+			cookie, loadErr := LoadCookie(a.CookieFile)
+			if loadErr == nil {
+				return cookie, nil
+			}
+			// level-1 命中但 cookie 文件不可读:告警后降级走全局默认,不再静默
+			// (M12,2026-08-15 审核)。
+			slog.Warn("channel cookie account unavailable, falling back to default",
+				"account_id", accountID.Int64, "cookie_file", a.CookieFile, "error", loadErr)
+		} else {
+			slog.Warn("channel cookie account unavailable, falling back to default",
+				"account_id", accountID.Int64, "error", err)
 		}
 	}
 
