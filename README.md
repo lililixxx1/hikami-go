@@ -74,6 +74,8 @@ hikami-windows-amd64-ffmpeg.exe -config config.yaml
 ```
 
 > ⚠️ **无显示器 / 无桌面会话的 Windows 服务器(如 Server Core、以 Service 跑)请务必用非 desktop 版**。desktop 版依赖系统托盘(Win32 `Shell_NotifyIcon`),在没有桌面会话时无法创建托盘图标,关闭流程会走不通。非 desktop 版走信号监听(`SIGTERM`),能被服务管理器优雅关闭。
+>
+> 📝 **MCP stdio server 小提示**:Windows 上配置 stdio 传输的自定义 MCP server 时,子进程由 MCP 库内部启动,可能偶现控制台窗口闪一下(无法隐藏),不影响功能;介意的话优先用 http/sse 传输的 server。
 
 ### 3. 填好 AI 能力(可选但推荐)
 

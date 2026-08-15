@@ -244,6 +244,9 @@ defineExpose({ reload: fetchConfig })
             <HInput :model-value="srv.args.join(', ')" @update:model-value="srv.args = String($event).split(',').map(s => s.trim()).filter(Boolean)" placeholder="-y, @mcp/server" />
           </div>
         </div>
+        <div class="form-hint" style="margin-bottom: 8px;">
+          注:Windows 桌面版下 stdio server 子进程可能闪现控制台窗口(MCP 库内部启动进程,暂无法隐藏),不影响功能。
+        </div>
       </template>
       <div class="form-row-inline">
         <label class="form-label">启用</label>
