@@ -17,6 +17,7 @@ import (
 	"hikami-go/internal/glossary"
 	"hikami-go/internal/recap"
 	"hikami-go/internal/runtimeconfig"
+	"hikami-go/internal/secrets"
 
 	"github.com/gin-gonic/gin"
 )
@@ -630,6 +631,36 @@ func (s *Server) handleImportConfig(ctx *gin.Context) {
 			continue
 		}
 		newSecrets = append(newSecrets, secretKV{k, v})
+	}
+
+	// M3(2026-08-15 全项目审核):导入的 secrets key 必须过白名单。bundle 是外部文件,
+	// 任意 key 会经 os.Setenv 注入进程环境(HTTP_PROXY 等可劫持出站流量)并落 secrets 表。
+	// 白名单 = 密钥 env 名(**导入后各段 next* env 名 ∪ 现有 cfg env 名的并集**——bundle
+	// 可能携带用户自定义的新 env 名,如改过 dashscope.api_key_env,只按旧 cfg 计算会误拒
+	// 合法 bundle,复审修正)+ MCP 内置密钥 + MCP 外部 server 鉴权头(下标+名双键,见
+	// mcpServerSecretKey)+ _onboarding_dismissed(导出时全量 secrets 落 bundle)。
+	allowedSecretKeys := map[string]bool{
+		"MCP_BRAVE_API_KEY":     true,
+		"MCP_TAVILY_API_KEY":    true,
+		"_onboarding_dismissed": true,
+	}
+	for _, k := range secrets.KnownKeys(
+		nextDashscope.EffectiveAPIKeyEnv(), nextRecap.EffectiveAPIKeyEnv(),
+		nextASRS3.EffectiveAccessKeyEnv(), nextWebDAV.EffectivePasswordEnv()) {
+		allowedSecretKeys[k] = true
+	}
+	for _, k := range secrets.KnownKeys(
+		s.cfg.DashScope.EffectiveAPIKeyEnv(), s.cfg.RecapAI.EffectiveAPIKeyEnv(),
+		s.cfg.ASRS3.EffectiveAccessKeyEnv(), s.cfg.WebDAV.EffectivePasswordEnv()) {
+		allowedSecretKeys[k] = true
+	}
+	for _, kv := range newSecrets {
+		isMCPServerAuth := strings.HasPrefix(kv.k, "MCP_SERVER_") && strings.HasSuffix(kv.k, "_AUTHORIZATION")
+		if !allowedSecretKeys[kv.k] && !isMCPServerAuth {
+			s.publishMu.Unlock()
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": "imported secrets contain unknown key: " + kv.k})
+			return
+		}
 	}
 
 	// 持久化前校验（codex 审核 #4）：导入能写 runtime_settings，若写入非法值（如

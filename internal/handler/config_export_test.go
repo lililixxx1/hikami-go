@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -382,8 +383,9 @@ func TestImportConfigOverwriteReplacesSecrets(t *testing.T) {
 		t.Fatalf("preset secret: %v", err)
 	}
 
-	// overwrite 导入：带新的 secret，不含 OLD_KEY。
-	bundle := `{"version":"1","secrets":{"NEW_KEY":"new-value"}}`
+	// overwrite 导入：带新的 secret(AI_API_KEY 是白名单内的密钥 env 名,M3 之后
+	// 任意 key 不再可导入),不含 OLD_KEY。
+	bundle := `{"version":"1","secrets":{"AI_API_KEY":"new-value"}}`
 	resp := performRequest(server, http.MethodPost, "/api/config/import?strategy=overwrite", bundle)
 	if resp.Code != http.StatusOK {
 		t.Fatalf("import status = %d, body = %s", resp.Code, resp.Body.String())
@@ -393,8 +395,8 @@ func TestImportConfigOverwriteReplacesSecrets(t *testing.T) {
 	if old, _ := server.secrets.Get(ctx, "OLD_KEY"); old != "" {
 		t.Errorf("overwrite 后旧 secret OLD_KEY 仍存在: %q", old)
 	}
-	if got, _ := server.secrets.Get(ctx, "NEW_KEY"); got != "new-value" {
-		t.Errorf("overwrite 后新 secret NEW_KEY 未写入: %q", got)
+	if got, _ := server.secrets.Get(ctx, "AI_API_KEY"); got != "new-value" {
+		t.Errorf("overwrite 后新 secret AI_API_KEY 未写入: %q", got)
 	}
 }
 
@@ -1079,4 +1081,71 @@ func TestImportConfigOldBundleLeavesReplayUntouched(t *testing.T) {
 	if got := runtimeSettingsSection(t, server, "replay"); got != "" {
 		t.Errorf("旧 bundle 写入 replay section(应零回归): %s", got)
 	}
+}
+
+// --- M3(2026-08-15 全项目审核):导入 secrets key 白名单 ---
+
+func TestImportConfigRejectsUnknownSecretKey(t *testing.T) {
+	server := newTestServer(t)
+
+	// 夹带 HTTP_PROXY 的 bundle:任意 key 会经 os.Setenv 注入进程环境(可劫持出站流量)。
+	malicious := `{
+		"version":"1",
+		"secrets":{"HTTP_PROXY":"http://attacker:8080","AI_API_KEY":"legit-key"}
+	}`
+	resp := performRequest(server, http.MethodPost, "/api/config/import?strategy=merge", malicious)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("want 400 for unknown secret key, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if !strings.Contains(resp.Body.String(), "HTTP_PROXY") {
+		t.Fatalf("error should name the rejected key, got: %s", resp.Body.String())
+	}
+	if os.Getenv("HTTP_PROXY") == "http://attacker:8080" {
+		t.Fatal("unknown key must not be set into process env")
+	}
+}
+
+func TestImportConfigAcceptsLegalMCPSecretKeys(t *testing.T) {
+	server := newTestServer(t)
+
+	bundle := `{
+		"version":"1",
+		"secrets":{
+			"MCP_BRAVE_API_KEY":"bk-1",
+			"MCP_TAVILY_API_KEY":"tk-1",
+			"MCP_SERVER_0_my-server_AUTHORIZATION":"Bearer x",
+			"_onboarding_dismissed":"true"
+		}
+	}`
+	resp := performRequest(server, http.MethodPost, "/api/config/import?strategy=merge", bundle)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("legal MCP keys should import, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	var count int
+	if err := server.runtimeCfg.DB().QueryRowContext(context.Background(),
+		"SELECT COUNT(*) FROM secrets WHERE key IN ('MCP_BRAVE_API_KEY','MCP_TAVILY_API_KEY','MCP_SERVER_0_my-server_AUTHORIZATION','_onboarding_dismissed')").Scan(&count); err != nil {
+		t.Fatalf("query secrets: %v", err)
+	}
+	if count != 4 {
+		t.Fatalf("want 4 legal secrets persisted, got %d", count)
+	}
+}
+
+func TestImportConfigAcceptsCustomEnvNameSecret(t *testing.T) {
+	// 并集修正:bundle 携带用户自定义的新 env 名(旧 cfg 未配置),不应被误拒。
+	server := newTestServer(t)
+
+	bundle := `{
+		"version":"1",
+		"dashscope":{"APIKeyEnv":"MY_CUSTOM_DS_KEY"},
+		"secrets":{"MY_CUSTOM_DS_KEY":"ds-secret"}
+	}`
+	resp := performRequest(server, http.MethodPost, "/api/config/import?strategy=merge", bundle)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("custom env name from imported section should be whitelisted, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if os.Getenv("MY_CUSTOM_DS_KEY") != "ds-secret" {
+		t.Fatal("custom env name secret should be set after import")
+	}
+	t.Cleanup(func() { os.Unsetenv("MY_CUSTOM_DS_KEY") })
 }
