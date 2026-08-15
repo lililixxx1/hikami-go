@@ -4295,8 +4295,10 @@ func (s *Server) handleOnboardingStatus(ctx *gin.Context) {
 	c := ctx.Request.Context()
 
 	// Check if onboarding was dismissed
-	_, err := s.secrets.Get(c, "_onboarding_dismissed")
-	dismissed := err == nil
+	// secrets.Get 对 key 不存在返回 ("", nil)，不能用 err==nil 判 dismissed
+	// （否则恒真 → needed 恒 false → 新手引导永不显示，2026-08-15 全项目审核 H2）。
+	v, err := s.secrets.Get(c, "_onboarding_dismissed")
+	dismissed := err == nil && v != ""
 
 	// Check if channels exist
 	channels, err := s.channels.ListVisible(c)

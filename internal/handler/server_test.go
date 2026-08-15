@@ -2989,3 +2989,33 @@ func TestReplayConfigRoundTrip(t *testing.T) {
 		t.Fatalf("replay section not persisted in runtime_settings: %v", err)
 	}
 }
+
+func TestOnboardingStatusFreshDBNeeded(t *testing.T) {
+	server := newTestServer(t)
+
+	// 全新 DB:未 dismiss、无 channels → needed=true（H2 修复前 dismissed 恒真导致 needed 恒 false）
+	rec := performRequest(server, http.MethodGet, "/api/onboarding/status", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"needed":true`) {
+		t.Fatalf("fresh DB should report needed=true, got: %s", rec.Body.String())
+	}
+}
+
+func TestOnboardingDismissThenNotNeeded(t *testing.T) {
+	server := newTestServer(t)
+
+	rec := performRequest(server, http.MethodPost, "/api/onboarding/dismiss", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dismiss status code = %d, body=%s", rec.Code, rec.Body.String())
+	}
+
+	rec = performRequest(server, http.MethodGet, "/api/onboarding/status", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"needed":false`) {
+		t.Fatalf("after dismiss should report needed=false, got: %s", rec.Body.String())
+	}
+}
