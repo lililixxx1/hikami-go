@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"hikami-go/internal/aiprovider"
@@ -207,6 +208,11 @@ func main() {
 		logger.Error("runtime dependency check failed", "error", err)
 		os.Exit(1)
 	}
+	// M14:三处自动链能力 gate(auto ASR/auto publish/auto archive)改实时探测。
+	// 此前直接读启动 Probe 快照 runtimeStatus,用户中途经 UI 补齐 ASR key/WebDAV 配置后
+	// server 会代际刷新运行时状态,但 gate 仍是旧快照 → 自动链被永久卡死。
+	// gate 先以启动快照兜底,server 构造后 attach,读 server 刷新后的最新状态。
+	autoChainGate := newAutoChainCapabilityGate(runtimeStatus)
 
 	channelStore := channel.NewStore(database)
 	if err := channelStore.Bootstrap(context.Background(), cfg.BootstrapChannels); err != nil {
@@ -240,7 +246,7 @@ func main() {
 		if err != nil || !config.ReplayAutoEnabled(sess.SourceType, sessErr == nil, ch.AutoASR, cfg.Replay.AutoASR) {
 			return
 		}
-		if runtimeStatus != nil && !runtimeStatus.Capabilities.ASRSubmit {
+		if !autoChainGate.enabled(func(c hzruntime.Capabilities) bool { return c.ASRSubmit }) {
 			slog.Warn("auto ASR skipped: ASR capability unavailable", "channel_id", task.ChannelID, "session_id", task.SessionID)
 			return
 		}
@@ -343,7 +349,7 @@ func main() {
 				"channel_id", task.ChannelID, "session_id", task.SessionID)
 			return
 		}
-		if runtimeStatus != nil && !runtimeStatus.Capabilities.PublishOpus {
+		if !autoChainGate.enabled(func(c hzruntime.Capabilities) bool { return c.PublishOpus }) {
 			slog.Warn("auto publish skipped: publish capability unavailable")
 			return
 		}
@@ -370,7 +376,7 @@ func main() {
 		if !cfg.Archive.AutoAfterPublish {
 			return
 		}
-		if runtimeStatus != nil && !runtimeStatus.Capabilities.WebDAVUpload {
+		if !autoChainGate.enabled(func(c hzruntime.Capabilities) bool { return c.WebDAVUpload }) {
 			slog.Warn("auto archive skipped: webdav capability unavailable", "session_id", task.SessionID)
 			return
 		}
@@ -494,6 +500,7 @@ func main() {
 	// 否则 recoverRunning 重新入队的 ASR 任务可能在 checker 注入前完成，触发回调时 CreateTask
 	// 因 checker 为 nil 绕过能力校验（codex 审核指出的注入时机窗口 + 未同步读写）。
 	recapHandler.SetCapabilityChecker(runtimeCapabilityAdapter{server: server})
+	autoChainGate.attach(server) // M14:自动链能力 gate 切到 server 代际刷新的最新快照
 	if cfg.ASRTemp.NativeConfigured() {
 		tempServer := asr.NewTempAudioServer(cfg)
 		server.SetASRTempHandler(tempServer.MountHandler())
@@ -616,4 +623,37 @@ func (a runtimeCapabilityAdapter) RecapGenerate() bool {
 	}
 	status := a.server.CurrentRuntimeStatus()
 	return status != nil && status.Capabilities.RecapGenerate
+}
+
+// runtimeStatusSource 提供(经代际刷新机制保护的)最新运行时状态。*handler.Server 实现。
+type runtimeStatusSource interface {
+	CurrentRuntimeStatus() *hzruntime.Status
+}
+
+// autoChainCapabilityGate 三处自动链(auto ASR/auto publish/auto archive)的能力
+// gate(M14,2026-08-15)。构造时以启动 Probe 快照兜底;server 构造后 attach,
+// 此后读 server 代际刷新的最新快照——用户中途补齐 ASR key/WebDAV 配置后
+// gate 即时生效,不再被启动快照永久卡死。server 未 attach / 其状态尚未就绪
+// 时回退启动快照;全为 nil 视为能力不可用(保守,不派发注定失败的任务)。
+type autoChainCapabilityGate struct {
+	source   atomic.Pointer[runtimeStatusSource]
+	fallback *hzruntime.Status
+}
+
+func newAutoChainCapabilityGate(startup *hzruntime.Status) *autoChainCapabilityGate {
+	return &autoChainCapabilityGate{fallback: startup}
+}
+
+// attach 在 server 构造后调用(worker 回调可能并发触发,用原子指针避免读写竞争)。
+func (g *autoChainCapabilityGate) attach(s runtimeStatusSource) {
+	g.source.Store(&s)
+}
+
+func (g *autoChainCapabilityGate) enabled(check func(hzruntime.Capabilities) bool) bool {
+	if p := g.source.Load(); p != nil {
+		if st := (*p).CurrentRuntimeStatus(); st != nil {
+			return check(st.Capabilities)
+		}
+	}
+	return g.fallback != nil && check(g.fallback.Capabilities)
 }
