@@ -4239,13 +4239,9 @@ func (s *Server) handleCopyChannelConfig(ctx *gin.Context) {
 			return
 		}
 
-		if req.CopyPublish {
-			src.PublishEnabled = dst.PublishEnabled // will be overridden
-		}
-
-		if req.CopyAutomation {
-			src.AutoASR = dst.AutoASR // will be overridden
-		}
+		// M1(2026-08-15 全项目审核):此处曾把 dst 的值反向赋给 src("will be overridden"
+		// 注释是误解),导致下方 CopyPublish/CopyAutomation 分支读到的 src.PublishEnabled/
+		// src.AutoASR 是目标主播的原值——复制发布/自动化配置实际复制的是目标自己,源值被丢弃。
 
 		// Build update input from source config fields
 		input := channel.UpsertInput{

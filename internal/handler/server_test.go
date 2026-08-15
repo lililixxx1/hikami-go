@@ -3171,3 +3171,38 @@ func TestDeleteCookieAccountInUseRejected(t *testing.T) {
 		t.Fatalf("want 204 after unreferenced, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestCopyChannelConfigCopiesSourceValues(t *testing.T) {
+	// M1:复制 Publish+Automation 后,目标主播的 publish_enabled/auto_asr 应等于**源**值。
+	// 修复前 src.PublishEnabled/src.AutoASR 被反向赋成 dst 值,复制实际是"目标自己抄自己"。
+	server, database := newTestServerWithDB(t)
+	ctx := context.Background()
+
+	seed := func(id string, publishEnabled, autoASR int) {
+		if _, err := database.ExecContext(ctx, `
+			INSERT INTO channels (id, name, uid, live_room_id, publish_enabled, auto_asr, auto_publish, auto_recap)
+			VALUES (?, ?, 1, 1, ?, ?, 0, 0)`, id, id, publishEnabled, autoASR); err != nil {
+			t.Fatalf("seed channel %s: %v", id, err)
+		}
+	}
+	seed("ch_src", 1, 1) // 源:开
+	seed("ch_dst", 0, 0) // 目标:关
+
+	rec := performRequest(server, http.MethodPost, "/api/channels/ch_src/copy-config",
+		`{"target_channel_id":"ch_dst","copy_publish":true,"copy_automation":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("copy-config status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var publishEnabled, autoASR int
+	if err := database.QueryRowContext(ctx,
+		"SELECT publish_enabled, auto_asr FROM channels WHERE id='ch_dst'").Scan(&publishEnabled, &autoASR); err != nil {
+		t.Fatalf("query dst: %v", err)
+	}
+	if publishEnabled != 1 {
+		t.Fatalf("dst publish_enabled = %d, want 1 (source value)", publishEnabled)
+	}
+	if autoASR != 1 {
+		t.Fatalf("dst auto_asr = %d, want 1 (source value)", autoASR)
+	}
+}
