@@ -223,7 +223,7 @@ func (d NativeDownloader) downloadMultiP(ctx context.Context, rawDir string, coo
 
 	durations := make([]partDuration, 0, len(results))
 	for _, result := range results {
-		durSecs, err := probeDuration(d.FFprobe, result.audio)
+		durSecs, err := probeDuration(ctx, d.FFprobe, result.audio)
 		if err != nil {
 			_ = concatList.Close()
 			return fmt.Errorf("probe duration for part %d: %w", result.index, err)
@@ -241,7 +241,7 @@ func (d NativeDownloader) downloadMultiP(ctx context.Context, rawDir string, coo
 		return fmt.Errorf("close concat list: %w", err)
 	}
 
-	if err := concatAudio(d.FFmpeg, concatListPath, filepath.Join(rawDir, "audio.m4a")); err != nil {
+	if err := concatAudio(ctx, d.FFmpeg, concatListPath, filepath.Join(rawDir, "audio.m4a")); err != nil {
 		return fmt.Errorf("concat multi-P audio: %w", err)
 	}
 	if err := fsutil.WriteJSONAtomic(filepath.Join(rawDir, "part_durations.json"), durations, 0o644); err != nil {

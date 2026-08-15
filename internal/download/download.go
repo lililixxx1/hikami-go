@@ -286,7 +286,7 @@ func (d YTDLPDownloader) downloadMultiP(ctx context.Context, command, sourceURL,
 	defer os.Remove(concatListPath)
 
 	for _, r := range results {
-		durSecs, err := probeDuration(d.FFprobe, r.audio)
+		durSecs, err := probeDuration(ctx, d.FFprobe, r.audio)
 		if err != nil {
 			return fmt.Errorf("probe duration for part %d: %w", r.index, err)
 		}
@@ -303,7 +303,7 @@ func (d YTDLPDownloader) downloadMultiP(ctx context.Context, command, sourceURL,
 
 	// Concatenate with ffmpeg concat demuxer.
 	targetAudio := filepath.Join(rawDir, "audio.m4a")
-	if err := concatAudio(d.FFmpeg, concatListPath, targetAudio); err != nil {
+	if err := concatAudio(ctx, d.FFmpeg, concatListPath, targetAudio); err != nil {
 		return fmt.Errorf("concat multi-P audio: %w", err)
 	}
 
@@ -323,12 +323,13 @@ func (d YTDLPDownloader) downloadMultiP(ctx context.Context, command, sourceURL,
 }
 
 // probeDuration uses ffprobe to get the duration in seconds of an audio file.
-func probeDuration(ffprobe string, audioPath string) (float64, error) {
+// ctx 取消会终止 ffprobe(L3,2026-08-15):不再无视任务取消跑满全程。
+func probeDuration(ctx context.Context, ffprobe string, audioPath string) (float64, error) {
 	probeCmd := ffprobe
 	if probeCmd == "" {
 		probeCmd = "ffprobe"
 	}
-	cmd := exec.Command(probeCmd,
+	cmd := exec.CommandContext(ctx, probeCmd,
 		"-v", "error",
 		"-show_entries", "format=duration",
 		"-of", "default=noprint_wrappers=1:nokey=1",
@@ -343,12 +344,13 @@ func probeDuration(ffprobe string, audioPath string) (float64, error) {
 }
 
 // concatAudio uses ffmpeg concat demuxer to merge audio parts.
-func concatAudio(ffmpeg string, concatListPath, outputPath string) error {
+// ctx 取消会终止 ffmpeg(L3):Stop/取消后不再跑满合并全程。
+func concatAudio(ctx context.Context, ffmpeg string, concatListPath, outputPath string) error {
 	ffmpegCmd := ffmpeg
 	if ffmpegCmd == "" {
 		ffmpegCmd = "ffmpeg"
 	}
-	cmd := exec.Command(ffmpegCmd,
+	cmd := exec.CommandContext(ctx, ffmpegCmd,
 		"-y",
 		"-hide_banner",
 		"-loglevel", "warning",

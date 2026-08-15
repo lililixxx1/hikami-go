@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hikami-go/internal/notify"
 	"io"
 	"math"
 	"mime/multipart"
@@ -3048,6 +3049,18 @@ func TestNotifyTestEndpointNotConfigured(t *testing.T) {
 	}
 }
 
+// TestNotifyTestEndpointNoopManager H7 审核 Minor:生产在通知未启用时注入的是
+// 非 nil 的 notify.NoopManager,旧的 nil 检查对它永假——钉死 NoopManager
+// (Configured()=false) 同样返回 409,与 nil 路径双保险。
+func TestNotifyTestEndpointNoopManager(t *testing.T) {
+	server := newTestServer(t)
+	server.notifyMgr = notify.NoopManager
+	rec := performRequest(server, http.MethodPost, "/api/notify/test", "")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("want 409, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestNotifyTestEndpointSendError(t *testing.T) {
 	server := newTestServer(t)
 	server.notifyMgr = &stubNotifyManager{sendTestErr: errors.New("webhook unreachable")}
@@ -3305,5 +3318,52 @@ func TestMCPConfigNewHeaderValueUpdates(t *testing.T) {
 	}
 	if !strings.Contains(headersJSON, "Bearer brand-new") || strings.Contains(headersJSON, "Bearer old") {
 		t.Fatalf("非哨兵新值应覆盖旧值, got: %s", headersJSON)
+	}
+}
+
+// TestImportSessionPayloadTooLargeRejected L15(2026-08-15):/api/sessions/import
+// 请求体超上限返回 413(Content-Length 预检路径)。
+func TestImportSessionPayloadTooLargeRejected(t *testing.T) {
+	server := newTestServer(t)
+	orig := importSessionMaxBytes
+	importSessionMaxBytes = 16
+	t.Cleanup(func() { importSessionMaxBytes = orig })
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, _ := writer.CreateFormFile("media_file", "a.mp3")
+	part.Write(bytes.Repeat([]byte("x"), 64))
+	writer.Close()
+
+	request := httptest.NewRequest(http.MethodPost, "/api/sessions/import", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response := httptest.NewRecorder()
+	server.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("want 413, got %d body=%s", response.Code, response.Body.String())
+	}
+}
+
+// TestImportSessionChunkedBodyOverLimitRejected L15:无 Content-Length(chunked)的
+// 超限请求由 MaxBytesReader 兜底,FormFile 解析报错映射 413 而非 400。
+func TestImportSessionChunkedBodyOverLimitRejected(t *testing.T) {
+	server := newTestServer(t)
+	orig := importSessionMaxBytes
+	importSessionMaxBytes = 16
+	t.Cleanup(func() { importSessionMaxBytes = orig })
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, _ := writer.CreateFormFile("media_file", "a.mp3")
+	part.Write(bytes.Repeat([]byte("x"), 64))
+	writer.Close()
+
+	request := httptest.NewRequest(http.MethodPost, "/api/sessions/import", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	request.ContentLength = -1 // 模拟 chunked,绕过预检走 MaxBytesReader
+	response := httptest.NewRecorder()
+	server.Router().ServeHTTP(response, request)
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("want 413, got %d body=%s", response.Code, response.Body.String())
 	}
 }

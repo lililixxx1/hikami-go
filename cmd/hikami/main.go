@@ -28,6 +28,7 @@ import (
 	"hikami-go/internal/discover"
 	"hikami-go/internal/download"
 	"hikami-go/internal/executil"
+	"hikami-go/internal/fsutil"
 	"hikami-go/internal/glossary"
 	"hikami-go/internal/handler"
 	"hikami-go/internal/importer"
@@ -213,6 +214,14 @@ func main() {
 	// server 会代际刷新运行时状态,但 gate 仍是旧快照 → 自动链被永久卡死。
 	// gate 先以启动快照兜底,server 构造后 attach,读 server 刷新后的最新状态。
 	autoChainGate := newAutoChainCapabilityGate(runtimeStatus)
+
+	// L4:清扫上次运行崩溃残留的 yt-dlp 明文 cookie 临时文件(启动时无在用任务,幂等;
+	// 正常路径用完即删,只有崩溃/断电才会残留)。
+	if n, err := fsutil.RemoveTempCookieFiles(cfg.OutputRoot); err != nil {
+		logger.Warn("startup yt-dlp cookie temp cleanup failed", "error", err)
+	} else if n > 0 {
+		logger.Info("startup removed stale yt-dlp cookie temp files", "count", n)
+	}
 
 	channelStore := channel.NewStore(database)
 	if err := channelStore.Bootstrap(context.Background(), cfg.BootstrapChannels); err != nil {

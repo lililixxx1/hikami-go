@@ -173,6 +173,11 @@ func (h *Handler) Fetch(ctx context.Context, sessionID string) (session.Session,
 			return session.Session{}, err
 		}
 	}
+	// L5(2026-08-15):WebDAV Fetch 对远端 404 可能静默成功(不落任何文件),
+	// 校验本地目录确实恢复才置 local_available,否则守卫被解除但下游读不到文件。
+	if info, statErr := os.Stat(target); statErr != nil || !info.IsDir() {
+		return session.Session{}, fmt.Errorf("fetch reported success but local session dir is missing: %s", target)
+	}
 	// 本地目录已恢复，标记 local_available=true，解除 glossary/recap/publisher 守卫。
 	// 置位失败仅记录：文件已取回，标记滞后不影响后续读取，但会误导守卫，故 Warn 醒目。
 	if err := h.sessions.SetLocalAvailable(ctx, sessionInfo.ID, true); err != nil {

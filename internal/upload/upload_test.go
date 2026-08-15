@@ -304,6 +304,39 @@ func TestFetchSuccess(t *testing.T) {
 	}
 }
 
+// TestFetchSilentMissingLocalDirRejected L5(2026-08-15):WebDAV Fetch 对远端 404
+// 可能静默成功(不落文件)——本地目录缺失时不得置 local_available,应返回错误。
+func TestFetchSilentMissingLocalDirRejected(t *testing.T) {
+	fix := setupUploadTest(t)
+	fix.insertChannel(t, "ch1")
+	fix.insertSession(t, "ch1_live_20260101_120000", "live_20260101_120000", "ch1", string(state.StatusASRDone))
+	// 注意:不 createSessionDir——模拟 Fetch 静默成功但什么都没落盘;
+	// 先把 local_available 置 false(归档清理后的常态),断言 Fetch 不把它置回。
+	if err := fix.sessions.SetLocalAvailable(context.Background(), "ch1_live_20260101_120000", false); err != nil {
+		t.Fatalf("set local_available false: %v", err)
+	}
+
+	copier := fakeCopier{copyFunc: func(ctx context.Context, source, target string) error {
+		return nil
+	}}
+	h := NewHandler(fix.cfg, fix.sessions, fix.states, copier)
+
+	_, err := h.Fetch(context.Background(), "ch1_live_20260101_120000")
+	if err == nil {
+		t.Fatal("Fetch should fail when local dir missing after copy")
+	}
+	if !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("error should mention missing local dir, got %v", err)
+	}
+	sess, getErr := fix.sessions.Get(context.Background(), "ch1_live_20260101_120000")
+	if getErr != nil {
+		t.Fatalf("get session: %v", getErr)
+	}
+	if sess.LocalAvailable {
+		t.Fatal("local_available must not be set when local dir is missing")
+	}
+}
+
 func TestFetchNoRemote(t *testing.T) {
 	fix := setupUploadTest(t)
 	fix.insertChannel(t, "ch1")

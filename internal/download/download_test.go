@@ -856,3 +856,19 @@ func TestSinglePCidNoBvid(t *testing.T) {
 		}
 	}
 }
+
+// TestProbeAndConcatRespectCanceledContext L3(2026-08-15):probeDuration/concatAudio
+// 签名携带 ctx 且用 exec.CommandContext——预取消的 ctx 必须立刻报错,不再无视
+// 任务取消跑满 ffprobe/ffmpeg 全程。(二进制缺失同样报错,此处钉住的是
+// 「取消即失败」契约;CommandContext 语义由实现保证。)
+func TestProbeAndConcatRespectCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := probeDuration(ctx, "ffprobe", "audio.m4a"); err == nil {
+		t.Fatal("canceled ctx should fail probeDuration immediately")
+	}
+	if err := concatAudio(ctx, "ffmpeg", "concat.list", "out.m4a"); err == nil {
+		t.Fatal("canceled ctx should fail concatAudio immediately")
+	}
+}

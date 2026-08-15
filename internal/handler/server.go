@@ -1208,9 +1208,25 @@ func (s *Server) resetSession(ctx *gin.Context) {
 	s.writeSessionDetail(ctx, sessionInfo)
 }
 
+// importSessionMaxBytes 限制 /api/sessions/import 的 multipart 请求体大小
+// (L15,2026-08-15):此前无上限,误传超大文件会先完整落盘/进内存。2GB 与
+// DashScope 单文件限制对齐;设为变量便于测试注入小上限。
+var importSessionMaxBytes int64 = 2 << 30
+
 func (s *Server) importSession(ctx *gin.Context) {
+	if ctx.Request.ContentLength > importSessionMaxBytes {
+		ctx.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "import payload too large (limit 2GB)"})
+		return
+	}
+	// chunked 请求(无 Content-Length)由 MaxBytesReader 兜底,超限在解析时报错。
+	ctx.Request.Body = http.MaxBytesReader(ctx.Writer, ctx.Request.Body, importSessionMaxBytes)
 	mediaFile, err := ctx.FormFile("media_file")
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) || strings.Contains(err.Error(), "request body too large") {
+			ctx.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "import payload too large (limit 2GB)"})
+			return
+		}
 		writeBadRequest(ctx, "media_file is required")
 		return
 	}
@@ -1906,57 +1922,6 @@ func derefBool(p *bool) bool {
 	return *p
 }
 
-// applySecretEnvChange 处理"改 env 名 + 设置/清除密钥"的组合,避免孤儿 secret。
-// oldEnv/newEnv 为旧/新 env 名(均已 Effective* 兜底非空)。
-//
-// 优先级(codex 审核修正:newSecret 最高,避免改名+输入新 key+无旧 secret 时丢失):
-//   - clear=true:删 newEnv 对应 secret + unset env(env 改名时也清新旧两个)
-//   - newSecret 非空(且未 clear):写 newEnv secret + setenv(无论是否有旧 secret)
-//   - env 改名但未提供新 key:迁移旧 secret 到新 key(若旧有值)
-//   - 其他:不动(保留语义)
-func (s *Server) applySecretEnvChange(ctx context.Context, oldEnv, newEnv, newSecret string, clear bool) error {
-	// env 名变化:先把旧值迁移到新 key,避免改个 env 名就导致密钥"丢失"
-	if oldEnv != newEnv {
-		// newSecret 优先级最高:用户输入新值就直接写新 key,不依赖旧 secret 是否存在
-		if newSecret != "" && !clear {
-			if err := s.secrets.Set(ctx, newEnv, newSecret); err != nil {
-				return err
-			}
-			_ = os.Setenv(newEnv, newSecret)
-		} else if oldSecret, err := s.secrets.Get(ctx, oldEnv); err == nil && oldSecret != "" && !clear {
-			// 未提供新值但有旧值:迁移到新 key
-			if err := s.secrets.Set(ctx, newEnv, oldSecret); err != nil {
-				return err
-			}
-			_ = os.Setenv(newEnv, oldSecret)
-		}
-		// 清旧 key + 旧 env(无论是否迁移,避免孤儿 secret)
-		if err := s.secrets.Delete(ctx, oldEnv); err != nil {
-			return err
-		}
-		_ = os.Unsetenv(oldEnv)
-		if clear {
-			if err := s.secrets.Delete(ctx, newEnv); err != nil {
-				return err
-			}
-			_ = os.Unsetenv(newEnv)
-		}
-		return nil
-	}
-	// env 名未变,走标准三态
-	if clear {
-		if err := s.secrets.Delete(ctx, newEnv); err != nil {
-			return err
-		}
-		_ = os.Unsetenv(newEnv)
-	} else if newSecret != "" {
-		if err := s.secrets.Set(ctx, newEnv, newSecret); err != nil {
-			return err
-		}
-		_ = os.Setenv(newEnv, newSecret)
-	}
-	return nil
-}
 
 // envMutation 描述 applySecretEnvChangeTx 在事务内对 secrets 表做的、
 // 需要在事务 commit 成功后再反映到进程 env 的副作用。
