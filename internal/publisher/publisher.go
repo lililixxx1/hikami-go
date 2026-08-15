@@ -3,6 +3,7 @@ package publisher
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -108,6 +109,20 @@ type Handler struct {
 	cookieAccountStore *biliutil.CookieAccountStore
 	notifyMgr          *notify.Manager
 	onSuccess          func(ctx context.Context, task worker.Task)
+	// tasks 提供 draft_id 持久化到任务 payload 的最小能力（M11），
+	// 由 worker.Store 实现；nil 时发布仍可进行，仅失去重试时的旧草稿清理。
+	tasks taskPayloadWriter
+}
+
+// taskPayloadWriter 是 M11 引入的最小 store 接口（避免 publisher 反向持有整个
+// worker.Store 构造依赖）：SaveDraft 成功后把 draft_id 写进任务 payload。
+type taskPayloadWriter interface {
+	UpdatePayload(ctx context.Context, id string, payload string) error
+}
+
+// SetTaskStore 注入任务 payload 写入能力（main.go 用 workerPool.Store()）。
+func (h *Handler) SetTaskStore(store taskPayloadWriter) {
+	h.tasks = store
 }
 
 func NewHandler(cfg *config.Config, sessions *session.Store, states *state.Store, channels *channel.Store, client ...OpusClient) *Handler {
@@ -164,17 +179,21 @@ func (h *Handler) CreateTask(ctx context.Context, pool *worker.Pool, sessionID s
 	if !ch.PublishEnabled && !h.cfg.Publish.Enabled {
 		return worker.Task{}, fmt.Errorf("%w: channel %s", ErrPublishNotEnabled, ch.ID)
 	}
-	if _, ok, err := pool.Store().ActiveBySessionAndType(ctx, sessionInfo.ID, TaskType); err != nil {
-		return worker.Task{}, err
-	} else if ok {
-		return worker.Task{}, fmt.Errorf("%w: active publish task already exists for session %s", worker.ErrTaskConflict, sessionInfo.ID)
-	}
-	return pool.Enqueue(ctx, worker.CreateInput{
+	// M11:活跃检查 + 创建原子化(旧「先查后插」两步在并发双击下会创建重复任务,
+	// 重复任务 = 重复发专栏)。created=false 即已有活跃任务,维持 409 语义。
+	task, created, err := pool.EnqueueIfNoActive(ctx, worker.CreateInput{
 		ChannelID: sessionInfo.ChannelID,
 		SessionID: sessionInfo.ID,
 		Type:      TaskType,
 		Payload:   "{}",
 	})
+	if err != nil {
+		return worker.Task{}, err
+	}
+	if !created {
+		return worker.Task{}, fmt.Errorf("%w: active publish task already exists for session %s", worker.ErrTaskConflict, sessionInfo.ID)
+	}
+	return task, nil
 }
 
 func (h *Handler) Register(pool *worker.Pool) {
@@ -208,7 +227,23 @@ func (h *Handler) HandleTask(ctx context.Context, task worker.Task, reporter wor
 	}
 
 	progress := func(pct int, msg string) error { return reporter.Progress(ctx, pct, msg) }
-	target, err := h.publishRecap(ctx, sessionInfo, ch, cookie, progress)
+	// M11:payload 里可能带上轮 SaveDraft 持久化的 draft_id(形如 {"draft_id":"123"}),
+	// 重试时先删旧草稿再新建,避免 B 站创作中心草稿箱积压。当前 CreateTask 写 "{}"。
+	var stale PublishTarget
+	if task.Payload != "" {
+		if err := json.Unmarshal([]byte(task.Payload), &stale); err != nil {
+			slog.WarnContext(ctx, "parse task payload for stale draft_id failed, ignoring", "task_id", task.ID, "error", err)
+		}
+	}
+	var persistDraft func(draftID string) error
+	if h.tasks != nil {
+		store := h.tasks
+		taskID := task.ID
+		persistDraft = func(draftID string) error {
+			return store.UpdatePayload(ctx, taskID, PublishTarget{DraftID: draftID}.Marshal())
+		}
+	}
+	target, err := h.publishRecap(ctx, sessionInfo, ch, cookie, progress, stale.DraftID, persistDraft)
 	if err != nil {
 		return err
 	}
@@ -243,13 +278,17 @@ func (h *Handler) HandleTask(ctx context.Context, task worker.Task, reporter wor
 // publishRecap 执行「读取最新 recap → 转 opus → 存草稿 → (publish 模式)发布」核心流程，
 // 返回组装好的 PublishTarget（序列化为 JSON 存入 publish_target）。HandleTask（异步，带进度
 // 上报与失败状态推进）调用此方法。progress 为可选进度回调，
-// nil 表示不上报进度。
+// nil 表示不上报进度。staleDraftID/persistDraft 是 M11 的草稿幂等链：前者为任务 payload
+// 里上轮 SaveDraft 的草稿 ID（非空则先删旧草稿），后者在 SaveDraft 成功后把新 draft_id
+// 持久化回任务 payload（nil 表示无持久化能力，如未注入 store 的测试路径）。
 func (h *Handler) publishRecap(
 	ctx context.Context,
 	sessionInfo session.Session,
 	ch channel.Channel,
 	cookie *BiliCookie,
 	progress func(pct int, msg string) error,
+	staleDraftID string,
+	persistDraft func(draftID string) error,
 ) (PublishTarget, error) {
 	recapDir := h.recapDir(sessionInfo)
 	mdPath, err := findRecapMarkdown(recapDir)
@@ -330,9 +369,27 @@ func (h *Handler) publishRecap(
 		}
 	}
 
+	// M11:重试时先删上轮遗留的旧草稿(创作中心草稿箱不留垃圾)。删除失败降级继续——
+	// 上轮可能实际已发布成功(草稿随发布转正/被 B 站清理),404/已发布类错误不应阻断本轮。
+	if staleDraftID != "" {
+		if err := h.client.DeleteDraft(ctx, cookie, staleDraftID); err != nil {
+			slog.WarnContext(ctx, "delete stale draft before retry failed, continuing",
+				"stale_draft_id", staleDraftID, "error", err)
+		}
+	}
+
 	draftID, err := h.client.SaveDraft(ctx, cookie, draftReq)
 	if err != nil {
 		return PublishTarget{}, err
+	}
+	// M11:SaveDraft 成功立即把 draft_id 持久化进任务 payload(在 PublishOpus 之前——
+	// 发布超时/失败后重试时靠它拿到旧 draft_id 做清理)。持久化失败仅告警:损失的是
+	// 下轮重试的草稿清理,不应阻断本轮发布。
+	if persistDraft != nil {
+		if err := persistDraft(draftID); err != nil {
+			slog.WarnContext(ctx, "persist draft_id to task payload failed",
+				"task_draft_id", draftID, "error", err)
+		}
 	}
 
 	if resolved.Mode == "publish" {
@@ -370,12 +427,28 @@ func (h *Handler) publishRecap(
 
 		dynID, dynType, dynRid, err := h.client.PublishOpus(ctx, cookie, pubReq)
 		if err != nil {
-			return PublishTarget{}, err
+			return PublishTarget{}, annotateUnknownPublishOutcome(err)
 		}
 		return PublishTarget{DynID: dynID, DynType: dynType, DynRid: dynRid}, nil
 	}
 
 	return PublishTarget{DraftID: draftID}, nil
+}
+
+// annotateUnknownPublishOutcome 给超时类的发布错误追加人工确认提示(M11③):
+// PublishOpus 超时时发布结果未知(请求可能已被 B 站受理、实际发布成功),直接自动
+// 重试会重复发文,引导用户先去创作中心确认。非超时类错误原样返回。
+func annotateUnknownPublishOutcome(err error) error {
+	if err == nil {
+		return nil
+	}
+	lower := strings.ToLower(err.Error())
+	unknown := errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) ||
+		strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline exceeded")
+	if !unknown {
+		return err
+	}
+	return fmt.Errorf("%w；发布请求超时、结果未知，请先到 B 站创作中心确认是否已发布，避免重复发文", err)
 }
 
 func canHandlePublish(status string) bool {

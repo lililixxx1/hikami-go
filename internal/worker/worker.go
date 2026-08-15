@@ -139,6 +139,20 @@ func (p *Pool) Enqueue(ctx context.Context, input CreateInput) (Task, error) {
 	return task, nil
 }
 
+// EnqueueIfNoActive 是 Enqueue 的原子幂等版（M11）：仅当真正创建了任务才派发到
+// worker 队列并广播；created=false（已有活跃任务）时返回既有任务、不重复派发。
+func (p *Pool) EnqueueIfNoActive(ctx context.Context, input CreateInput) (Task, bool, error) {
+	task, created, err := p.store.CreateTaskIfNoActive(ctx, input)
+	if err != nil {
+		return Task{}, false, err
+	}
+	if created {
+		p.enqueueID(task.ID)
+		p.hub.Broadcast(task)
+	}
+	return task, created, nil
+}
+
 func (p *Pool) Retry(ctx context.Context, id string) (Task, error) {
 	task, err := p.store.Retry(ctx, id)
 	if err != nil {

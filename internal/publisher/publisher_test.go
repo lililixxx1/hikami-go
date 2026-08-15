@@ -1656,3 +1656,157 @@ func TestHandleTask_PostSuccessProgressFailureDoesNotFailTask(t *testing.T) {
 		t.Fatal("onSuccess 自动归档链应照常触发")
 	}
 }
+
+// ==================== M11 发布链幂等 ====================
+
+// TestHandleTask_RetryDeletesStaleDraftAndPersists M11:任务 payload 带上轮 SaveDraft
+// 持久化的 draft_id 时,重试应先删旧草稿再新建,并把新 draft_id 写回任务 payload
+// (round-trip:下一轮重试从 payload 里读到的就是本轮的草稿)。
+func TestHandleTask_RetryDeletesStaleDraftAndPersists(t *testing.T) {
+	h := newTestHelper(t)
+	ctx := context.Background()
+
+	cookiePath := h.createCookieFile("m11")
+	ch, sess := h.setupSessionAndChannel(ctx, cookiePath)
+	h.createRecapMarkdown(ch, sess, "# 直播回顾\n\n这是回顾内容。")
+
+	var deletedDrafts []string
+	fake := &fakeOpusClient{
+		saveDraftFn: func(ctx context.Context, cookie *BiliCookie, req *DraftRequest) (string, error) {
+			return "new_draft", nil
+		},
+		deleteDraftFn: func(ctx context.Context, cookie *BiliCookie, draftID string) error {
+			deletedDrafts = append(deletedDrafts, draftID)
+			return nil
+		},
+	}
+	handler := NewHandler(h.cfg, h.sessions, h.states, h.channels, fake)
+	handler.SetTaskStore(h.taskStore)
+
+	task, err := h.taskStore.Create(ctx, worker.CreateInput{
+		ChannelID: sess.ChannelID,
+		SessionID: sess.ID,
+		Type:      TaskType,
+		Payload:   `{"draft_id":"old_draft"}`,
+	})
+	if err != nil {
+		t.Fatalf("创建任务失败: %v", err)
+	}
+	if err := handler.HandleTask(ctx, task, &noopReporter{}); err != nil {
+		t.Fatalf("HandleTask 失败: %v", err)
+	}
+
+	if len(deletedDrafts) != 1 || deletedDrafts[0] != "old_draft" {
+		t.Fatalf("DeleteDraft calls = %v, want [old_draft]", deletedDrafts)
+	}
+	if fake.lastDraftReq == nil {
+		t.Fatal("SaveDraft 未被调用")
+	}
+	// 新 draft_id 应已持久化进任务 payload。
+	updatedTask, err := h.taskStore.Get(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got := ParsePublishTarget(updatedTask.Payload).DraftID; got != "new_draft" {
+		t.Fatalf("task payload draft_id = %q, want new_draft (payload=%s)", got, updatedTask.Payload)
+	}
+}
+
+// TestHandleTask_DeleteStaleDraftFailureDegraded M11:旧草稿删除失败(上轮可能实际
+// 已发布成功、草稿已随发布转正被 B 站清理)应降级告警继续本轮,不阻断发布。
+func TestHandleTask_DeleteStaleDraftFailureDegraded(t *testing.T) {
+	h := newTestHelper(t)
+	ctx := context.Background()
+
+	cookiePath := h.createCookieFile("m11d")
+	ch, sess := h.setupSessionAndChannel(ctx, cookiePath)
+	h.createRecapMarkdown(ch, sess, "# 直播回顾\n\n这是回顾内容。")
+
+	fake := &fakeOpusClient{
+		deleteDraftFn: func(ctx context.Context, cookie *BiliCookie, draftID string) error {
+			return errors.New("draft not found (already published)")
+		},
+	}
+	handler := NewHandler(h.cfg, h.sessions, h.states, h.channels, fake)
+	handler.SetTaskStore(h.taskStore)
+
+	task, err := h.taskStore.Create(ctx, worker.CreateInput{
+		ChannelID: sess.ChannelID,
+		SessionID: sess.ID,
+		Type:      TaskType,
+		Payload:   `{"draft_id":"stale"}`,
+	})
+	if err != nil {
+		t.Fatalf("创建任务失败: %v", err)
+	}
+	if err := handler.HandleTask(ctx, task, &noopReporter{}); err != nil {
+		t.Fatalf("旧草稿删除失败应降级继续,HandleTask 失败: %v", err)
+	}
+	if fake.lastDraftReq == nil {
+		t.Fatal("SaveDraft 未被调用(删除失败不应阻断发布链)")
+	}
+}
+
+// TestHandleTask_PublishTimeoutHint M11③:发布超时类错误(结果未知)追加
+// 「先到创作中心确认」提示,引导人工确认避免重复发文;非超时错误不附加。
+func TestHandleTask_PublishTimeoutHint(t *testing.T) {
+	h := newTestHelper(t)
+	ctx := context.Background()
+
+	cookiePath := h.createCookieFile("m11t")
+	ch, sess := h.setupSessionAndChannel(ctx, cookiePath, func(u *channel.UpsertInput) {
+		u.PublishMode = "publish"
+	})
+	h.createRecapMarkdown(ch, sess, "# 直播回顾\n\n内容。")
+
+	timeoutFake := &fakeOpusClient{
+		publishOpusFn: func(ctx context.Context, cookie *BiliCookie, req *PublishRequest) (string, int64, string, error) {
+			return "", 0, "", errors.New(`Post "https://api.bilibili.com/x/dynamic": context deadline exceeded (Client.Timeout exceeded while awaiting headers)`)
+		},
+	}
+	handler := NewHandler(h.cfg, h.sessions, h.states, h.channels, timeoutFake)
+	task := h.enqueueTask(ctx, sess)
+	err := handler.HandleTask(ctx, task, &noopReporter{})
+	if err == nil {
+		t.Fatal("超时发布应返回错误")
+	}
+	if !strings.Contains(err.Error(), "创作中心") || !strings.Contains(err.Error(), "避免重复发文") {
+		t.Fatalf("超时错误应带人工确认提示, got %v", err)
+	}
+
+	plainFake := &fakeOpusClient{
+		publishOpusFn: func(ctx context.Context, cookie *BiliCookie, req *PublishRequest) (string, int64, string, error) {
+			return "", 0, "", errors.New("risk control rejected: 352")
+		},
+	}
+	handler2 := NewHandler(h.cfg, h.sessions, h.states, h.channels, plainFake)
+	task2 := h.enqueueTask(ctx, sess)
+	err2 := handler2.HandleTask(ctx, task2, &noopReporter{})
+	if err2 == nil {
+		t.Fatal("风控错误应返回错误")
+	}
+	if strings.Contains(err2.Error(), "创作中心") {
+		t.Fatalf("非超时错误不应带人工确认提示, got %v", err2)
+	}
+}
+
+// TestAnnotateUnknownPublishOutcome M11③:提示判定纯函数的表驱动。
+func TestAnnotateUnknownPublishOutcome(t *testing.T) {
+	if err := annotateUnknownPublishOutcome(nil); err != nil {
+		t.Fatalf("nil 应原样返回 nil, got %v", err)
+	}
+	plain := errors.New("risk control 352")
+	if got := annotateUnknownPublishOutcome(plain); got != plain {
+		t.Fatalf("非超时错误应原样返回同一对象, got %v", got)
+	}
+	wrapped := fmt.Errorf("call opus: %w", context.DeadlineExceeded)
+	got := annotateUnknownPublishOutcome(wrapped)
+	if !strings.Contains(got.Error(), "创作中心") || !strings.Contains(got.Error(), "避免重复发文") {
+		t.Fatalf("deadline exceeded 应带提示, got %v", got)
+	}
+	netTimeout := errors.New("net/http: request canceled (Client.Timeout exceeded)")
+	if got := annotateUnknownPublishOutcome(netTimeout); !strings.Contains(got.Error(), "创作中心") {
+		t.Fatalf("client timeout 应带提示, got %v", got)
+	}
+}
+

@@ -325,6 +325,8 @@ func main() {
 	publisherHandler := publisher.NewHandler(cfg, sessionStore, stateStore, channelStore, publisher.NewBiliOpusClientWithSigner(wbiSigner))
 	publisherHandler.SetCookieAccountStore(cookieAccountStore)
 	publisherHandler.SetNotifyManager(notifyMgr)
+	// M11:注入任务 payload 写入能力,SaveDraft 成功后持久化 draft_id 供重试清理旧草稿。
+	publisherHandler.SetTaskStore(workerPool.Store())
 	recapHandler.SetOnSuccess(func(ctx context.Context, task worker.Task) {
 		// 重新生成回顾（CreateRegenTask 标记 BypassFailState=true）只覆盖本地 md，绝不触碰 B站：
 		// 不触发自动发布。按"任务意图"判断——recap_done 场重新生成也不该自动发布。

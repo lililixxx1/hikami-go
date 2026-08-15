@@ -466,11 +466,14 @@ func (h *Handler) CreateTask(ctx context.Context, pool *worker.Pool, sessionID s
 	canCreateFirst := func(s string) bool {
 		return s == string(state.StatusASRDone) || s == string(state.StatusUploaded)
 	}
-	if err := h.validateRecapPreconditions(ctx, pool, sessionInfo, canCreateFirst,
+	if err := h.validateRecapPreconditions(ctx, sessionInfo, canCreateFirst,
 		fmt.Sprintf("status must be %s or %s", state.StatusASRDone, state.StatusUploaded)); err != nil {
 		return worker.Task{}, err
 	}
-	return pool.Enqueue(ctx, worker.CreateInput{ChannelID: sessionInfo.ChannelID, SessionID: sessionInfo.ID, Type: TaskType, Payload: "{}"})
+	// M11:原子幂等创建(旧「先查后插」在并发双击下会建重复任务)。created=false
+	// 说明并发窗口内已有活跃任务,与上方幂等检查同语义,返回它而非报冲突。
+	task, _, err := pool.EnqueueIfNoActive(ctx, worker.CreateInput{ChannelID: sessionInfo.ChannelID, SessionID: sessionInfo.ID, Type: TaskType, Payload: "{}"})
+	return task, err
 }
 
 // canCreateRegen 报告是否允许"重新生成"整场回顾。
@@ -491,9 +494,11 @@ func canHandleRecap(status string) bool {
 		status == string(state.StatusFailed)
 }
 
-// validateRecapPreconditions 校验回顾任务的公共前置条件：能力、本地可用、转写文件存在、无并发任务。
+// validateRecapPreconditions 校验回顾任务的公共前置条件：能力、本地可用、转写文件存在。
 // statusGuard 由调用方传入，区分"首次生成"(asr_done/uploaded)、"重新生成"(canCreateRegen) 两种状态语义。
-func (h *Handler) validateRecapPreconditions(ctx context.Context, pool *worker.Pool, sessionInfo session.Session, statusGuard func(string) bool, statusDesc string) error {
+// 「无并发任务」检查已移至原子原语 EnqueueIfNoActive(M11)：此处检查与后续插入之间的
+// 窗口会漏并发，重复创建由 INSERT…NOT EXISTS 在单语句内兜底，幂等语义在调用方收口。
+func (h *Handler) validateRecapPreconditions(ctx context.Context, sessionInfo session.Session, statusGuard func(string) bool, statusDesc string) error {
 	if !statusGuard(sessionInfo.Status) {
 		return fmt.Errorf("%w: %s, got %s", ErrSessionNotReady, statusDesc, sessionInfo.Status)
 	}
@@ -508,11 +513,6 @@ func (h *Handler) validateRecapPreconditions(ctx context.Context, pool *worker.P
 			return fmt.Errorf("%w: %s", ErrTranscriptMissing, h.transcriptPath(sessionInfo))
 		}
 		return err
-	}
-	if _, ok, err := pool.Store().ActiveBySessionAndType(ctx, sessionInfo.ID, TaskType); err != nil {
-		return err
-	} else if ok {
-		return fmt.Errorf("%w: active recap task already exists for session %s", worker.ErrTaskConflict, sessionInfo.ID)
 	}
 	return nil
 }
@@ -531,17 +531,19 @@ func (h *Handler) CreateRegenTask(ctx context.Context, pool *worker.Pool, sessio
 	} else if ok {
 		return task, nil
 	}
-	if err := h.validateRecapPreconditions(ctx, pool, sessionInfo, canCreateRegen,
+	if err := h.validateRecapPreconditions(ctx, sessionInfo, canCreateRegen,
 		fmt.Sprintf("status must be %s or %s for regeneration", state.StatusRecapDone, state.StatusPublished)); err != nil {
 		return worker.Task{}, err
 	}
-	return pool.Enqueue(ctx, worker.CreateInput{
+	// M11:原子幂等创建,created=false(并发窗口内已有活跃任务)幂等返回既有任务。
+	task, _, err := pool.EnqueueIfNoActive(ctx, worker.CreateInput{
 		ChannelID:       sessionInfo.ChannelID,
 		SessionID:       sessionInfo.ID,
 		Type:            TaskType,
 		Payload:         "{}",
 		BypassFailState: true,
 	})
+	return task, err
 }
 
 func readSessionMetadata(dir string) *sessionMetadata {

@@ -111,6 +111,89 @@ func (s *Store) Create(ctx context.Context, input CreateInput) (Task, error) {
 	return s.Get(ctx, taskID)
 }
 
+// CreateTaskIfNoActive 原子化「活跃检查 + 创建」：仅当该 session+type 不存在
+// pending/running 任务时插入新 pending 任务；否则返回既有活跃任务（created=false），
+// 由调用方决定语义（recap 幂等返回既有任务 / publisher 报 ErrTaskConflict）。
+// M11(2026-08-15 全项目审核)：publisher/recap 此前「先 ActiveBySessionAndType 查、
+// 再 Create 插」两步非原子，并发双击会创建重复任务（发布链会重复发专栏）。
+// INSERT…SELECT…WHERE NOT EXISTS 单语句原子（单连接 SQLite + MaxOpenConns(1)，
+// 写天然串行）。created=false 后回读既有任务时它可能恰好刚结束（极小窗口），
+// 此时重试一次插入而非误报冲突。
+func (s *Store) CreateTaskIfNoActive(ctx context.Context, input CreateInput) (Task, bool, error) {
+	if err := validateCreate(input); err != nil {
+		return Task{}, false, err
+	}
+	if strings.TrimSpace(input.SessionID) == "" {
+		return Task{}, false, fmt.Errorf("%w: session_id is required", ErrInvalidTask)
+	}
+	payload := input.Payload
+	if strings.TrimSpace(payload) == "" {
+		payload = "{}"
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		taskID, err := newTaskID()
+		if err != nil {
+			return Task{}, false, err
+		}
+		nowStr := nowRFC3339()
+		result, err := s.db.ExecContext(ctx, `
+			INSERT INTO tasks (
+				id, channel_id, session_id, type, status, payload, bypass_fail_state, created_at, updated_at
+			)
+			SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+			WHERE NOT EXISTS (
+				SELECT 1 FROM tasks
+				WHERE session_id = ? AND type = ? AND status IN (?, ?)
+			)
+		`, taskID, input.ChannelID, nullable(input.SessionID), input.Type, StatusPending, payload,
+			boolToInt(input.BypassFailState), nowStr, nowStr,
+			input.SessionID, input.Type, StatusPending, StatusRunning)
+		if err != nil {
+			return Task{}, false, err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return Task{}, false, err
+		}
+		if affected > 0 {
+			task, err := s.Get(ctx, taskID)
+			return task, true, err
+		}
+		existing, ok, err := s.ActiveBySessionAndType(ctx, input.SessionID, input.Type)
+		if err != nil {
+			return Task{}, false, err
+		}
+		if ok {
+			return existing, false, nil
+		}
+		// 插入被跳过但回读不到活跃任务：它刚结束，窗口已过，重试插入。
+	}
+	return Task{}, false, fmt.Errorf("%w: active task check raced twice for session %s", ErrTaskConflict, input.SessionID)
+}
+
+// UpdatePayload 覆盖写任务 payload（WHERE id=? + RowsAffected 检查）。
+// M11：publisher 在 SaveDraft 成功后把 draft_id 持久化进任务 payload，
+// 任务重试时 HandleTask 读它先清理上一轮遗留的旧草稿。
+func (s *Store) UpdatePayload(ctx context.Context, id string, payload string) error {
+	if strings.TrimSpace(payload) == "" {
+		payload = "{}"
+	}
+	result, err := s.db.ExecContext(ctx, `
+		UPDATE tasks SET payload = ?, updated_at = ? WHERE id = ?
+	`, payload, nowRFC3339(), id)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrTaskNotFound
+	}
+	return nil
+}
+
 func (s *Store) List(ctx context.Context) ([]Task, error) {
 	rows, err := s.db.QueryContext(ctx, listWithChannelSQL)
 	if err != nil {

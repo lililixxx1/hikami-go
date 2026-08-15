@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"hikami-go/internal/db"
@@ -271,3 +272,138 @@ func TestListReturnsChannelName(t *testing.T) {
 		t.Fatalf("ChannelName = %q, want %q", found.ChannelName, "火西肆")
 	}
 }
+
+// TestStoreCreateTaskIfNoActiveIdempotent M11:同 session+type 的第二次调用不再创建,
+// created=false 且返回既有任务;既有任务进入终态(succeeded)后可再次创建;
+// 缺 session_id 拒绝(该原语以 session+type 为幂等键)。
+// seedTaskTestSession 在 sessions 表插入最小行(tasks.session_id 有 FK → sessions 约束,
+// 测试造任务前需先造 session)。
+func seedTaskTestSession(t *testing.T, store *Store, id string) {
+	t.Helper()
+	if _, err := store.db.Exec(`INSERT INTO sessions(id, slug, channel_id, source_type, source_id, title, status)
+		VALUES (?, ?, 'huize', 'download', 'BV1m11', 'M11 测试', 'recap_done')`, id, "slug_"+id); err != nil {
+		t.Fatalf("seed session %s: %v", id, err)
+	}
+}
+
+func TestStoreCreateTaskIfNoActiveIdempotent(t *testing.T) {
+	store := newTaskTestStore(t)
+	ctx := context.Background()
+	seedTaskTestSession(t, store, "sess_m11")
+
+	first, created, err := store.CreateTaskIfNoActive(ctx, CreateInput{
+		ChannelID: "huize", SessionID: "sess_m11", Type: "publish", Payload: "{}",
+	})
+	if err != nil || !created {
+		t.Fatalf("first create: created=%v err=%v", created, err)
+	}
+	second, created, err := store.CreateTaskIfNoActive(ctx, CreateInput{
+		ChannelID: "huize", SessionID: "sess_m11", Type: "publish", Payload: "{}",
+	})
+	if err != nil {
+		t.Fatalf("second create: %v", err)
+	}
+	if created {
+		t.Fatalf("second create should not create a new task")
+	}
+	if second.ID != first.ID {
+		t.Fatalf("second create returned existing task %q, want %q", second.ID, first.ID)
+	}
+
+	if _, err := store.MarkRunning(ctx, first.ID); err != nil {
+		t.Fatalf("mark running: %v", err)
+	}
+	if _, err := store.MarkSucceeded(ctx, first.ID, "done"); err != nil {
+		t.Fatalf("mark succeeded: %v", err)
+	}
+	third, created, err := store.CreateTaskIfNoActive(ctx, CreateInput{
+		ChannelID: "huize", SessionID: "sess_m11", Type: "publish", Payload: "{}",
+	})
+	if err != nil || !created {
+		t.Fatalf("create after terminal: created=%v err=%v", created, err)
+	}
+	if third.ID == first.ID {
+		t.Fatalf("create after terminal should be a new task")
+	}
+
+	if _, _, err := store.CreateTaskIfNoActive(ctx, CreateInput{ChannelID: "huize", Type: "publish"}); err == nil {
+		t.Fatalf("expected error for missing session_id")
+	}
+}
+
+// TestStoreCreateTaskIfNoActiveConcurrent M11:并发竞争下只创建一个任务
+// (INSERT…SELECT…WHERE NOT EXISTS 单语句原子;单连接 SQLite 写串行)。
+func TestStoreCreateTaskIfNoActiveConcurrent(t *testing.T) {
+	store := newTaskTestStore(t)
+	ctx := context.Background()
+	seedTaskTestSession(t, store, "sess_m11_race")
+
+	const n = 8
+	var mu sync.Mutex
+	createdCount := 0
+	ids := make(map[string]struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			task, created, err := store.CreateTaskIfNoActive(ctx, CreateInput{
+				ChannelID: "huize", SessionID: "sess_m11_race", Type: "publish", Payload: "{}",
+			})
+			if err != nil {
+				t.Errorf("concurrent create: %v", err)
+				return
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if created {
+				createdCount++
+			}
+			ids[task.ID] = struct{}{}
+		}()
+	}
+	wg.Wait()
+	if createdCount != 1 {
+		t.Fatalf("created count = %d, want 1", createdCount)
+	}
+	if len(ids) != 1 {
+		t.Fatalf("distinct task ids = %d, want 1: %v", len(ids), ids)
+	}
+}
+
+// TestStoreUpdatePayload M11:payload 覆盖写 round-trip;空串归一为 "{}";
+// 不存在任务返回 ErrTaskNotFound。
+func TestStoreUpdatePayload(t *testing.T) {
+	store := newTaskTestStore(t)
+	ctx := context.Background()
+	seedTaskTestSession(t, store, "sess_m11p")
+
+	task, err := store.Create(ctx, CreateInput{ChannelID: "huize", SessionID: "sess_m11p", Type: "publish"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := store.UpdatePayload(ctx, task.ID, `{"draft_id":"12345"}`); err != nil {
+		t.Fatalf("update payload: %v", err)
+	}
+	updated, err := store.Get(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if updated.Payload != `{"draft_id":"12345"}` {
+		t.Fatalf("payload = %q, want draft_id json", updated.Payload)
+	}
+	if err := store.UpdatePayload(ctx, task.ID, ""); err != nil {
+		t.Fatalf("update empty payload: %v", err)
+	}
+	updated, err = store.Get(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if updated.Payload != "{}" {
+		t.Fatalf("payload = %q, want {}", updated.Payload)
+	}
+	if err := store.UpdatePayload(ctx, "task_missing", "{}"); !errors.Is(err, ErrTaskNotFound) {
+		t.Fatalf("update missing task: err = %v, want ErrTaskNotFound", err)
+	}
+}
+
