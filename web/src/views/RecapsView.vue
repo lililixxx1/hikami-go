@@ -14,6 +14,9 @@ import {
   type PrimaryAction,
   type PrimaryActionName,
 } from '@/features/recaps/sessionActions'
+// L9/L10(2026-08-15):分页收敛与抽屉内容竞态守卫抽为可测 composable。
+import { useSessionPagination } from '@/features/recaps/useSessionPagination'
+import { useRecapDrawerContent } from '@/features/recaps/useRecapDrawerContent'
 // V10 组件(Phase 4):替代旧 EP 版 RecapToolbar/SessionFilters/SessionTable/RecapDrawer/DiscoverResultDrawer。
 import RecapToolbarV10 from '@/features/recaps/components/RecapToolbarV10.vue'
 import SessionFiltersV10 from '@/features/recaps/components/SessionFiltersV10.vue'
@@ -30,7 +33,6 @@ import {
   regenerateRecap,
   submitASR,
   uploadSession,
-  getRecapContent,
   // 发现回放(2026-07-19 解耦重写:URL 驱动入口)。
   previewDiscoverSessionsByURL,
   executeDiscoverSessions,
@@ -48,7 +50,6 @@ import type {
   Channel as DerivedChannel,
   DiscoverResult as DerivedDiscoverResult,
   DiscoverPickItem as DerivedDiscoverPickItem,
-  RecapContent as DerivedRecapContent,
   Session as DerivedSession,
 } from '@/api/types-derived'
 import type {
@@ -93,15 +94,19 @@ const replayConfig = ref<ReplayConfig | null>(null)
 const replayLoading = ref(false)
 
 // ---------- 抽屉相关 ----------
-// selectedSession/recapContent 喂给 RecapDrawerV10(派生类型);API 调用边界窄化为 loose。
+// selectedSession 喂给 RecapDrawerV10(派生类型);内容态(content/loading/已添加
+// 术语标记)收敛在 useRecapDrawerContent,带 openRecap 竞态守卫(L10)。
 const recapDrawerVisible = ref(false)
 const selectedSession = ref<DerivedSession | null>(null)
-const recapContent = ref<DerivedRecapContent | null>(null)
-const recapLoading = ref(false)
+const {
+  content: recapContent,
+  loading: recapLoading,
+  addedTerms: addedSuggestedTerms,
+  open: openDrawerContent,
+  refresh: refreshDrawerContent,
+} = useRecapDrawerContent(selectedSession)
 const addingSuggestedTerm = ref('')
 const clearFailedLoading = ref(false)
-// 抽屉内术语「已添加」标记:API 成功后才写入(避免失败时按钮误显示已添加)
-const addedSuggestedTerms = ref<Set<string>>(new Set())
 
 // capabilities 传给 V10 组件(消费派生类型),从 store 窄化转换。
 const capabilities = computed<DerivedCapabilities | null>(
@@ -142,6 +147,13 @@ const filteredSessions = computed<DerivedSession[]>(() => {
 const pagedSessions = computed(() => {
   const start = (currentPage.value - 1) * pageSize.value
   return filteredSessions.value.slice(start, start + pageSize.value)
+})
+
+// L9:列表被轮询/WS 收缩后 currentPage 收敛到新的最后一页,不渲染空表。
+useSessionPagination({
+  currentPage,
+  pageSize,
+  totalItems: computed(() => filteredSessions.value.length),
 })
 
 watch([keyword, statusFilter, channelFilter, activeTab], () => { currentPage.value = 1 })
@@ -223,41 +235,15 @@ function sessionTask(s: DerivedSession): Task | null {
 }
 
 // ---------- 抽屉:打开/复制 ----------
+// 内容拉取与竞态守卫在 useRecapDrawerContent.open(L10);这里只管抽屉可见性。
 async function openRecap(s: DerivedSession) {
-  selectedSession.value = s
   recapDrawerVisible.value = true
-  recapContent.value = null
-  addedSuggestedTerms.value = new Set()
-  recapLoading.value = true
-  try {
-    recapContent.value = (await getRecapContent(s.id)) as unknown as DerivedRecapContent
-  } catch {
-    recapContent.value = null
-  } finally {
-    recapLoading.value = false
-  }
+  await openDrawerContent(s)
 }
 
-// 回顾内容编辑保存后重新拉取，使预览区域显示最新内容。
-// 竞态保护：保存期间用户可能切换了 session，只在 sessionID 匹配时更新。
-// 二次保护：请求返回后再次检查，防止切换后旧响应覆盖新 session 内容。
+// 回顾内容编辑保存后重新拉取，使预览区域显示最新内容(竞态守卫同上)。
 async function onRecapSaved(sessionId: string) {
-  if (!selectedSession.value || selectedSession.value.id !== sessionId) return
-  recapLoading.value = true
-  try {
-    const fresh = (await getRecapContent(sessionId)) as unknown as DerivedRecapContent
-    // 请求返回后再次检查：若期间用户切换了 session，不覆盖新 session 的内容
-    if (selectedSession.value?.id === sessionId) {
-      recapContent.value = fresh
-    }
-  } catch {
-    // 刷新失败由 client.ts 拦截器提示；保持旧内容
-  } finally {
-    // 只在仍是同一 session 时清除 loading（切换后的 session 有自己的 loading 生命周期）
-    if (selectedSession.value?.id === sessionId) {
-      recapLoading.value = false
-    }
-  }
+  await refreshDrawerContent(sessionId)
 }
 
 function handleCopyRecap() {

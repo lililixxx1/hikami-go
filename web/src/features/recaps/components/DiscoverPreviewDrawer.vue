@@ -163,6 +163,14 @@ watch(
     if (v) picked.value = new Set()
   },
 )
+
+// L11(2026-08-15):同一抽屉会话内再次「发现」会整体替换 items(壳重建数组),
+// 旧勾选的下标已指向新列表的不同条目——必须随 items 引用变化清空勾选,
+// 否则「执行勾选」会把旧下标映射到错误的新条目上。
+watch(
+  () => props.items,
+  () => { picked.value = new Set() },
+)
 </script>
 
 <template>

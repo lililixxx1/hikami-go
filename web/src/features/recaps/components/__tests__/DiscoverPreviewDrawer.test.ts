@@ -147,4 +147,33 @@ describe('DiscoverPreviewDrawer', () => {
     await wrapper.vm.$nextTick() // 等 catch 块赋值 accountsError
     expect(wrapper.text()).toContain('网络错误')
   })
+
+  // L11(2026-08-15):同一抽屉内再次「发现」整体替换 items,旧勾选的下标已指向
+  // 新列表的不同条目,勾选必须随 items 引用变化清空。
+  it('items 被新一次预览结果替换后勾选清空', async () => {
+    const itemsA: DiscoverResult[] = [
+      { channel_id: 'ch', source_id: 'BV1', title: 'A1', exists: false, created: true, source_url: '' },
+    ]
+    const itemsB: DiscoverResult[] = [
+      { channel_id: 'ch', source_id: 'BV2', title: 'B1', exists: false, created: true, source_url: '' },
+    ]
+    const wrapper = mountDrawer({ items: itemsA })
+    await wrapper.vm.$nextTick()
+
+    // 勾选 A 列表第 0 项(注意避开「全选新回放」checkbox,只点行内 checkbox)
+    await wrapper.find('.preview-row input[type="checkbox"]').setValue(true)
+    let button = wrapper.findAll('button')[wrapper.findAll('button').length - 1]
+    expect(button.attributes('disabled')).toBeUndefined()
+
+    // 换新一批预览结果(新数组引用)
+    await wrapper.setProps({ items: itemsB })
+    await wrapper.vm.$nextTick()
+
+    // 勾选被清空:新列表第 0 项未勾选,执行按钮回到禁用
+    const rowCheckbox = wrapper.find('.preview-row input[type="checkbox"]').element as HTMLInputElement
+    expect(rowCheckbox.checked).toBe(false)
+    const allButtons = wrapper.findAll('button')
+    button = allButtons[allButtons.length - 1]
+    expect(button.attributes('disabled')).toBeDefined()
+  })
 })

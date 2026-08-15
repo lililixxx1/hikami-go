@@ -140,13 +140,13 @@ function openSession(): void {
 function openTask(): void {
   if (!submittedTask.value) return
   drawerVisible.value = false
-  router.push({
-    path: '/tasks',
-    query: {
-      task_id: submittedTask.value.id,
-      session_id: submittedTask.value.session_id,
-    },
-  })
+  // L12(2026-08-15):/tasks 已并入回顾页且 redirect 曾丢 query;直接推
+  // /recaps?sid= 打开对应场次抽屉(任务进度在回顾列表/抽屉可见)。
+  if (submittedTask.value.session_id) {
+    router.push({ path: '/recaps', query: { sid: submittedTask.value.session_id } })
+  } else {
+    router.push('/recaps')
+  }
 }
 
 watch(

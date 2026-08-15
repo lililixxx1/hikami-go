@@ -6,15 +6,23 @@ import { listTasks } from '@/api/tasks'
 export const useTasksStore = defineStore('tasks', () => {
   const items = ref<Task[]>([])
   const loading = ref(false)
+  // 并发去重(照抄 sessions store 范式):轮询刷新与进度事件触发的
+  // unknown-task 全量刷新同时进入时,复用同一个 list 请求(L8)。
+  let inflight: Promise<void> | null = null
 
   async function fetchTasks(): Promise<void> {
+    if (inflight) return inflight
     loading.value = true
-    try {
-      const response = await listTasks()
-      items.value = response.items
-    } finally {
-      loading.value = false
-    }
+    inflight = (async () => {
+      try {
+        const response = await listTasks()
+        items.value = response.items
+      } finally {
+        loading.value = false
+        inflight = null
+      }
+    })()
+    return inflight
   }
 
   function handleTaskProgress(event: TaskProgressEvent): void {
