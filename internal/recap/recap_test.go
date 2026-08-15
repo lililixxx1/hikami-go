@@ -1773,3 +1773,86 @@ func TestCorrectTextWithRulesBoundaryAwareAndAppliedAccuracy(t *testing.T) {
 		t.Fatalf("should record AI as applied, got: %v", applied2)
 	}
 }
+
+// emptyContentProvider 复刻 MCP agent loop 耗尽时的返回形态:首轮 Content 为空
+// (H4 缺陷:该结果曾一路穿透到落盘/发布),续写轮(命中"续写"提示词)返回正文。
+type emptyContentProvider struct {
+	firstFinishReason string
+	continuation      string
+}
+
+func (p emptyContentProvider) Generate(ctx context.Context, systemPrompt, prompt string, sessionInfo session.Session) (aiprovider.GenerateResult, error) {
+	if strings.Contains(prompt, "续写") {
+		return aiprovider.GenerateResult{
+			Content:      p.continuation,
+			Raw:          `{"provider":"empty_content_stub","round":"continuation"}`,
+			FinishReason: "stop",
+		}, nil
+	}
+	return aiprovider.GenerateResult{
+		Content:      "",
+		Raw:          `{"provider":"empty_content_stub","round":"first"}`,
+		FinishReason: p.firstFinishReason,
+	}, nil
+}
+
+func TestHandleTaskEmptyContentFailsWithoutWritingRecap(t *testing.T) {
+	fix := setupRecapTest(t)
+	setupRecapReadySession(t, fix, string(state.StatusASRDone))
+
+	h := NewHandler(fix.cfg, fix.sessions, fix.states, emptyContentProvider{firstFinishReason: "stop"}, fix.glossaryStore, nil, nil)
+	task := worker.Task{ID: "empty-recap", ChannelID: "ch1", SessionID: "ch1_live_20260101_120000", Type: TaskType, Payload: "{}"}
+	err := h.HandleTask(context.Background(), task, &noopReporter{})
+	if err == nil {
+		t.Fatal("expected error for empty recap content")
+	}
+	if !strings.Contains(err.Error(), "empty content") {
+		t.Fatalf("error = %v, want empty content error", err)
+	}
+
+	// 不落盘、session 不进 recap_done
+	recapDir := filepath.Join(fix.cfg.OutputRoot, "ch1", "live_20260101_120000", "recap")
+	matches, _ := filepath.Glob(filepath.Join(recapDir, "直播回顾_*.md"))
+	if len(matches) != 0 {
+		t.Fatalf("recap md should not be written, got %v", matches)
+	}
+	sess, getErr := fix.sessions.Get(context.Background(), task.SessionID)
+	if getErr != nil {
+		t.Fatalf("get session: %v", getErr)
+	}
+	if sess.Status != string(state.StatusASRDone) {
+		t.Fatalf("session status = %q, want asr_done (not advanced)", sess.Status)
+	}
+}
+
+func TestHandleTaskEmptyContentLengthRescuedByContinuation(t *testing.T) {
+	fix := setupRecapTest(t)
+	setupRecapReadySession(t, fix, string(state.StatusASRDone))
+	fix.cfg.RecapAI.MaxContinuations = 2
+
+	h := NewHandler(fix.cfg, fix.sessions, fix.states, emptyContentProvider{firstFinishReason: "length", continuation: "# 续写救回的回顾\n\n正文内容。"}, fix.glossaryStore, nil, nil)
+	task := worker.Task{ID: "rescued-recap", ChannelID: "ch1", SessionID: "ch1_live_20260101_120000", Type: TaskType, Payload: "{}"}
+	if err := h.HandleTask(context.Background(), task, &noopReporter{}); err != nil {
+		t.Fatalf("HandleTask should succeed via continuation rescue: %v", err)
+	}
+
+	sess, getErr := fix.sessions.Get(context.Background(), task.SessionID)
+	if getErr != nil {
+		t.Fatalf("get session: %v", getErr)
+	}
+	if sess.Status != string(state.StatusRecapDone) {
+		t.Fatalf("session status = %q, want recap_done", sess.Status)
+	}
+	recapDir := filepath.Join(fix.cfg.OutputRoot, "ch1", "live_20260101_120000", "recap")
+	matches, _ := filepath.Glob(filepath.Join(recapDir, "直播回顾_*.md"))
+	if len(matches) != 1 {
+		t.Fatalf("recap md should be written exactly once, got %v", matches)
+	}
+	data, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatalf("read recap md: %v", err)
+	}
+	if !strings.Contains(string(data), "续写救回的回顾") {
+		t.Fatalf("recap md should contain continuation content, got: %s", string(data)[:min(200, len(string(data)))])
+	}
+}

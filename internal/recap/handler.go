@@ -766,6 +766,14 @@ func (h *Handler) HandleTask(ctx context.Context, task worker.Task, reporter wor
 		rawParts = append(rawParts, contResult.Raw)
 		finishReason = contResult.FinishReason
 	}
+
+	// H4(2026-08-15 全项目审核):MCP agent loop 在 maxRounds 耗尽/token 预算超限时可返回
+	// 空正文(仅 tool_calls,loop.go 直接 return result, nil),普通 Generate 路径的空 content
+	// 分流重试在 provider 层,agent loop 绕过了它。守卫放续写循环之后——空正文+finish_reason=
+	// length 的续写救回路径不受影响;空结果不落盘、不推进状态(对齐 ISSUE-007 防线)。
+	if strings.TrimSpace(recap) == "" {
+		return fmt.Errorf("recap provider returned empty content (finish_reason=%s)", finishReason)
+	}
 	raw := combineRawResponses(rawParts)
 
 	// Extract suggested terms from raw provider output before cleanup.
