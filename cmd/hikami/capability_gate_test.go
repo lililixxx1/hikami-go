@@ -65,6 +65,19 @@ func TestAutoChainGateAttachedServerWins(t *testing.T) {
 	}
 }
 
+// TestAutoChainGateServerBlocksDespiteStartupSnapshot M14 审核 Minor:钉死
+// 「server 非 nil 状态优先于 fallback」的阻断方向——启动快照 true 但 server 刷新为
+// false 时必须拦截,防止未来分支顺序被改坏(先查 fallback)时无测试可抓。
+func TestAutoChainGateServerBlocksDespiteStartupSnapshot(t *testing.T) {
+	startup := &hzruntime.Status{Capabilities: caps(true, true, true)}
+	gate := newAutoChainCapabilityGate(startup)
+	gate.attach(&stubRuntimeStatusSource{status: &hzruntime.Status{Capabilities: caps(false, false, false)}})
+
+	if gate.enabled(func(c hzruntime.Capabilities) bool { return c.ASRSubmit }) {
+		t.Fatal("server 当前 ASRSubmit=false 应拦截(启动快照 true 不应胜出)")
+	}
+}
+
 // TestAutoChainGateServerNilStatusFallsBack M14:attach 了但 server 状态尚未就绪
 // (CurrentRuntimeStatus 返回 nil)时回退启动快照;全为 nil 保守视为不可用。
 func TestAutoChainGateServerNilStatusFallsBack(t *testing.T) {
