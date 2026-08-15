@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/ulikunitz/xz"
 )
 
 func writeZipArchive(t *testing.T, entries map[string]string) *bytes.Reader {
@@ -54,6 +56,36 @@ func writeTgzArchive(t *testing.T, entries map[string]string) *bytes.Reader {
 	}
 	if err := gz.Close(); err != nil {
 		t.Fatalf("close gzip: %v", err)
+	}
+	return bytes.NewReader(buffer.Bytes())
+}
+
+func writeTxzArchive(t *testing.T, entries map[string]string) *bytes.Reader {
+	t.Helper()
+	var buffer bytes.Buffer
+	xw, err := xz.NewWriter(&buffer)
+	if err != nil {
+		t.Fatalf("new xz writer: %v", err)
+	}
+	writer := tar.NewWriter(xw)
+	for name, content := range entries {
+		header := &tar.Header{
+			Name: name,
+			Mode: 0o644,
+			Size: int64(len(content)),
+		}
+		if err := writer.WriteHeader(header); err != nil {
+			t.Fatalf("write tar header: %v", err)
+		}
+		if _, err := writer.Write([]byte(content)); err != nil {
+			t.Fatalf("write tar entry: %v", err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close tar: %v", err)
+	}
+	if err := xw.Close(); err != nil {
+		t.Fatalf("close xz: %v", err)
 	}
 	return bytes.NewReader(buffer.Bytes())
 }
@@ -147,6 +179,39 @@ func TestExtractArchive_UnsupportedFormat(t *testing.T) {
 	}
 }
 
+// TestExtractArchive_TxzFormat M4(2026-08-15):linux 兜底资产是 BtbN 的 .tar.xz,
+// txz 分支持有性回归——修复前该调用返回 "unsupported ffmpeg archive format"。
+func TestExtractArchive_TxzFormat(t *testing.T) {
+	reader := writeTxzArchive(t, map[string]string{
+		"pkg/bin/ffmpeg":  "binary",
+		"pkg/bin/ffprobe": "probe",
+	})
+	destDir := t.TempDir()
+	if err := extractArchive(reader, int64(reader.Len()), "txz", destDir); err != nil {
+		t.Fatalf("extractArchive: %v", err)
+	}
+	for name, want := range map[string]string{
+		"pkg/bin/ffmpeg":  "binary",
+		"pkg/bin/ffprobe": "probe",
+	} {
+		content, err := os.ReadFile(filepath.Join(destDir, filepath.FromSlash(name)))
+		if err != nil {
+			t.Fatalf("read extracted %s: %v", name, err)
+		}
+		if string(content) != want {
+			t.Fatalf("%s content = %q, want %q", name, string(content), want)
+		}
+	}
+}
+
+func TestExtractTxz_SkipsPathTraversal(t *testing.T) {
+	// tar.xz 内含 ../ 穿越条目应返回错误(与 tgz/zip 路径安全对称)
+	reader := writeTxzArchive(t, map[string]string{"../ffmpeg": "binary"})
+	if err := extractTxz(reader, t.TempDir()); err == nil {
+		t.Fatalf("expected error for path traversal")
+	}
+}
+
 func TestFFmpegVersionDir(t *testing.T) {
 	// ffmpeg 版本目录应包含 outputRoot/.runtime/ffmpeg/platform/version
 	outputRoot := t.TempDir()
@@ -227,4 +292,35 @@ func TestLastFFmpegResolution_ConcurrentAccess(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// TestCurrentManifest_LinuxAssetsPinned M4(2026-08-15):linux 下载兜底钉到具体 BtbN
+// autobuild,不再用内容每日重写的 latest tag。校验三件事:① URL 指向具体 autobuild
+// (含 /download/autobuild-,非 latest);② SHA256 已钉(64 位十六进制),下载后必经校验;
+// ③ FFmpegPath/FFprobePath 顶层目录前缀与 URL 内归档名一致(BtbN autobuild 顶层目录是
+// ffmpeg-N-xxxx-gpl,与 latest 的固定名不同,前缀错了解包后就找不到二进制)。
+func TestCurrentManifest_LinuxAssetsPinned(t *testing.T) {
+	manifest := CurrentManifest()
+	for _, platform := range []string{"linux-amd64", "linux-arm64"} {
+		asset, ok := manifest[platform]
+		if !ok {
+			t.Fatalf("%s missing from manifest", platform)
+		}
+		if !strings.Contains(asset.ArchiveURL, "/download/autobuild-") {
+			t.Errorf("%s ArchiveURL 未钉到具体 autobuild(仍指向可变 latest?): %s", platform, asset.ArchiveURL)
+		}
+		if len(asset.ArchiveSHA256) != 64 || strings.Trim(asset.ArchiveSHA256, "0123456789abcdef") != "" {
+			t.Errorf("%s ArchiveSHA256 不是 64 位小写十六进制: %q", platform, asset.ArchiveSHA256)
+		}
+		archive := asset.ArchiveURL[strings.LastIndex(asset.ArchiveURL, "/")+1:]
+		prefix := strings.TrimSuffix(archive, ".tar.xz") + "/"
+		if !strings.HasPrefix(asset.FFmpegPath, prefix) || !strings.HasPrefix(asset.FFprobePath, prefix) {
+			t.Errorf("%s 路径前缀与归档名不一致: want prefix %q, got ffmpeg=%q ffprobe=%q",
+				platform, prefix, asset.FFmpegPath, asset.FFprobePath)
+		}
+	}
+	// windows 仍只走 embedded,不提供下载兜底(既有约定)。
+	if manifest["windows-amd64"].ArchiveURL != "" {
+		t.Errorf("windows-amd64 ArchiveURL 应留空(不走下载兜底)")
+	}
 }

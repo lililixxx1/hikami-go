@@ -50,20 +50,28 @@ func CurrentManifest() map[string]FFmpegAsset {
 	const licenseURL = "https://github.com/BtbN/FFmpeg-Builds/blob/master/LICENSE"
 
 	return map[string]FFmpegAsset{
+		// 2026-08-15(M4):linux 下载兜底从可变的 latest tag 钉到具体 autobuild
+		// (autobuild-2026-08-13-17-03)。latest tag 文件名稳定但内容每日重写,不钉版本
+		// 无 SHA 校验可言,且 BtbN 改内部目录前缀时会静默找不到路径。钉版后补上
+		// ArchiveSHA256(SHA256 取自该 release 的 checksums.sha256 资产)。
+		// Version 保持不变:txz 解包此前 100% 失败,不存在已缓存的 linux 下载产物,无需
+		// bump 失效缓存(windows 嵌入 zip 共用该 version,bump 会触发无谓重解包)。
 		"linux-amd64": {
 			Version:       version,
-			ArchiveURL:    "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz",
+			ArchiveURL:    "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-13-17-03/ffmpeg-N-126122-gca821e458a-linux64-gpl.tar.xz",
+			ArchiveSHA256: "d9d80d1e161338b304ac4a5dab8cf7cd0e572b284b7ffbd17c12bdd517651d3e",
 			ArchiveFormat: "txz",
-			FFmpegPath:    "ffmpeg-master-latest-linux64-gpl/bin/ffmpeg",
-			FFprobePath:   "ffmpeg-master-latest-linux64-gpl/bin/ffprobe",
+			FFmpegPath:    "ffmpeg-N-126122-gca821e458a-linux64-gpl/bin/ffmpeg",
+			FFprobePath:   "ffmpeg-N-126122-gca821e458a-linux64-gpl/bin/ffprobe",
 			LicenseURL:    licenseURL,
 		},
 		"linux-arm64": {
 			Version:       version,
-			ArchiveURL:    "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linuxarm64-gpl.tar.xz",
+			ArchiveURL:    "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-13-17-03/ffmpeg-N-126122-gca821e458a-linuxarm64-gpl.tar.xz",
+			ArchiveSHA256: "870529c905a63ef48c94adb67cc3751dfd42961de80fbe6b36dc87a56502e363",
 			ArchiveFormat: "txz",
-			FFmpegPath:    "ffmpeg-master-latest-linuxarm64-gpl/bin/ffmpeg",
-			FFprobePath:   "ffmpeg-master-latest-linuxarm64-gpl/bin/ffprobe",
+			FFmpegPath:    "ffmpeg-N-126122-gca821e458a-linuxarm64-gpl/bin/ffmpeg",
+			FFprobePath:   "ffmpeg-N-126122-gca821e458a-linuxarm64-gpl/bin/ffprobe",
 			LicenseURL:    licenseURL,
 		},
 		"windows-amd64": {

@@ -20,6 +20,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ulikunitz/xz"
+
 	"hikami-go/internal/config"
 )
 
@@ -239,6 +241,15 @@ func extractArchive(reader io.ReaderAt, size int64, format, destDir string) erro
 			return errors.New("tgz archive reader must support seek")
 		}
 		return extractTgz(readSeeker, destDir)
+	case "txz":
+		// M4(2026-08-15 全项目审核):linux 兜底资产是 BtbN 的 .tar.xz,旧代码无 txz 分支
+		// 下载后必然 "unsupported ffmpeg archive format" 解包失败。用纯 Go 的
+		// ulikunitz/xz(无 cgo、零传递依赖,交叉编译安全;下载内容经 SHA256 钉版校验)。
+		readSeeker, ok := reader.(io.ReadSeeker)
+		if !ok {
+			return errors.New("txz archive reader must support seek")
+		}
+		return extractTxz(readSeeker, destDir)
 	default:
 		return fmt.Errorf("unsupported ffmpeg archive format: %s", format)
 	}
@@ -289,7 +300,20 @@ func extractTgz(reader io.Reader, destDir string) error {
 	}
 	defer gz.Close()
 
-	tr := tar.NewReader(gz)
+	return extractTar(gz, destDir)
+}
+
+// extractTxz 解 .tar.xz(BtbN linux 发行物格式)。xz reader 来自 ulikunitz/xz(纯 Go)。
+func extractTxz(reader io.Reader, destDir string) error {
+	xr, err := xz.NewReader(reader)
+	if err != nil {
+		return err
+	}
+	return extractTar(xr, destDir)
+}
+
+func extractTar(reader io.Reader, destDir string) error {
+	tr := tar.NewReader(reader)
 	for {
 		header, err := tr.Next()
 		if err == io.EOF {

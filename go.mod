@@ -12,6 +12,7 @@ require (
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/spf13/viper v1.19.0
 	github.com/studio-b12/gowebdav v0.12.0
+	github.com/ulikunitz/xz v0.5.16
 	modernc.org/sqlite v1.32.0
 )
 
