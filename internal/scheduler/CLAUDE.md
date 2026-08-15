@@ -22,7 +22,7 @@
 ## 关键依赖与配置
 
 - `github.com/robfig/cron/v3`: cron 表达式解析和调度
-- `cron.discovery`: 回放发现的 cron 表达式（默认 `@every 20m`）
+- `cron.discovery`: 回放发现的 cron 表达式（默认空串即禁用，2026-07-19 起回放页「发现回放」改为独立 URL 入口不再自动遍历主播表；显式配置如 `@every 20m` 可恢复）
 - `cron.live_check`: 直播检查的 cron 表达式（默认 `@every 30s`）
 - 依赖 `discover.Manager` 执行回放发现
 - 依赖 `live_record.Manager` 执行直播检查和自动录制
@@ -31,7 +31,7 @@
 
 | Cron 任务 | 配置项 | 默认值 | 说明 |
 |-----------|--------|--------|------|
-| 回放发现 | `cron.discovery` | `@every 20m` | 遍历所有主播发现新回放 |
+| 回放发现 | `cron.discovery` | `""`（禁用） | 遍历所有主播发现新回放（默认不自动运行，需显式配置 cron 表达式） |
 | 直播检查 | `cron.live_check` | `@every 30s` | 检查所有主播直播状态，自动开始录制 |
 
 ## 相关文件清单

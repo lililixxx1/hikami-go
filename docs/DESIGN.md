@@ -132,7 +132,7 @@ graph LR
 
 ### 迁移版本
 
-当前 `internal/db/migrate.go` 的 `migrations` 切片包含 38 个物理迁移元素，业务语义版本到 v35（其中 v35 的 `runtime_settings` 表重建由 4 条 SQL 迁移 CREATE/INSERT/DROP/RENAME 完成，占物理序号 v35-v38）。
+当前 `internal/db/migrate.go` 的 `migrations` 切片包含 51 个物理迁移元素，业务语义版本到 v39（其中 v35/v36/v38/v39 的 `runtime_settings` 表重建各由 4 条 SQL 迁移 CREATE/INSERT/DROP/RENAME 完成，v37 为 `glossary_candidates` 单列 `ALTER`）。
 
 | 版本 | 内容 | 影响对象 |
 |---:|---|---|
@@ -170,7 +170,11 @@ graph LR
 | 32 | `channels` 增加 `auto_recap INTEGER NOT NULL DEFAULT 1` | per-channel 自动回顾开关 |
 | 33 | 创建 `runtime_settings` 表（`section` CHECK 6 段 / `data` JSON / `updated_at`，PRIMARY KEY(section)） | 全局运行时配置覆盖持久化 |
 | 34 | `tasks` 增加 `bypass_fail_state INTEGER NOT NULL DEFAULT 0` | 任务级 bypass fail state |
-| 35 | `runtime_settings` 表重建：CHECK 扩展到 7 段（加 `tools`），由 4 条 SQL 完成（CREATE v35 + INSERT v36 + DROP v37 + RENAME v38，占物理序号 v35-v38） | 运行时配置段扩展 |
+| 35 | `runtime_settings` 表重建：CHECK 扩展到 7 段（加 `tools`），由 4 条 SQL 完成（CREATE/INSERT/DROP/RENAME） | 运行时配置段扩展 |
+| 36 | `runtime_settings` 表重建：CHECK 扩展到 8 段（加 `mcp`，MCP 搜索工具配置），由 4 条 SQL 完成（同 v35 表重建范式） | 运行时配置段扩展 |
+| 37 | `glossary_candidates` 增加 `ai_review TEXT NOT NULL DEFAULT ''`（AI 批量复核写回的核实结论文本） | 术语候选 |
+| 38 | `runtime_settings` 表重建：CHECK 扩展到 9 段（加 `vad`，ASR 前置 VAD 静音裁剪配置），由 4 条 SQL 完成（同 v35/v36 范式） | 运行时配置段扩展 |
+| 39 | `runtime_settings` 表重建：CHECK 扩展到 10 段（加 `replay`，回放类全局自动开关配置），由 4 条 SQL 完成（同 v35/v36/v38 范式） | 运行时配置段扩展 |
 
 源码依据：`internal/db/migrate.go`
 
@@ -373,6 +377,7 @@ B 站多账号表（v25 创建），供下载/发布账号选择。
 | `created_at` | TEXT | NOT NULL DEFAULT datetime('now') |
 | `updated_at` | TEXT | NOT NULL DEFAULT datetime('now') |
 | `reviewed_at` | TEXT | 可空 |
+| `ai_review` | TEXT | NOT NULL DEFAULT ''（v37 新增，AI 批量复核写回的核实结论文本，空表示未复核） |
 
 索引：
 
@@ -382,15 +387,15 @@ B 站多账号表（v25 创建），供下载/发布账号选择。
 
 #### `runtime_settings`
 
-全局运行时配置覆盖持久化（v33 创建，v35 重建为 7 段）。`config.yaml` 降级为只读基线，UI 改动按配置段写入此表，启动时 `ApplyOverrides` 用本表覆盖 viper 加载的基线值。
+全局运行时配置覆盖持久化（v33 创建，v35/v36/v38/v39 逐步重建扩展至 10 段）。`config.yaml` 降级为只读基线，UI 改动按配置段写入此表，启动时 `ApplyOverrides` 用本表覆盖 viper 加载的基线值。
 
 | 字段 | 类型 | 约束/默认值 |
 |---|---|---|
-| `section` | TEXT | NOT NULL，CHECK IN ('publish','asr_s3','dashscope','recap_ai','webdav','archive','tools')，PRIMARY KEY |
+| `section` | TEXT | NOT NULL，CHECK IN ('publish','asr_s3','dashscope','recap_ai','webdav','archive','tools','mcp','vad','replay')，PRIMARY KEY |
 | `data` | TEXT | NOT NULL DEFAULT '{}'，CHECK `json_valid(data)` |
 | `updated_at` | TEXT | NOT NULL DEFAULT datetime('now') |
 
-v35 重建将 CHECK 白名单从 6 段扩到 7 段（新增 `tools` 段，承载 `yt_dlp`/`rclone` 路径），通过 CREATE 新表 + INSERT 回灌 + DROP 旧表 + RENAME 完成。
+多次表重建逐步扩展 CHECK 白名单：v35 加 `tools`（承载 `yt_dlp`/`rclone` 路径）、v36 加 `mcp`（MCP 搜索工具配置）、v38 加 `vad`（ASR 前置 VAD 静音裁剪配置）、v39 加 `replay`（回放类全局自动开关）。每次均通过 CREATE 临时新表 + INSERT 回灌 + DROP 旧表 + RENAME 完成（SQLite 不支持直接改 CHECK）。
 
 源码依据：`internal/db/migrate.go`、`internal/channel/channel.go`、`internal/session/session.go`、`internal/worker/task.go`、`internal/glossary/glossary.go`、`internal/secrets/secrets.go`
 
@@ -977,7 +982,7 @@ flowchart TB
 - 默认输出目录为 `./data`（2026-07-25 起,原 `hikami-go`），默认数据库为 `hikami.db`。
 - 默认命令：`ffmpeg`、`ffprobe`、`yt-dlp`、`rclone`。
 - 默认监听 `127.0.0.1:6334`（仅绑定回环；若绑非回环地址则强制要求 `web.admin_token`），worker 数为 3。
-- 默认定时：回放发现 `@every 20m`，直播检查 `@every 30s`。
+- 默认定时：回放发现默认禁用（2026-07-19 起 `cron.discovery` 默认空串，回放页发现回放改为独立 URL 入口；在 config.yaml 显式配置 `cron.discovery: "@every 20m"` 可恢复自动遍历主播表下载），直播检查 `@every 30s`。
 - `output_root`、`db_path` 必须非空；启用 Web 时 `web.listen` 必须非空。
 - `worker.num` 必须大于 0。
 - `live_record.audio_container` 必须非空，`segment_minutes` 和 `stop_grace_seconds` 不能为负。

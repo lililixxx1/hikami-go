@@ -20,7 +20,7 @@
 3. `biliutil.SetCookieEncryptionKey(cfg.CookieEncryptionKey)` 初始化 Cookie 文件 AES-256-GCM 加密密钥；密钥无效则启动失败，启用时记录 info 日志
 4. `slog.SetDefault()` 设置结构化 JSON 日志
 5. `cfg.EnsureDirs()` 创建输出目录、日志目录、数据库目录
-6. `db.Open()` + `db.Migrate()` 初始化 SQLite（当前 v35，含 recap_templates、bili_cookie_accounts、账号关联列、per-channel recap 配置、sessions.archived_at、channels.auto_recap、runtime_settings 7 段 CHECK、bypass_fail_state、tools CHECK 扩展）
+6. `db.Open()` + `db.Migrate()` 初始化 SQLite（当前 v39，含 recap_templates、bili_cookie_accounts、账号关联列、per-channel recap 配置、sessions.archived_at、channels.auto_recap、runtime_settings 10 段 CHECK（publish/asr_s3/dashscope/recap_ai/webdav/archive/tools/mcp/vad/replay）、bypass_fail_state、glossary_candidates.ai_review）
 7. **`secrets.NewStore()` + `secretsStore.LoadIntoEnv()`** 将数据库中的 API Key 加载到环境变量
 8. **`glossary.NewStore()` + 旧版术语表导入**：如果 `glossary_file` 配置存在且数据库中无全局词条，自动导入文件内容
 9. `runtime.Probe()` 探测外部工具（含平台感知安装提示），硬依赖缺失则 `os.Exit(1)`

@@ -25,7 +25,7 @@
 
 ## 数据模型
 
-**十张核心表 + 37 个迁移版本：**
+**十张核心表 + 39 个迁移版本：**
 
 1. **channels** -- 主播配置
    - `id TEXT PK`, `name`, `uid`, `live_room_id`, `replay_source_url`, `space_url`, `title_prefix`, `cookie_file`, `enabled`, `created_at`, `updated_at`
@@ -64,12 +64,12 @@
    - 唯一索引: `(channel_id, normalized_key)`
    - 索引: `(channel_id, status, score DESC, updated_at DESC)`, `(last_session_id)`
 
-10. **runtime_settings** -- 全局运行时配置覆盖（v33 新增,v35 CHECK 白名单扩展 +tools 段,v36 再扩展 +mcp 段）
+10. **runtime_settings** -- 全局运行时配置覆盖（v33 新增,v35/v36/v38/v39 逐步重建扩展 CHECK 白名单至 10 段）
    - `section TEXT PK`, `data TEXT NOT NULL DEFAULT '{}'`, `updated_at TEXT NOT NULL DEFAULT (datetime('now'))`
-   - `CHECK(section IN ('publish','asr_s3','dashscope','recap_ai','webdav','archive','tools','mcp'))` 白名单限定 8 个全局段（v35 加 tools、v36 加 mcp）
+   - `CHECK(section IN ('publish','asr_s3','dashscope','recap_ai','webdav','archive','tools','mcp','vad','replay'))` 白名单限定 10 个全局段（v35 加 tools、v36 加 mcp、v38 加 vad、v39 加 replay）
    - `CHECK(json_valid(data))` 保证 JSON 完整性
    - config.yaml 降级为只读基线，UI 改动按段存此表；启动时 `config.ApplyOverrides` 用本表覆盖 viper 基线（详见 `internal/runtimeconfig/CLAUDE.md`）
-   - **v35/v36 迁移**:SQLite 不支持直接改 CHECK,用标准表重建模式（建 runtime_settings_v3X → INSERT 复制 → DROP 旧表 → RENAME）。旧库数据全量回灌无损升级（v35 回灌 6 段、v36 回灌 7 段）。
+   - **v35/v36/v38/v39 迁移**:SQLite 不支持直接改 CHECK,用标准表重建模式（建 runtime_settings_v3X → INSERT 复制 → DROP 旧表 → RENAME）。旧库数据全量回灌无损升级（v35 回灌 6 段、v36 回灌 7 段、v38 回灌 8 段、v39 回灌 9 段）。
 
 **迁移版本：**
 
@@ -113,6 +113,7 @@
 | 36 | `runtime_settings` CHECK 白名单扩展 `+mcp`（第 8 段，MCP 搜索工具配置）——表重建模式（同 v35 范式） |
 | 37 | `glossary_candidates.ai_review TEXT` 列（AI 批量复核写回的核实结论文本，Phase 5 批量复核功能） |
 | 38 | `runtime_settings` CHECK 白名单扩展 `+vad`（第 9 段，ASR 前置 VAD 静音裁剪配置）——表重建模式（同 v35/v36 范式） |
+| 39 | `runtime_settings` CHECK 白名单扩展 `+replay`（第 10 段，回放类全局自动开关配置）——表重建模式（同 v35/v36/v38 范式） |
 
 ## 测试与质量
 
@@ -143,7 +144,7 @@ A: `recap_templates` 表中的 `system_prompt` 和 `user_format` 字段使用 `_
 ## 相关文件清单
 
 - `db.go` -- 数据库打开
-- `migrate.go` -- 迁移定义与执行（38 个版本）
+- `migrate.go` -- 迁移定义与执行（39 个版本）
 - `migrate_test.go` -- 迁移测试（11 个用例）
 
 ## 变更记录 (Changelog)

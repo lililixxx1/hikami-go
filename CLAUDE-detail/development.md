@@ -108,7 +108,7 @@ make build-windows-desktop-ffmpeg     # 内嵌 ffmpeg + 系统托盘 + 隐藏控
 - 本项目是 Go 单体服务，修改时注意 `internal/` 下各模块的职责边界。
 - 状态机转换表在 `internal/state/state.go` 的 `transitions` 变量中定义。
 - 任务类型常量在各模块中定义（如 `download.TaskType`、`normalize.TaskType`）。
-- 数据库迁移在 `internal/db/migrate.go` 中，新增表需追加到 `migrations` 切片。当前 38 个物理迁移元素，业务语义版本到 v35（v35 的 runtime_settings 表重建占 v35-v38 共 4 个元素 CREATE/INSERT/DROP/RENAME）。
+- 数据库迁移在 `internal/db/migrate.go` 中，新增表需追加到 `migrations` 切片。当前 51 个物理迁移元素，业务语义版本到 v39（v35/v36/v38/v39 的 runtime_settings 表重建各占 4 个元素 CREATE/INSERT/DROP/RENAME，v37 为 glossary_candidates.ai_review 单列 ALTER）。
 - 外部工具交互全部通过接口抽象，mock 时实现对应接口即可。
 - API 路由注册在 `internal/handler/server.go` 的 `routes()` 方法中。
 - 配置结构体在 `internal/config/config.go` 中，新增配置项需同时更新 `setDefaults`。

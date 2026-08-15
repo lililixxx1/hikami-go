@@ -21,7 +21,9 @@ worker:
   num: 3
 
 cron:
-  discovery: "@every 20m"
+  # discovery: 回放自动发现定时。默认禁用（空串）——2026-07-19 起回放页「发现回放」改为独立 URL 入口，
+  # scheduler 不再自动遍历主播表下载。若需要恢复自动发现下载，显式配置如 "@every 20m"。
+  discovery: ""
   live_check: "@every 30s"
 
 logs:

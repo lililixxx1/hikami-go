@@ -134,7 +134,7 @@ type resumableTranscriber interface {
 
 **配置依赖：**
 - `dashscope.api_key_env` + 环境变量 `DASHSCOPE_API_KEY`
-- `dashscope.model` (默认 `qwen3-asr-flash-filetrans`)
+- `dashscope.model` (默认 `fun-asr`；可选 `qwen-asr`/`qwen3-asr-flash-filetrans`，注意仅 `fun-asr` 支持术语表热词注入 vocabulary)
 - `dashscope.language` (默认 `zh`)
 - `asr_temp.enabled` + `asr_temp.local_dir` + `asr_temp.public_base_url`（本地 HTTP 模式，优先级 1）
 - `asr_s3.endpoint` + `asr_s3.bucket` + `asr_s3.access_key_id` + `asr_s3.access_key_secret` + `asr_s3.public_url_prefix`（S3 模式，优先级 2）

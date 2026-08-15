@@ -107,3 +107,7 @@ config.yaml.bak*
 # ZCode agent 工作目录(会话计划/缓存,不应入库)
 .zcode/
 
+
+# Promo video render artifacts
+docs/promo-video/video/node_modules/
+docs/promo-video/video/out/

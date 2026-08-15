@@ -14,7 +14,7 @@
 配置加载 (config.yaml)
   → 日志初始化 (slog, JSON/text)
   → 目录创建 (output_root, raw/, package/, recap/, asr/)
-  → 数据库打开+迁移 (SQLite, 38 个物理迁移元素,业务语义到 v35)
+  → 数据库打开+迁移 (SQLite, 51 个物理迁移元素,业务语义到 v39)
   → 密钥加载 (secrets → 环境变量)
   → 术语表初始化 (数据库 + 旧 glossary_file 自动导入)
   → 回顾模板初始化 (TemplateStore)
@@ -417,7 +417,7 @@ Gin 路由 (`internal/handler/server.go`)：
 
 ## 8. 数据存储
 
-### SQLite 表结构 (业务语义 v35)
+### SQLite 表结构 (业务语义 v39)
 
 | 表 | 用途 |
 |----|------|
