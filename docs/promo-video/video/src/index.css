@@ -1,0 +1,8 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body, #root { height: 100%; }
+body {
+  font-family: "PingFang SC","Microsoft YaHei","Helvetica Neue",sans-serif;
+  -webkit-font-smoothing: antialiased;
+  background: #000;
+}
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
