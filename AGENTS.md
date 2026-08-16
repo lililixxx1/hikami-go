@@ -231,6 +231,13 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
 
 - 2026-08-16(日):**2026-08-15 全项目审核修复批次收尾 — 7 High + 14 Medium + 3 跨域 + 14 Low 全部落地,35 commit(`1c1898e..84c5e34`),P2 最后 8 项(L8-L15)于本日完成**。上游:2026-08-14/15 两轮审核(12 提交增量 + 全项目 40k 行 Go/23k 行前端,7 High 全部双方确认)→ 修复计划 `plans/plan-full-review-fixes-2026-08-15.md`(plan-code-reviewer 三轮审核 r3 APPROVED,25 步实施顺序)。前 24 步(H1-H7/M1-M14/X1-X2/L2-L7/L15)已于 08-15 落地,本日完成剩余 P2 与终态验证:
 
+  **行为变化(计划 §7 要求显式记录,影响升级预期)**:
+  - **H3**(fe442c5/f260f05):服务停机/取消发生在录制中时,能收尾的场次直接完成收尾
+    (保留音频送 normalize)而非整场判 failed——重启后不再需要手工救场。
+  - **M5**(96c4e17):重连分段文件编号语义变化——CDN 重试段从 part.2 起改为 part.1 起,
+    混合场景全局唯一。part 为瞬态产物(合并进 audio.m4a 后删除),无下游影响。
+  - **H7**(be96bcb/ad7d935):`POST /api/notify/test` 响应从恒 200 变为 409(未配置)/500(发送失败)
+    带原因——正是修复意图;前端无消费方,复审确认零回归。
   **本日 4 个 commit(P2 收尾)**:
   - `eeccf00` **L13**:DashScope temp publisher 对象键加 session ID 前缀——所有场次的临时音频都叫 `audio.asr.mp3`,共用同一 objectKey 在 OSS 端互相覆盖;同场重跑复用同 key 幂等(12 提交增量审核遗留项)。
   - `e3f0e27` **L14**:discover 多 P 合集 SourceID 追加分 P 后缀——多 P 的 entry.ID 全是同一 BV,裸用会命中 `(channel,source_type,source_id)` 唯一约束把第二个分 P 吞掉。新 `biliutil.SourceIDWithPart(videoID, rawURL)`(与 `ExtractVideoSourceID` 单一来源化 `_pNNN` 格式,对齐 `download.CreateFromURL` 口径)。**计划偏差(实施时验证发现)**:计划原方案直接换 `ExtractVideoSourceID(entryURL(entry))`,但该函数对不匹配 BV 正则的 ID 走 sha1 兜底,会改变「entry.ID 原样」的既有去重口径(与生产库历史 session 脱节),改为锚定 entry.ID 只追加 p 后缀,单 P/非 BV 历史去重连续。**一次性影响(批量审核 Important)**:
