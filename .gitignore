@@ -111,3 +111,7 @@ config.yaml.bak*
 # Promo video render artifacts
 docs/promo-video/video/node_modules/
 docs/promo-video/video/out/
+
+# Promo video 本机工作目录与分发包(HTML 早期版,已被 docs/promo-video/ Remotion 版取代)
+/hikami_intro/
+/hikami_intro.zip
