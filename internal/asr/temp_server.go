@@ -27,8 +27,14 @@ func (s *TempAudioServer) MountHandler() http.Handler {
 	return http.StripPrefix(asrTempPrefix, http.FileServer(http.Dir(s.cfg.ASRTemp.LocalDir)))
 }
 
+// ObjectPath 是音频对象在本 server 下的相对路径,Publish 与
+// DashScopeTranscriber.remotePathFor(成功后清理)共用同一构造。
+func (s *TempAudioServer) ObjectPath(sessionInfo session.Session) string {
+	return filepath.ToSlash(filepath.Join(sessionInfo.ChannelID, sessionInfo.ID, "audio.asr.mp3"))
+}
+
 func (s *TempAudioServer) Publish(ctx context.Context, localAudio string, sessionInfo session.Session) (publicURL string, objectPath string, err error) {
-	objectPath = filepath.ToSlash(filepath.Join(sessionInfo.ChannelID, sessionInfo.ID, "audio.asr.mp3"))
+	objectPath = s.ObjectPath(sessionInfo)
 	targetPath, err := s.localPath(objectPath)
 	if err != nil {
 		return "", "", err

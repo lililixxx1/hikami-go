@@ -27,13 +27,14 @@ var (
 )
 
 type Handler struct {
-	cfg         *config.Config
-	sessions    *session.Store
-	states      *state.Store
-	transcriber Transcriber
-	glossary    *glossary.Store
-	vad         *VADProcessor // nil = 禁用(老测试不注入,零回归;2026-07-27 VAD 引入)
-	onSuccess   func(ctx context.Context, task worker.Task)
+	cfg           *config.Config
+	sessions      *session.Store
+	states        *state.Store
+	transcriber   Transcriber
+	glossary      *glossary.Store
+	vad           *VADProcessor // nil = 禁用(老测试不注入,零回归;2026-07-27 VAD 引入)
+	onSuccess     func(ctx context.Context, task worker.Task)
+	payloadWriter taskPayloadWriter // nil 时 submit 后不持久化 taskID(仅 WARN,行为=修复前;ISSUE-006)
 }
 
 type Result struct {
@@ -47,16 +48,23 @@ type Transcriber interface {
 	Transcribe(ctx context.Context, audioPath string, sessionInfo session.Session) (Result, error)
 }
 
+// submittingTranscriber 由支持「提交→持久化→等待」两阶段的转写器实现(当前仅
+// DashScopeTranscriber)。拆分目的:submit 成功后立即把远端任务 ID 持久化进
+// worker 任务 payload,崩溃恢复重入时走 await 轮询既有远端任务而非重新提交
+// (ISSUE-006,见 plans/plan-issue006-dashscope-taskid-persist-2026-08-16.md)。
+type submittingTranscriber interface {
+	SubmitASRTask(ctx context.Context, audioPath string, sessionInfo session.Session, vocabulary map[string]int) (string, error)
+	AwaitASRTask(ctx context.Context, taskID string, sessionInfo session.Session) (Result, error)
+}
+
+// taskPayloadWriter 是持久化任务 payload 的最小接口(照 publisher M11 范式,
+// 避免 asr 反向持有整个 worker.Store 构造依赖),main.go 注入 workerPool.Store()。
+type taskPayloadWriter interface {
+	UpdatePayload(ctx context.Context, id string, payload string) error
+}
+
 type VocabularyTranscriber interface {
 	TranscribeWithVocabulary(ctx context.Context, audioPath string, sessionInfo session.Session, vocabulary map[string]int) (Result, error)
-}
-
-type resumableTranscriber interface {
-	TranscribeWithTaskID(ctx context.Context, audioPath string, sessionInfo session.Session, taskID string) (Result, error)
-}
-
-type resumableVocabularyTranscriber interface {
-	TranscribeWithTaskIDAndVocabulary(ctx context.Context, audioPath string, sessionInfo session.Session, taskID string, vocabulary map[string]int) (Result, error)
 }
 
 type LocalTranscriber struct{}
@@ -98,6 +106,12 @@ func (h *Handler) SetOnSuccess(fn func(ctx context.Context, task worker.Task)) {
 	h.onSuccess = fn
 }
 
+// SetTaskPayloadWriter 注入任务 payload 写入能力(main.go 用 workerPool.Store(),
+// ISSUE-006:submit 成功后立即持久化 dashscope_task_id,崩溃恢复重入走 await)。
+func (h *Handler) SetTaskPayloadWriter(w taskPayloadWriter) {
+	h.payloadWriter = w
+}
+
 func (h *Handler) Register(pool *worker.Pool) {
 	pool.Register(TaskType, h.HandleTask)
 }
@@ -116,12 +130,18 @@ func (h *Handler) CreateTask(ctx context.Context, pool *worker.Pool, sessionID s
 		}
 		return worker.Task{}, err
 	}
-	if _, ok, err := pool.Store().ActiveBySessionAndType(ctx, sessionInfo.ID, TaskType); err != nil {
+	// G-1(2026-08-16,对齐 M11):活跃检查 + 创建原子化。旧「先 ActiveBySessionAndType
+	// 查、再 Enqueue 插」两步在竞态下会创建重复 asr 任务——重复任务在 Apply(EventASRSubmitted)
+	// 同步点失败,把正在转写(或已 asr_done)的 session 经 EventTaskFailed 降级,状态闪断。
+	// created=false 即已有活跃任务,维持 409 语义。
+	task, created, err := pool.EnqueueIfNoActive(ctx, worker.CreateInput{ChannelID: sessionInfo.ChannelID, SessionID: sessionInfo.ID, Type: TaskType, Payload: "{}"})
+	if err != nil {
 		return worker.Task{}, err
-	} else if ok {
+	}
+	if !created {
 		return worker.Task{}, fmt.Errorf("%w: active asr task already exists for session %s", worker.ErrTaskConflict, sessionInfo.ID)
 	}
-	return pool.Enqueue(ctx, worker.CreateInput{ChannelID: sessionInfo.ChannelID, SessionID: sessionInfo.ID, Type: TaskType, Payload: "{}"})
+	return task, nil
 }
 
 func (h *Handler) HandleTask(ctx context.Context, task worker.Task, reporter worker.Reporter) error {
@@ -249,6 +269,17 @@ func remapResultTimeline(result *Result, sm *SilenceMap) {
 	result.SRT = buildSRT(result.Segments)
 }
 
+// transcribe 是付费安全的转写决策树(ISSUE-006,2026-08-16):
+//
+//  1. payload 有 dashscope_task_id(崩溃恢复重入)→ await 轮询既有远端任务(零付费)。
+//     远端已终态失败(ErrDashScopeTaskDead)→ 落到 2 重新提交(旧任务已死,重提交合法);
+//     网络/超时等瞬态错误 → fail-closed 直接失败——远端任务可能仍在运行,静默重提交=双付费。
+//     人工 retry 保留 payload 里的 taskID,重新进入本方法继续 await。
+//  2. 新提交 → SubmitASRTask → 立即持久化 taskID → await。此步的 await 返回任何错误
+//     (含 ErrDashScopeTaskDead)一律失败——dead-fallback 仅限第 1 步,否则「提交后立刻
+//     FAILED」的远端任务会在同一 attempt 内 submit→dead→submit 无限重提交付费任务。
+//  3. 转写器不支持两阶段(如 LocalTranscriber)→ 原有单次调用路径(零回归)。
+//     payload 带 ID 而转写器无两阶段能力时打 WARN 再降级(消除静默重付费入口)。
 func (h *Handler) transcribe(ctx context.Context, task worker.Task, audioPath string, sessionInfo session.Session) (Result, error) {
 	payload := asrTaskPayload{}
 	_ = json.Unmarshal([]byte(task.Payload), &payload)
@@ -261,18 +292,59 @@ func (h *Handler) transcribe(ctx context.Context, task worker.Task, audioPath st
 			vocabulary = nil
 		}
 	}
+	submitter, canSubmit := h.transcriber.(submittingTranscriber)
 	if payload.DashScopeTaskID != "" {
-		if transcriber, ok := h.transcriber.(resumableVocabularyTranscriber); ok {
-			return transcriber.TranscribeWithTaskIDAndVocabulary(ctx, audioPath, sessionInfo, payload.DashScopeTaskID, vocabulary)
+		if canSubmit {
+			result, err := submitter.AwaitASRTask(ctx, payload.DashScopeTaskID, sessionInfo)
+			if err == nil {
+				return result, nil
+			}
+			if !errors.Is(err, ErrDashScopeTaskDead) {
+				return Result{}, err
+			}
+			slog.WarnContext(ctx, "asr: remote dashscope task dead, resubmitting",
+				"session_id", task.SessionID, "dashscope_task_id", payload.DashScopeTaskID, "error", err)
+		} else {
+			slog.WarnContext(ctx, "asr: task payload has dashscope_task_id but transcriber does not support resume; falling back to full transcribe",
+				"session_id", task.SessionID, "dashscope_task_id", payload.DashScopeTaskID)
 		}
-		if transcriber, ok := h.transcriber.(resumableTranscriber); ok {
-			return transcriber.TranscribeWithTaskID(ctx, audioPath, sessionInfo, payload.DashScopeTaskID)
+	}
+	if canSubmit {
+		taskID, err := submitter.SubmitASRTask(ctx, audioPath, sessionInfo, vocabulary)
+		if err != nil {
+			return Result{}, err
 		}
+		h.persistDashScopeTaskID(ctx, task, taskID)
+		return submitter.AwaitASRTask(ctx, taskID, sessionInfo)
 	}
 	if transcriber, ok := h.transcriber.(VocabularyTranscriber); ok {
 		return transcriber.TranscribeWithVocabulary(ctx, audioPath, sessionInfo, vocabulary)
 	}
 	return h.transcriber.Transcribe(ctx, audioPath, sessionInfo)
+}
+
+// persistDashScopeTaskID 把远端任务 ID 写进 worker 任务 payload(unmarshal→set→
+// 覆盖写;当前 asrTaskPayload 仅 dashscope_task_id 一个字段,asr 任务 payload 无其他
+// 写入方,round-trip 无丢失面)。best-effort:失败仅 WARN 不中断——中断会浪费已提交的
+// 付费任务;代价是崩溃后失去恢复锚点,重入会重新提交(残余窗口,见 KNOWN_ISSUES.md ISSUE-006)。
+func (h *Handler) persistDashScopeTaskID(ctx context.Context, task worker.Task, taskID string) {
+	if h.payloadWriter == nil {
+		slog.WarnContext(ctx, "asr: payload writer not injected, dashscope task id not persisted (crash before completion would resubmit)",
+			"task_id", task.ID, "dashscope_task_id", taskID)
+		return
+	}
+	payload := asrTaskPayload{}
+	_ = json.Unmarshal([]byte(task.Payload), &payload)
+	payload.DashScopeTaskID = taskID
+	data, err := json.Marshal(payload)
+	if err != nil {
+		slog.WarnContext(ctx, "asr: marshal task payload failed", "task_id", task.ID, "error", err)
+		return
+	}
+	if err := h.payloadWriter.UpdatePayload(ctx, task.ID, string(data)); err != nil {
+		slog.WarnContext(ctx, "asr: persist dashscope task id failed (crash before completion would resubmit)",
+			"task_id", task.ID, "dashscope_task_id", taskID, "error", err)
+	}
 }
 
 type asrTaskPayload struct {

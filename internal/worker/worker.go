@@ -351,12 +351,12 @@ func (p *Pool) recoverRunning(ctx context.Context) error {
 	for _, task := range tasks {
 		switch task.Type {
 		case "asr", "asr_poll", "upload":
-			// 注（已知遗留，见 docs/KNOWN_ISSUES.md ISSUE-006）：此处无条件把进行中态 session 降到
-			// failed 再重跑，若崩溃恰好发生在任务状态推进事件已 Apply 但 worker MarkSucceeded 之前
-			// （如 ASR 已 Apply(EventASRSucceeded) 让 session 进 asr_done），会把已完成的工作降级并
-			// 重新执行远端付费操作（ASR 重新提交 DashScope）。该"崩溃恢复幂等性"问题需要统一的
-			// dashscope_task_id 持久化 + 下游任务幂等创建设计，超出本次热修范围。本次确定性修复：
-			// 消除"session 卡在 asr_submitted 导致重入 Apply 失败"的卡死（用户报告的实际问题）。
+			// 无条件 reset + 重跑的幂等性由数据层保证(2026-08-16 ISSUE-006 修复,
+			// 见 plans/plan-issue006-dashscope-taskid-persist-2026-08-16.md):ASR 的
+			// DashScope submit 成功后任务 ID 即持久化进 payload,重入 HandleTask 走
+			// await 轮询既有远端任务,不再重新提交付费任务。曾评估的「状态分流」
+			// (读 session 状态跳过重跑)因 onSuccess 崩溃窗口会断 recap 自动链被否决
+			// (r8/r9,记录于 docs/KNOWN_ISSUES.md)。asr_poll 类型无创建方,历史遗留。
 			recovered, recoverErr := p.store.ResetToPending(ctx, task.ID)
 			if recoverErr != nil {
 				slog.Error("failed to recover task, marking as failed",

@@ -170,6 +170,14 @@ func TestCreateTaskActiveConflict(t *testing.T) {
 	if !errors.Is(err, worker.ErrTaskConflict) {
 		t.Fatalf("error = %v, want worker.ErrTaskConflict", err)
 	}
+	// G-1(2026-08-16,EnqueueIfNoActive):冲突时不产生重复任务行(钉死 M11 原子语义)。
+	var taskRows int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM tasks WHERE session_id = ? AND type = ?`, sessionID, TaskType).Scan(&taskRows); err != nil {
+		t.Fatalf("count tasks: %v", err)
+	}
+	if taskRows != 1 {
+		t.Fatalf("task rows = %d, want 1 (conflicting CreateTask must not create a duplicate)", taskRows)
+	}
 }
 
 func TestCreateTaskSessionNotFound(t *testing.T) {

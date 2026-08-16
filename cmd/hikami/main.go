@@ -311,6 +311,10 @@ func main() {
 	if mcpManager.HasTools() {
 		slog.Info("mcp tools available", "tools", len(mcpManager.ListTools(context.Background())))
 	}
+	// ISSUE-006(2026-08-16):DashScope submit 成功后立即把远端任务 ID 持久化进
+	// 任务 payload,崩溃恢复重入走 await 轮询既有远端任务而非重新提交付费任务。
+	// 详见 plans/plan-issue006-dashscope-taskid-persist-2026-08-16.md。
+	asrHandler.SetTaskPayloadWriter(workerPool.Store())
 	asrHandler.SetOnSuccess(func(ctx context.Context, task worker.Task) {
 		ch, err := channelStore.Get(ctx, task.ChannelID)
 		// 回放类自动链判定(2026-07-30):与 normalize 回调同构,这里管 ASR→回顾。

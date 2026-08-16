@@ -74,16 +74,16 @@ func NewConfiguredTranscriber(cfg *config.Config) Transcriber {
 	return transcriber
 }
 
-func (t *DashScopeTranscriber) Transcribe(ctx context.Context, audioPath string, sessionInfo session.Session) (Result, error) {
-	return t.transcribe(ctx, audioPath, sessionInfo, nil)
-}
+// ErrDashScopeTaskDead 表示远端 DashScope 任务已进入终态失败(FAILED/CANCELED),
+// 继续轮询同一 taskID 不可能出结果。调用方(asr.Handler)仅在「恢复重入」场景
+// 据此重新提交;新提交路径的 await 返回它时直接失败(防同 attempt 内无限重提交)。
+var ErrDashScopeTaskDead = errors.New("dashscope remote task reached terminal failure state")
 
-func (t *DashScopeTranscriber) TranscribeWithVocabulary(ctx context.Context, audioPath string, sessionInfo session.Session, vocabulary map[string]int) (Result, error) {
-	return t.transcribe(ctx, audioPath, sessionInfo, vocabulary)
-}
-
-func (t *DashScopeTranscriber) transcribe(ctx context.Context, audioPath string, sessionInfo session.Session, vocabulary map[string]int) (Result, error) {
-	startedAt := time.Now()
+// SubmitASRTask 发布音频并提交 DashScope 转写任务,返回远端任务 ID。
+// 与 AwaitASRTask 拆分的目的:submit 成功后调用方立即把 taskID 持久化进
+// worker 任务 payload,崩溃恢复重入时走 await 轮询既有远端任务而非重新提交
+// (ISSUE-006,见 plans/plan-issue006-dashscope-taskid-persist-2026-08-16.md)。
+func (t *DashScopeTranscriber) SubmitASRTask(ctx context.Context, audioPath string, sessionInfo session.Session, vocabulary map[string]int) (string, error) {
 	model := NormalizeDashScopeASRModel(t.cfg.DashScope.Model)
 	logCtx := context.WithValue(ctx, dashScopeChannelIDKey, sessionInfo.ChannelID)
 	logCtx = context.WithValue(logCtx, dashScopeSessionIDKey, sessionInfo.ID)
@@ -94,25 +94,58 @@ func (t *DashScopeTranscriber) transcribe(ctx context.Context, audioPath string,
 		"model", model,
 		"request_mode", DashScopeRequestMode(model))
 
-	publicURL, remotePath, err := t.publishAudio(ctx, audioPath, sessionInfo)
+	publicURL, _, err := t.publishAudio(ctx, audioPath, sessionInfo)
 	if err != nil {
-		return Result{}, err
+		return "", err
 	}
-	if t.cfg.ASRTemp.CleanupAfterSuccess {
-		defer t.cleanupRemote(ctx, remotePath)
-	}
-
-	taskID, submitRaw, err := t.submit(logCtx, publicURL, vocabulary)
+	taskID, _, err := t.submit(logCtx, publicURL, vocabulary)
 	if err != nil {
-		return Result{}, err
+		return "", err
 	}
 	slog.Info("dashscope asr task submitted",
 		"channel_id", sessionInfo.ChannelID,
 		"session_id", sessionInfo.ID,
 		"task_id", taskID)
-	taskRaw, resultURL, err := t.poll(logCtx, taskID)
+	return taskID, nil
+}
+
+// AwaitASRTask 轮询既有远端任务直至完成并取回结果(零提交,零计费)。
+//   - 远端 SUCCEEDED → 取结果返回;
+//   - 远端 FAILED/CANCELED → 返回 ErrDashScopeTaskDead(旧任务已终态,重提交合法);
+//   - checkTask/poll 网络错误或轮询超时 → 返回 error(fail-closed,绝不静默重提交:
+//     远端任务可能仍在运行,人工 retry 携带同一 taskID 重新进入本方法继续等待)。
+//
+// 成功且 CleanupAfterSuccess 时经 remotePathFor(与 publishAudio 同一路径构造)清理远端音频;
+// 失败路径有意保留远端文件(远端任务可能仍需该 URL),由后续 retry 成功后最终回收。
+func (t *DashScopeTranscriber) AwaitASRTask(ctx context.Context, taskID string, sessionInfo session.Session) (Result, error) {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return Result{}, fmt.Errorf("dashscope await: empty task id")
+	}
+	startedAt := time.Now()
+	logCtx := context.WithValue(ctx, dashScopeChannelIDKey, sessionInfo.ChannelID)
+	logCtx = context.WithValue(logCtx, dashScopeSessionIDKey, sessionInfo.ID)
+	slog.Info("dashscope asr task await started",
+		"channel_id", sessionInfo.ChannelID,
+		"session_id", sessionInfo.ID,
+		"task_id", taskID)
+	taskRaw, resultURL, err := t.checkTask(logCtx, taskID)
 	if err != nil {
-		return Result{}, err
+		return Result{}, fmt.Errorf("dashscope task %s check failed (remote task may still be running; retry resumes await): %w", taskID, err)
+	}
+	status := dashScopeTaskStatus(taskRaw)
+	if status == "FAILED" || status == "CANCELED" || status == "CANCELLED" {
+		return Result{}, fmt.Errorf("%w: task %s status %s", ErrDashScopeTaskDead, taskID, status)
+	}
+	if status != "SUCCEEDED" {
+		taskRaw, resultURL, err = t.poll(logCtx, taskID)
+		if err != nil {
+			if errors.Is(err, ErrDashScopeTaskDead) {
+				// poll 观察到终态失败(哨兵已含 taskID/状态),直接透传供 errors.Is 判定。
+				return Result{}, err
+			}
+			return Result{}, fmt.Errorf("dashscope task %s poll failed (remote task may still be running; retry resumes await): %w", taskID, err)
+		}
 	}
 	resultRaw := map[string]any{}
 	if resultURL != "" {
@@ -121,74 +154,61 @@ func (t *DashScopeTranscriber) transcribe(ctx context.Context, audioPath string,
 			return Result{}, err
 		}
 	}
-	result := buildResultFromDashScope(sessionInfo, submitRaw, taskRaw, resultRaw)
+	if t.cfg.ASRTemp.CleanupAfterSuccess {
+		t.cleanupRemote(ctx, t.remotePathFor(sessionInfo))
+	}
+	result := buildResultFromDashScope(sessionInfo, map[string]any{"task_id": taskID}, taskRaw, resultRaw)
 	slog.Info("dashscope asr transcribe completed",
 		"channel_id", sessionInfo.ChannelID,
 		"session_id", sessionInfo.ID,
+		"task_id", taskID,
 		"segments", len(result.Segments),
 		"transcript_len", len(result.Transcript),
 		"duration", time.Since(startedAt).String())
 	return result, nil
 }
 
-func (t *DashScopeTranscriber) TranscribeWithTaskID(ctx context.Context, audioPath string, sessionInfo session.Session, taskID string) (Result, error) {
-	return t.TranscribeWithTaskIDAndVocabulary(ctx, audioPath, sessionInfo, taskID, nil)
+func (t *DashScopeTranscriber) Transcribe(ctx context.Context, audioPath string, sessionInfo session.Session) (Result, error) {
+	return t.TranscribeWithVocabulary(ctx, audioPath, sessionInfo, nil)
 }
 
-func (t *DashScopeTranscriber) TranscribeWithTaskIDAndVocabulary(ctx context.Context, audioPath string, sessionInfo session.Session, taskID string, vocabulary map[string]int) (Result, error) {
-	taskID = strings.TrimSpace(taskID)
-	if taskID == "" {
-		return t.transcribe(ctx, audioPath, sessionInfo, vocabulary)
+// TranscribeWithVocabulary 一次性「提交+等待」组合。生产路径由 asr.Handler 编排
+// SubmitASRTask→持久化 taskID→AwaitASRTask(带崩溃恢复锚点);本组合方法无持久化
+// 能力,仅服务未接入编排的调用面(测试/外部复用)。行为差异:失败路径不再清理
+// 远端音频(fail-closed 时远端任务可能仍需该 URL),成功路径经 remotePathFor 清理。
+func (t *DashScopeTranscriber) TranscribeWithVocabulary(ctx context.Context, audioPath string, sessionInfo session.Session, vocabulary map[string]int) (Result, error) {
+	taskID, err := t.SubmitASRTask(ctx, audioPath, sessionInfo, vocabulary)
+	if err != nil {
+		return Result{}, err
 	}
-	startedAt := time.Now()
-	logCtx := context.WithValue(ctx, dashScopeChannelIDKey, sessionInfo.ChannelID)
-	logCtx = context.WithValue(logCtx, dashScopeSessionIDKey, sessionInfo.ID)
-	slog.Info("dashscope asr task recovered",
-		"channel_id", sessionInfo.ChannelID,
-		"session_id", sessionInfo.ID,
-		"task_id", taskID)
-	taskRaw, resultURL, err := t.checkTask(logCtx, taskID)
-	if err == nil {
-		status := dashScopeTaskStatus(taskRaw)
-		if status == "SUCCEEDED" {
-			resultRaw := map[string]any{}
-			if resultURL != "" {
-				resultRaw, err = t.fetchResult(logCtx, resultURL)
-				if err != nil {
-					return Result{}, err
-				}
-			}
-			result := buildResultFromDashScope(sessionInfo, map[string]any{"task_id": taskID, "recovered": true}, taskRaw, resultRaw)
-			slog.Info("dashscope asr transcribe completed",
-				"channel_id", sessionInfo.ChannelID,
-				"session_id", sessionInfo.ID,
-				"segments", len(result.Segments),
-				"transcript_len", len(result.Transcript),
-				"duration", time.Since(startedAt).String())
-			return result, nil
-		}
-		if status != "FAILED" && status != "CANCELED" && status != "CANCELLED" {
-			taskRaw, resultURL, err = t.poll(logCtx, taskID)
-			if err == nil {
-				resultRaw := map[string]any{}
-				if resultURL != "" {
-					resultRaw, err = t.fetchResult(logCtx, resultURL)
-					if err != nil {
-						return Result{}, err
-					}
-				}
-				result := buildResultFromDashScope(sessionInfo, map[string]any{"task_id": taskID, "recovered": true}, taskRaw, resultRaw)
-				slog.Info("dashscope asr transcribe completed",
-					"channel_id", sessionInfo.ChannelID,
-					"session_id", sessionInfo.ID,
-					"segments", len(result.Segments),
-					"transcript_len", len(result.Transcript),
-					"duration", time.Since(startedAt).String())
-				return result, nil
-			}
-		}
+	return t.AwaitASRTask(ctx, taskID, sessionInfo)
+}
+
+// remotePathFor 重建远端音频对象路径,与 publishAudio 的实际发布路径保持一致
+// (单一真相源:tempServer/s3/rclone 三后端的路径构造两侧共用同一 helper)。
+// DashScope 临时存储返回空串——该后端对象不支持主动删除(48h 自动过期),
+// cleanupRemote 对其本就是 no-op。AwaitASRTask 成功后的 CleanupAfterSuccess 用它定位远端文件。
+func (t *DashScopeTranscriber) remotePathFor(sessionInfo session.Session) string {
+	switch {
+	case t.tempServer != nil:
+		return t.tempServer.ObjectPath(sessionInfo)
+	case t.s3Publisher != nil:
+		return s3ObjectKey(sessionInfo)
+	case t.dashScopeTempPublisher != nil:
+		return ""
+	default:
+		return t.rcloneRemotePath(sessionInfo)
 	}
-	return t.transcribe(ctx, audioPath, sessionInfo, vocabulary)
+}
+
+// rcloneObjectPath 是 rclone 后端的对象路径(不含 remote 前缀),publishAudio 与 remotePathFor 共用。
+func rcloneObjectPath(cfg *config.Config, sessionInfo session.Session) string {
+	return filepath.ToSlash(filepath.Join(cfg.ASRTemp.BasePath, sessionInfo.ChannelID, sessionInfo.ID, "audio.asr.mp3"))
+}
+
+// rcloneRemotePath 是 rclone 后端的完整远端路径(remote 前缀 + 对象路径)。
+func (t *DashScopeTranscriber) rcloneRemotePath(sessionInfo session.Session) string {
+	return t.cfg.ASRTemp.RcloneRemote + rcloneObjectPath(t.cfg, sessionInfo)
 }
 
 func (t *DashScopeTranscriber) publishAudio(ctx context.Context, audioPath string, sessionInfo session.Session) (string, string, error) {
@@ -201,7 +221,7 @@ func (t *DashScopeTranscriber) publishAudio(ctx context.Context, audioPath strin
 	if t.dashScopeTempPublisher != nil {
 		return t.dashScopeTempPublisher.Publish(ctx, audioPath, sessionInfo)
 	}
-	remoteObject := filepath.ToSlash(filepath.Join(t.cfg.ASRTemp.BasePath, sessionInfo.ChannelID, sessionInfo.ID, "audio.asr.mp3"))
+	remoteObject := rcloneObjectPath(t.cfg, sessionInfo)
 	remotePath := t.cfg.ASRTemp.RcloneRemote + remoteObject
 	command := t.rclone
 	if command == "" {
@@ -327,6 +347,9 @@ func DashScopeRequestMode(model string) string {
 	return "file_urls"
 }
 
+// dashScopePollInterval 是任务轮询间隔。包级 var 便于测试缩短(生产 5s)。
+var dashScopePollInterval = 5 * time.Second
+
 func (t *DashScopeTranscriber) poll(ctx context.Context, taskID string) (map[string]any, string, error) {
 	endpoint := strings.TrimRight(t.cfg.DashScope.EffectiveTasksURL(), "/") + "/" + taskID
 	var last map[string]any
@@ -342,7 +365,7 @@ func (t *DashScopeTranscriber) poll(ctx context.Context, taskID string) (map[str
 			select {
 			case <-ctx.Done():
 				return nil, "", ctx.Err()
-			case <-time.After(5 * time.Second):
+			case <-time.After(dashScopePollInterval):
 			}
 			continue
 		}
@@ -361,12 +384,14 @@ func (t *DashScopeTranscriber) poll(ctx context.Context, taskID string) (map[str
 			return raw, findResultURL(raw), nil
 		}
 		if status == "FAILED" || status == "CANCELED" || status == "CANCELLED" {
-			return raw, "", fmt.Errorf("dashscope task %s ended with status %s", taskID, status)
+			// 终态失败映射哨兵(与 checkTask 观察到的终态一致):重入路径据此直接重提交,
+			// 而非 fail-closed 多等一次人工 retry。AwaitASRTask 的 %w 包装保留 errors.Is 链。
+			return raw, "", fmt.Errorf("%w: dashscope task %s ended with status %s", ErrDashScopeTaskDead, taskID, status)
 		}
 		select {
 		case <-ctx.Done():
 			return nil, "", ctx.Err()
-		case <-time.After(5 * time.Second):
+		case <-time.After(dashScopePollInterval):
 		}
 	}
 	return last, "", fmt.Errorf("dashscope task %s polling timeout", taskID)
