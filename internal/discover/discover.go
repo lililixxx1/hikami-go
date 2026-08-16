@@ -445,12 +445,12 @@ func (m *Manager) DiscoverChannel(ctx context.Context, item channel.Channel) ([]
 		if err != nil {
 			result.Error = err.Error()
 			results = append(results, result)
-			slog.Info("discover skipped replay", "channel_id", item.ID, "source_id", entry.ID, "reason", "create_session_failed", "title", title, "error", err.Error())
+			slog.Info("discover skipped replay", "channel_id", item.ID, "source_id", sourceID, "reason", "create_session_failed", "title", title, "error", err.Error())
 			continue
 		}
 		result.SessionID = createdSession.ID
 		if !created {
-			slog.Info("discover accepted replay", "channel_id", item.ID, "source_id", entry.ID, "session_id", createdSession.ID, "reason", "already_exists", "title", title, "created", false)
+			slog.Info("discover accepted replay", "channel_id", item.ID, "source_id", sourceID, "session_id", createdSession.ID, "reason", "already_exists", "title", title, "created", false)
 		}
 		if created {
 			createdCount++
@@ -468,7 +468,7 @@ func (m *Manager) DiscoverChannel(ctx context.Context, item channel.Channel) ([]
 		}
 		results = append(results, result)
 		if created {
-			slog.Info("discover accepted replay", "channel_id", item.ID, "source_id", entry.ID, "session_id", createdSession.ID, "task_id", result.TaskID, "title", title, "created", true)
+			slog.Info("discover accepted replay", "channel_id", item.ID, "source_id", sourceID, "session_id", createdSession.ID, "task_id", result.TaskID, "title", title, "created", true)
 		}
 	}
 	if results == nil {
@@ -595,11 +595,13 @@ func (m *Manager) previewFromEntries(ctx context.Context, in PreviewInput, cooki
 			}
 			defer func() { <-sem }()
 			title := m.resolveTitle(ctx, in.ChannelID, p.entry.ID, p.entry.Title)
-			slog.Info("discover preview accepted replay", "channel_id", in.ChannelID, "source_id", p.entry.ID, "title", title)
+			// 审核 Minor:日志与 Result 用同一个 sourceID(含分 P 后缀),对账不脱节。
+			sourceID := biliutil.SourceIDWithPart(p.entry.ID, entryURL(p.entry))
+			slog.Info("discover preview accepted replay", "channel_id", in.ChannelID, "source_id", sourceID, "title", title)
 			results[p.index] = Result{
 				ChannelID: in.ChannelID,
 				// L14:同 DiscoverChannel,SourceID 含分 P 后缀去重才不吞分 P。
-				SourceID:  biliutil.SourceIDWithPart(p.entry.ID, entryURL(p.entry)),
+				SourceID:  sourceID,
 				Title:     title,
 				SourceURL: entryURL(p.entry),
 			}

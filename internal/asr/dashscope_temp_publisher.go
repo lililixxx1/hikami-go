@@ -80,7 +80,7 @@ func (p *DashScopeTempPublisher) Publish(ctx context.Context, audioPath string, 
 	filename := filepath.Base(audioPath)
 	// L13(2026-08-15):objectKey 加 session ID 前缀——所有场次的临时音频都叫
 	// audio.asr.mp3,共用同一 objectKey 会在 DashScope OSS 端互相覆盖/冲突;
-	// 同一场重跑复用同一 key(幂等覆盖,无害)。零值 session(旧测试路径)保持原文件名。
+	// 同一场重跑复用同一 key：行为取决于 policy 的 x_oss_forbid_overwrite(为 true 时 OSS 拒 FileAlreadyExists 而非覆盖，上报为上传失败,任务重试换新 key 不可行——同场 ID 不变,需实测确认真实 policy 该值)。零值 session(旧测试路径)保持原文件名。
 	if sess.ID != "" {
 		filename = sess.ID + "_" + filename
 	}

@@ -233,7 +233,11 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
 
   **本日 4 个 commit(P2 收尾)**:
   - `eeccf00` **L13**:DashScope temp publisher 对象键加 session ID 前缀——所有场次的临时音频都叫 `audio.asr.mp3`,共用同一 objectKey 在 OSS 端互相覆盖;同场重跑复用同 key 幂等(12 提交增量审核遗留项)。
-  - `e3f0e27` **L14**:discover 多 P 合集 SourceID 追加分 P 后缀——多 P 的 entry.ID 全是同一 BV,裸用会命中 `(channel,source_type,source_id)` 唯一约束把第二个分 P 吞掉。新 `biliutil.SourceIDWithPart(videoID, rawURL)`(与 `ExtractVideoSourceID` 单一来源化 `_pNNN` 格式,对齐 `download.CreateFromURL` 口径)。**计划偏差(实施时验证发现)**:计划原方案直接换 `ExtractVideoSourceID(entryURL(entry))`,但该函数对不匹配 BV 正则的 ID 走 sha1 兜底,会改变「entry.ID 原样」的既有去重口径(与生产库历史 session 脱节),改为锚定 entry.ID 只追加 p 后缀,零回归。
+  - `e3f0e27` **L14**:discover 多 P 合集 SourceID 追加分 P 后缀——多 P 的 entry.ID 全是同一 BV,裸用会命中 `(channel,source_type,source_id)` 唯一约束把第二个分 P 吞掉。新 `biliutil.SourceIDWithPart(videoID, rawURL)`(与 `ExtractVideoSourceID` 单一来源化 `_pNNN` 格式,对齐 `download.CreateFromURL` 口径)。**计划偏差(实施时验证发现)**:计划原方案直接换 `ExtractVideoSourceID(entryURL(entry))`,但该函数对不匹配 BV 正则的 ID 走 sha1 兜底,会改变「entry.ID 原样」的既有去重口径(与生产库历史 session 脱节),改为锚定 entry.ID 只追加 p 后缀,单 P/非 BV 历史去重连续。**一次性影响(批量审核 Important)**:
+  修复前已发现过的多 P 合集,part 1 以裸 BV 存库(part 2 被唯一约束吞掉,正是本 bug 的痕迹);
+  修复后重新发现时 part 1 生成 `BV_p001` 新键与旧库不匹配 → 该分 P 会重复下载一次(自限:
+  之后 `_p001` 已在库恢复正常去重)。如需彻底消除可做一次性运维迁移(source_url 带 ?p=1 的
+  裸 BV 场次 source_id 改 `_p001`),本轮不做。
   - `84c5e34` **L8-L12 前端五项**:L8 tasks store 照抄 sessions 范式加 inflight 去重(新增 `tasks.test.ts` 3 例);L9 新 `useSessionPagination` composable——列表被轮询/WS 收缩后 currentPage 收敛到新最后一页,不再渲染空表(5 例);L10 openRecap 迁入新 `useRecapDrawerContent`(onRecapSaved 同款 id 双重守卫),旧场次迟到响应不再覆盖新场次内容/loading(6 例);L11 DiscoverPreviewDrawer watch items 引用变化清空勾选,再次「发现」不再把旧下标映射到新条目(+1 例);L12 `/tasks` redirect 映射 `session_id→?sid=`(路由表抽出为 `export const routes` 供 memory history 测试,5 例)+ ImportSessionDrawer「查看任务」直推 `/recaps?sid=`。
 
   **08-15 已落地的前 24 步(索引,详情见各 commit)**:H2 onboarding(`1c1898e`)/H6 cookie 过期(`d4cd2fb`)/H7 notify ctx(`be96bcb`+`ad7d935`)/H4 MCP 空回顾守卫(`82f1584`)/H5 HInput attrs(`5cc7c00`)/H3 live_record 死 ctx(`fe442c5`)/H1 /ws 鉴权(`b728dcc`);M1(`122698d`)/M2(`4175fa5`)/M3(`c514c16`)/M4(`dc3a902`)/M5(`96c4e17`)/M6(`7e229a4`)/M7(`1929c27`)/M8(`c19adc3`)/M9(`8b410b5`)/M10(`69704b5`)/M11(`6db0537`+`358cae1`)/M12(`5cc309e`+3 返工)/M13(`91cf02d`)/M14(`3cc882d`+`594028c`);X1(`5753771`)/X2(`9e13e40`);L2-L5/L15(`6d33ccd`)/L6/L7(`deb0f05`)。L1 并入 H1、L16 并入 H7。
