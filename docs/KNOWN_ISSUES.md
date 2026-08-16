@@ -2,49 +2,37 @@
 
 > 本文件收集已发现但尚未修复的问题。每条记录发现日期、严重程度、根因、影响、建议修复方案。
 > 修复完成后将对应条目移至「已修复」小节并标注修复日期。
-> 最后更新：2026-08-01
+> 最后更新：2026-08-16
 
 ---
 
 ## 待修复
 
-### ISSUE-006：崩溃恢复可能重复执行远端付费任务（ASR 重新提交 DashScope）
-
-- **发现日期**：2026-08-01
-- **严重程度**：中（需极窄崩溃时机 + 重复付费，无数据损坏）
-- **发现途径**：codex 四阶段代码审核（r7/r8/r9/r10，session `019fbacf-5a77-7ae0-a653-e64c87bb9ab2`）
-
-#### 触发条件
-
-进程崩溃（如 OOM Kill）恰好发生在某任务的状态推进事件已 `Apply` 但 worker `MarkSucceeded` 之前的窗口。典型路径（ASR）：
-
-1. `asr.go:210` `Apply(EventASRSucceeded)` 成功 → session 进 `asr_done`
-2. `asr.go:213-214` `h.onSuccess` 创建 recap task（自动链）
-3. `worker.go:251` `MarkSucceeded` 把 task 标记 succeeded
-
-若崩溃在 1 之后、3 之前，重启后 `recoverRunning`（worker.go:301 `case "asr","asr_poll","upload"`）会无条件把 session 从 `asr_done` 经 `EventTaskFailed` 降到 `failed`，再 `ResetToPending` 重跑 ASR —— 重新提交 DashScope 远端付费任务。
-
-#### 当前缓解
-
-`worker.go` 的 `case "asr"...` 分支有显式注释标注此遗留。本次（2026-08-01）的实际崩溃发生在 VAD 阶段（`asr.go:151-172`，transcribe 之前），DashScope 任务根本未提交，**本次未触发重复付费**。
-
-#### 为什么没修
-
-这是"崩溃恢复幂等性"的深层问题，需要系统设计，跨 asr/worker/recap 三包：
-
-- **状态分流**（曾尝试，r8/r9 已回退）：读 session 当前状态，若已超越任务阶段则跳过重跑。但引入更严重的回归——ASR 成功后 `onSuccess`（recap 自动链）的崩溃窗口（`asr.go:210` 后、`213` 前）会导致 recap 永不创建，自动流水线静默断裂。
-- **正解方向**：① `dashscope_task_id` 持久化到 `task.payload`（需新增 `store.UpdatePayload` 接口），恢复时优先 `TranscribeWithTaskID` 轮询已有远端任务而非重新提交；② 下游任务创建幂等化（`recap.CreateTask` 当前对已存在活跃 task 返回 `ErrTaskConflict` 非幂等，`handler.go:473`）；③ 可选的任务检查点机制。
-
-塞进 2026-08-01 的热修会引入比原 bug（session 卡死）更复杂的问题，故降级为已知遗留，留独立计划处理。
-
-#### 相关
-
-- 本次热修（`recoverRunning` 补 `syncSessionState`）修复了用户报告的"录播卡死"（session 停在 `asr_submitted`，重入 `Apply` 因无自环失败）。审核记录见 `reviews/main--r7.md` ~ `main--r10.md`。
-- OOM 治本（systemd `MemoryMax` / VAD ffmpeg 内存峰值）是独立运维任务。
+（当前无待修复项。历史遗留项见下方「已修复」小节的残余窗口说明。）
 
 ---
 
 ## 已修复
+
+### ISSUE-006：崩溃恢复可能重复执行远端付费任务（ASR 重新提交 DashScope）
+
+- **发现日期**：2026-08-01
+- **修复日期**：2026-08-16
+- **严重程度**：中（需极窄崩溃时机 + 重复付费，无数据损坏）
+- **发现途径**： codex 四阶段代码审核（r7/r8/r9/r10，session `019fbacf-5a77-7ae0-a653-e64c87bb9ab2`）
+- **修复方案**：`dashscope_task_id` 持久化（发现时记录的正解方向①）——`SubmitASRTask`/`AwaitASRTask` 两阶段接口 + submit 成功后立即写入 task payload（`worker.Store.UpdatePayload`，M11 基础设施）+ 恢复重入 await 轮询零付费 + 瞬态错误 fail-closed + `ErrDashScopeTaskDead` 哨兵。正解方向②（下游幂等创建）由 PR#1（recap `EnqueueIfNoActive`）+ M11（publisher）+ 本次 G-1（asr 自身）共同落地。
+- **修复计划**：[`plans/plan-issue006-dashscope-taskid-persist-2026-08-16.md`](../plans/plan-issue006-dashscope-taskid-persist-2026-08-16.md)（自查 + 三轮 plan-code-reviewer 审核闭环记录）
+- **测试**：asr 107→123（resubmit_test.go 8 + dashscope_await_test.go 8），核心契约「恢复重入 Submit 零调用」「fail-closed 零 POST」「防无限重提交」均有专项测试钉死。
+
+#### 残余窗口（已知且接受，均无数据损坏）
+
+| 窗口 | 说明 | 缓解 |
+|------|------|------|
+| submit→persist 毫秒级窗口 | DashScope submit HTTP 成功后、payload 持久化完成前崩溃，重入仍会重新提交 | DashScope 无客户端幂等键，根本性限制；窗口从「整个 poll 阶段（最长 10min）」缩到毫秒级 |
+| persist 持续失败 | DB 故障导致 `UpdatePayload` 持续失败时，每次 retry 都重新提交（WARN 日志可见） | 概率极低；WARN 带 task_id/dashscope_task_id 便于发现 |
+| G-2：人工 reset 丢 taskID | `ResetFailedSession` 不建新任务，reset 后重新 CreateTask 得空 payload → 若旧远端任务仍活着会重新付费 | **asr 失败优先用任务 retry（保留 taskID，走 await 免费恢复），不要 reset** |
+| fetch 结果 URL 过期 | 远端已 SUCCEEDED 但结果 URL 404 → fail-closed 停 failed，人工出口只有 reset（会触发上一条） | 极罕见；遇见时接受一次重付费 |
+| 恢复期间改 VAD 配置 | 恢复重入时 VAD 用新配置重裁，与首次提交的远端结果时间线错位 | 恢复期间勿改 VAD 阈值/padding/engine 配置 |
 
 ### ISSUE-005：MCP 配置不参与导入导出
 

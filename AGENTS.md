@@ -229,6 +229,20 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
 
 ## 变更记录
 
+- 2026-08-16(日):**ISSUE-006 修复:崩溃恢复重复提交 DashScope 付费任务 — dashscope_task_id 持久化关闭双付费窗口**(用户指定四阶段审核流:自查 → plan-code-reviewer 复核 → 计划文档审核 → 执行后审核,全部闭环;改 `internal/asr/asr.go`/`dashscope.go`/`temp_server.go` + `cmd/hikami/main.go` + `internal/worker/worker.go` 注释,新增 2 测试文件)。
+
+  **触发**:用户要求修复 `docs/KNOWN_ISSUES.md` 中最后一个待修复项 ISSUE-006(2026-08-01 记录):进程崩溃(OOM 等)落在「状态事件已 Apply、worker MarkSucceeded 前」窗口时,`recoverRunning` 无条件重跑 ASR → 重新提交 DashScope 付费任务 → 重复计费。主窗口覆盖整个 poll 阶段(120×5s=10min,OOM 高发区)。
+
+  **根因(复核裁决成立)**:`dashscope.go` `transcribe()` 内 publish→submit→poll 一体,taskID 从不离开 transcriber;`asr.go:264` 的恢复读路径(payload 有 `dashscope_task_id` 则轮询)因全仓无写入方而是死代码。次要发现:旧恢复路径 `TranscribeWithTaskIDAndVocabulary` 在 checkTask/poll 网络瞬时错误时**静默回退全量 re-submit**(窗口 B,修复后变可达,必须一并收口)。
+
+  **修复(正解方向①+②收口)**:① 新 `submittingTranscriber` 两阶段接口(`SubmitASRTask`/`AwaitASRTask`)+ `taskPayloadWriter` 最小接口(照 publisher M11 范式,`SetTaskPayloadWriter` setter,main.go 注入 `workerPool.Store()`);② `transcribe()` 三步付费安全决策树:恢复重入→await 轮询零付费;远端终态失败(`ErrDashScopeTaskDead` 哨兵,checkTask/poll 观察到的 FAILED/CANCELED 均映射)→重提交;网络/超时→**fail-closed**(错误带 taskID+「retry resumes await」,不静默重提交);新提交→submit→**立即持久化 taskID**(best-effort 失败仅 WARN)→await(此步任何错误直接失败,防同 attempt 无限重提交循环——计划审核 M1 补的规格);③ `remotePathFor` 与 publishAudio 单一真相源(tempServer.ObjectPath/s3ObjectKey/rcloneObjectPath 共用),成功后按 CleanupAfterSuccess 清理(失败路径有意保留远端文件);④ G-1 顺手:asr `CreateTask` 改 `EnqueueIfNoActive` 原子幂等(对齐 M11,消除竞态重复任务的状态闪断);⑤ 删除 `TranscribeWithTaskID`/`TranscribeWithTaskIDAndVocabulary` 及 resumable 双接口(全仓零引用)。**recoverRunning 零逻辑改动**(仅注释更新)——无条件 reset 保留,幂等性改由数据层保证。
+
+  **审核闭环(三轮 plan-code-reviewer)**:① 根因复核 APPROVE(11 项代码事实逐行核实,附 A-1 无接口 WARN/B-1 不存 RemotePath 由配置重建/G-1 顺手/G-2 人工 reset 路径,全采纳);② 计划文档审核 NEEDS_FIX(3 Medium:第 2 步 await 错误语义防无限循环/Raw.submit 合成决策/清理时机如实描述——全采纳修订后「修后可执行」);③ 执行后审核 NEEDS_FIX(1 Medium:poll 观察到的终态未映射哨兵,已修+D4b;Minor 4 项:注释措辞/计划 D1 行矛盾/空 taskID 测试/T4T9 payload 断言——全修)。
+
+  **测试**:asr 107→**123**(+16:`resubmit_test.go` 8 个 T 系 Handler 契约 + `dashscope_await_test.go` 8 个 D 系 HTTP 级行为;`TestCreateTaskActiveConflict` 补 G-1 重复行断言)。核心付费契约均有专项测试钉死:**恢复重入 Submit 零调用**(T2)、**fail-closed 零 POST**(T4/D2)、**防无限重提交**(T9)、哨兵映射(D3/D4b)、清理触发(D6)。**验证**:`go test ./internal/asr/...` 全过、全量 22 包绿 + 6 包 Windows 预存 flake=基线完全一致、`go vet`/`gofmt` 干净、embedded_web 编译成功(28.7MB)。**回归**:行为差异仅三处有意取舍(submit 后多一次本地 UpdatePayload/Raw.submit 合成 `{"task_id"}`/远端清理从成功失败都清改为仅成功清)。
+
+  **残余窗口(已知且接受,记录于 KNOWN_ISSUES 已修复段)**:submit→persist 毫秒级窗口(DashScope 无幂等键,根本性限制);persist 持续失败(DB 故障时 retry 重提交,WARN 可见);**G-2 人工 reset 丢 taskID(asr 失败优先 retry 不要 reset)**;fetch 结果 URL 过期;恢复期间改 VAD 配置致时间线错位。计划:`plans/plan-issue006-dashscope-taskid-persist-2026-08-16.md`(含三轮审核记录)。
+
 - 2026-08-16(日):**`/init-project` 增量同步 — PR#1 文档补记 + 审核批次模块文档回填**(无代码改动,纯文档)。上次 `/init`(08-07,08-14 重新落盘为 `52da885`)后共 38 个 commit,其中 **PR#1(`c9a3e51`)+ 维护者补丁(`ad7bda4`)在本文件完全无 changelog 记录**(08-14 拉取远端 12 提交重新合并时只恢复了 08-07 的文档、未按新 HEAD 重审,根 CLAUDE.md 索引计数已由 08-15 批次 `d54d9e6` 顺手对齐,但特性描述与模块文档全部缺位)。本轮改动:
 
   **① 全量逐包核对**(`^func Test` 机械统计 vs 根 CLAUDE.md 索引):**30/30 包零偏差**(hikami 4✓/config 49✓/handler 126✓/recap 136✓/asr 107✓/download 76✓/biliutil 98✓/worker 54✓/live_record 93✓/web 242✓ 等;计数层面 `d54d9e6` 已对齐,本轮复核确认)。
