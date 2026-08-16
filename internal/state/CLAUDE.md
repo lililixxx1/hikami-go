@@ -72,6 +72,9 @@ recap_done  --publish_succeeded--> published
 uploaded    --publish_succeeded--> published
 任何状态    --task_failed--> failed
 failed      --normalize_succeeded/asr_submitted/asr_succeeded/recap_succeeded/upload_succeeded/publish_succeeded--> 对应状态
+failed      --download_started--> downloading（失败重试重新进入来源阶段）
+failed      --import_started--> importing（M6,2026-08-15）
+failed      --live_record_started--> recording（M6,2026-08-15;live_record 重跑另受 ensureStartAllowed/ErrAlreadyLive 自然约束）
 ```
 
 ## 关键设计决策
@@ -79,7 +82,7 @@ failed      --normalize_succeeded/asr_submitted/asr_succeeded/recap_succeeded/up
 - `task_failed` 事件可从任何状态触发，转换到 `failed`。
 - 来源成功事件（`download_succeeded` 等）只将状态保持在来源处理中，需要 `normalize_succeeded` 才能推进到 `media_ready`。
 - `Apply` 在事务中执行，先读取当前状态，校验转换合法性，再更新。
-- `failed` 状态可恢复到后续管道节点（normalize_succeeded/asr_submitted 等），支持失败重试后的状态恢复。
+- `failed` 状态可恢复到后续管道节点（normalize_succeeded/asr_submitted 等），支持失败重试后的状态恢复。**来源 started 事件也可从 failed 重入**（download_started/import_started/live_record_started → 对应来源阶段）——重试沿用同一 session 和 task ID，再次访问远端来源前状态机必须允许 handler 重新进入来源阶段（2026-08-13 download + 2026-08-15 M6 import/live_record）。
 - `Apply` 对不同事件设置不同的时间戳：`task_failed` 写入 `last_error`，`upload_succeeded` 写入 `uploaded_at`，`publish_succeeded` 写入 `published_at`。
 
 ## 测试与质量
@@ -106,6 +109,8 @@ failed      --normalize_succeeded/asr_submitted/asr_succeeded/recap_succeeded/up
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-08-15 | BUG 修复 | **M6:failed 态补 import/live_record 入边**(commit `7e229a4`,审核批次 P1)。`transitions[StatusFailed]` 补 `EventImportStarted→StatusImporting`/`EventLiveRecordStarted→StatusRecording`(与 2026-08-13 c9a3e51 补的 `EventDownloadStarted→StatusDownloading` 对称)——import/live_record 任务失败重试沿用同一 session/task,重跑 handler 需重新 Apply started 事件,此前被状态机 `ErrInvalidTransition` 拒绝导致重试必败。live_record 重跑并发安全由 `ensureStartAllowed`/`ErrAlreadyLive` 自然约束兜底。测试在 `TestNextValidTransitions` 内补 3 个命名 case(函数计数不变,state 仍 11)。 |
+| 2026-08-13 | BUG 修复 | **批量回放 PR #1**(commit `c9a3e51`):`transitions[StatusFailed]` 补 `EventDownloadStarted→StatusDownloading`——downloader.auto_retry 重试失败下载任务时,handler 重新进入 downloading 需状态机放行(此前 failed→downloading 非法转换)。测试并入 TestNextValidTransitions(计数不变)。 |
 | 2026-07-03 | 重构 | 移除 `EventPublishReverted`/`ApplyRevertPublish` + `transitions[StatusPublished]` 出口（published 改为终态：B站专栏只能手动去 B站管理）；测试 12→11。配合 worker 任务实例级 BypassFailState + recap CreateRegenTask |
 | 2026-06-21 | 增量同步 | 测试计数校正：10→12（补 `TestApplyWithPublishTarget` 同事务写 publish_target、`TestApplyRevertPublish` 发布回退）。新增 `EventPublishReverted`/`ApplyRevertPublish` + `transitions[StatusPublished]` 出口（published→uploaded，清空 publish_target，保留 published_at），支撑专栏删除/编辑流程 |
 | 2026-05-04 | 重大更新 | failed 状态恢复支持（接受所有管道事件）、新增 state_test.go（10 个用例） |

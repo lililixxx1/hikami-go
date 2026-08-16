@@ -187,37 +187,40 @@ demuxer/muxer（flv/concat/mov/mp3）+ mp3/aac encoder，由 `scripts/build-ffmp
 
 ## 测试与质量
 
-- `probe_test.go`: 1 个测试用例，覆盖 ASR 模型和请求模式探测。
+- `probe_test.go`: 5 个测试用例，覆盖 ASR 模型和请求模式探测、**CLI provider 免 API key**（2026-08-13 `TestProbeRecapCodexCLIDoesNotRequireAPIKey`：claude_cli/codex_cli/local 无 key 也 RecapGenerate 就绪）、**DashScope 临时存储**（2026-08-13 `TestProbeDashScopeTemporaryStorageEnablesASR`：`temporary_storage_enabled` 开启时 ASRSubmit 不再要求 asr_temp/asr_s3 配置）。
 - `health_test.go`: 8 个测试用例，覆盖：
   - Cookie 过期检查: NoCookieFile（无文件无警告）、Expired（已过期警告）、ExpiringSoon（3 天内过期）、Valid（有效不警告）、MultipleChannels（多主播混合）、DisabledChannel（禁用主播跳过）
   - 磁盘检查: LowUsage（基本信息验证）、DeduplicatesPaths（路径去重）
-- `ffmpeg_resolver_test.go`: 15 个测试用例，覆盖：
+- `ffmpeg_resolver_test.go`: 18 个测试用例，覆盖：
   - safeJoin: 正常路径、目录穿越防御、绝对路径防御、多层穿越防御
   - executableFile: 普通文件、目录、不存在
-  - extractArchive: zip 格式解压、不支持格式报错
+  - extractArchive: zip 格式解压、不支持格式报错、**txz 格式解压（2026-08-15 M4）**
   - ffmpegVersionDir: 路径格式验证
-  - extractZip/extractTgz: 路径穿越条目拦截
+  - extractZip/extractTgz/extractTxz: 路径穿越条目拦截（txz 为 2026-08-15 新增）
   - cachedResolution: 缓存缺失、缓存命中成功
   - 并发安全: lastFFmpegResolution 并发读写
+  - **manifest 钉版（2026-08-15 M4）**: `TestCurrentManifest_LinuxAssetsPinned`——linux 资产指向不可变 autobuild tag + ArchiveSHA256 非空（防回退 latest 可变 tag）
 
 ## 相关文件清单
 
-- `probe.go` -- 工具探测核心（Probe、probeTool、probeRecapProvider、getInstallHint、CookieWarning、DiskInfo 类型定义）
+- `probe.go` -- 工具探测核心（Probe、probeTool、probeRecapProvider、getInstallHint、CookieWarning、DiskInfo 类型定义）。**2026-08-13 PR#1**:`recapAuthReady`（CLI provider 免 API key,`recapProviderNeedsAPIKey`）、`dashScopeTempAvailable`（`dashscope.temporary_storage_enabled` 计入 ASRSubmit 判定）
 - `health.go` -- Cookie 过期检查（CheckCookieExpiry、checkCookieFile）
-- `ffmpeg_resolver.go` -- FFmpeg 自动解析核心（ResolveFFmpeg 三级回退、下载、解压、安装、安全检查）
-- `ffmpeg_manifest.go` -- FFmpeg 多平台资源清单（CurrentManifest、PlatformKey、FFmpegAsset）
+- `ffmpeg_resolver.go` -- FFmpeg 自动解析核心（ResolveFFmpeg 三级回退、下载、解压、安装、安全检查）。**2026-08-15 M4**:extractArchive 补 txz 分支（linux 兜底资产是 BtbN `.tar.xz`,此前必然解包失败）——纯 Go `ulikunitz/xz` 解流 + 共享 `extractTar(reader, destDir)`（与 tgz 复用 tar 遍历/穿越防御）
+- `ffmpeg_manifest.go` -- FFmpeg 多平台资源清单（CurrentManifest、PlatformKey、FFmpegAsset）。**2026-08-15 M4**:linux-amd64/linux-arm64 从可变 `latest` tag 改钉版 autobuild-2026-08-13-17-03（不可变内容 + SHA256 校验）
 - `ffmpeg_embed.go` -- 嵌入式 FFmpeg 实现（build tag: embed_ffmpeg）
 - `ffmpeg_embed_none.go` -- 嵌入式 FFmpeg 空实现（build tag: 默认）
 - `disk_unix.go` -- Linux/darwin 磁盘使用检查（CheckDiskUsage，syscall.Statfs）
 - `disk_windows.go` -- Windows 磁盘使用检查（CheckDiskUsage，GetDiskFreeSpaceEx）
-- `probe_test.go` -- 单元测试（1 个用例）
+- `probe_test.go` -- 单元测试（5 个用例）
 - `health_test.go` -- 健康检查测试（8 个用例）
-- `ffmpeg_resolver_test.go` -- FFmpeg 解析器测试（15 个用例）
+- `ffmpeg_resolver_test.go` -- FFmpeg 解析器测试（18 个用例）
 
 ## 变更记录 (Changelog)
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-08-15 | BUG 修复 | **M4:ffmpeg linux 下载兜底补 txz 解包 + 钉版 autobuild**(commit `dc3a902`,审核批次 P1)。**根因**:linux 无系统 ffmpeg 时下载 BtbN 的 `.tar.xz`,但 `extractArchive` 只支持 zip/tgz → 解包必然失败,兜底形同虚设;且 manifest linux 资产指可变 `latest` tag(SHA256 与内容随时漂移,校验随时失效)。**修复**:① txz case——纯 Go `ulikunitz/xz` 解流(klauspost/compress 无 xz 包)+ 共享 `extractTar`(tgz 重构复用,穿越防御同源);② linux-amd64/arm64 钉版 `autobuild-2026-08-13-17-03`(不可变) + 更新 ArchiveSHA256/paths。ffmpeg_resolver_test +3(txz 解压/txz 穿越拦截/manifest 钉版断言),runtime 28→**31**。 |
+| 2026-08-13 | 功能 | **批量回放可靠性 PR #1**(commit `c9a3e51`):probe 能力判定两项——① `recapAuthReady`(`recapProviderNeedsAPIKey`:claude_cli/codex_cli/local 免 API key,不再误报「未配置 key」禁用 RecapGenerate);② `dashScopeTempAvailable`(`dashscope.temporary_storage_enabled` 开启时 ASRSubmit 判定多一路后端,不再强制要求 asr_temp/asr_s3/rclone)。probe_test +2,runtime 26→28。 |
 | 2026-07-29 | 裁剪版 ffmpeg 补 pcm_s16le encoder | **修复 VAD Detect 100% 失效**(commit `bafa2a4`)。VAD 的 `Detect` 跑 `-f null -`(silencedetect 扫描)需要 `pcm_s16le` encoder,但裁剪版 `--enable-encoder` 白名单只列 mp3/aac → 找不到 encoder 导致 Detect 失败(虽走零回归兜底用原始音频,但降本能力丢失)。**改动**:① `scripts/build-ffmpeg-minimal.sh` `--enable-encoder` 补 `pcm_s16le`;② `ffmpeg_manifest.go` Version `embedded-minimal-7.x`→`embedded-minimal-7.x-vad2`(让旧用户升级时重新解包含 pcm_s16le 的新 zip);③ `scripts/verify-ffmpeg-minimal.sh` 新增 case 7c 裸 `-f null -` 路径检测(防未来重编又裁错 encoder);④ 替换 `assets/ffmpeg.zip`(3.29MB→3.31MB,+pcm_s16le 约 24KB);⑤ 采纳 qoder-code-review 反馈(lame 缓存 `-d`→`-f`、license 缺失显式报错、wget 重定向校验、manifest 平台注释)。未改任何解析逻辑。 |
 | 2026-07-13 | 裁剪版 ffmpeg + manifest 路径修复 | `build-windows-amd64` 嵌入的 ffmpeg 从 BtbN 完整 gpl 版(~80MB)改为裁剪版(~8-12MB)。新增 `scripts/build-ffmpeg-minimal.sh`(Docker+MinGW-w64 交叉编译,`--disable-everything` 后白名单启用 flv/concat/mov/mp3 demuxer/muxer + mp3/aac encoder,依据:录制全 `-c:a copy` 零编码器)+ `scripts/verify-ffmpeg-minimal.sh`(逐条复刻真实参数)+ `scripts/README-ffmpeg-build.md`。`ffmpeg_manifest.go` Version 改 `embedded-minimal-7.x`(新缓存目录隔离旧完整版)。`.gitignore` 白名单放行 `assets/ffmpeg.zip`(入库让 Windows 构建开箱即用)。Makefile 新增 `build-ffmpeg-minimal`/`verify-ffmpeg-minimal` target。未改任何解析逻辑(ResolveFFmpeg/installEmbeddedFFmpeg/probe.go 原样复用)。**manifest 路径同步修复**(`4a79b44`)：裁剪版 zip 顶层是 `bin/ffmpeg.exe`，但 manifest 的 `windows-amd64` 段仍写死 BtbN 完整版目录结构 `ffmpeg-master-latest-win64-gpl-shared/bin/ffmpeg.exe` → 解包后按 manifest 找不到二进制 → 启动 health check fatal（Windows 双击 exe 看似闪退）。修复：`FFmpegPath`→`bin/ffmpeg.exe`、`FFprobePath`→`bin/ffprobe.exe`、`ArchiveURL` 删除（留空防误下 80MB 完整版，`downloadAndInstallFFmpeg` 对空 URL 有显式保护兜底）。`linux-*` 不动（走系统 ffmpeg）。 |
 | 2026-06-04 | 测试补充 | 新增 ffmpeg_resolver_test.go（15 用例）：safeJoin 安全检查 4 个、executableFile 3 个、extractArchive 2 个、ffmpegVersionDir 1 个、extractZip/extractTgz 穿越拦截 2 个、cachedResolution 2 个、并发安全 1 个。总用例从 9 增至 24 |

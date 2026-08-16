@@ -229,6 +229,30 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
 
 ## 变更记录
 
+- 2026-08-16(日):**`/init-project` 增量同步 — PR#1 文档补记 + 审核批次模块文档回填**(无代码改动,纯文档)。上次 `/init`(08-07,08-14 重新落盘为 `52da885`)后共 38 个 commit,其中 **PR#1(`c9a3e51`)+ 维护者补丁(`ad7bda4`)在本文件完全无 changelog 记录**(08-14 拉取远端 12 提交重新合并时只恢复了 08-07 的文档、未按新 HEAD 重审,根 CLAUDE.md 索引计数已由 08-15 批次 `d54d9e6` 顺手对齐,但特性描述与模块文档全部缺位)。本轮改动:
+
+  **① 全量逐包核对**(`^func Test` 机械统计 vs 根 CLAUDE.md 索引):**30/30 包零偏差**(hikami 4✓/config 49✓/handler 126✓/recap 136✓/asr 107✓/download 76✓/biliutil 98✓/worker 54✓/live_record 93✓/web 242✓ 等;计数层面 `d54d9e6` 已对齐,本轮复核确认)。
+
+  **② 补记 PR#1 + ad7bda4**(根 CLAUDE.md changelog 加独立条目 + AGENTS.md 本条):`c9a3e51`(作者 RX Zhang,59 文件 +2778/-203,主 agent + plan-code-reviewer 两轮审核无 Critical/High)六大特性组——DashScope 临时存储 / inaSpeechSegmenter VAD 引擎 / 批量下载保护(downloadLimiter + worker.DeferredError)/ 多 P 来源标识(`BV..._pNNN` + ReplayDateFromTitle)/ 回顾幂等重试(CreateTask 幂等 + CLI 串行 gate + failed 入边 + codex stdin 免 key)/ 杂项(jsonBindErrorMessage + 前端翻页/回顾排队显示/投稿数字字段);`ad7bda4` 为其 Medium 遗漏补丁(配置备份导出补 VAD ina_* 字段)。
+
+  **③ 回填 18 份模块 CLAUDE.md**(正文/文件清单/changelog 三层):asr/biliutil/config/discover/download/worker/state/notify/fsutil/normalize/recap/publisher/upload/live_record/runtime/handler/cmd/web——每模块落 PR#1 与审核批次(08-15/16)各自条目,新增文件全部入清单(asr 的 dashscope_temp_publisher.go/ina_segmenter.go、download 的 risk_control.go、worker 的 defer.go、fsutil 的 cookie_temp.go、cmd 的 capability_gate_test.go、biliutil 的 replay_date.go)。**08-16 批次条目里「各模块 CLAUDE.md 正文段未同步本批,留待 /init-project」的欠账就此清零。**
+
+  **④ 订正**:config 模块文档测试数 48→49(07-30 changelog 记 45→48 实为 49,自那时起少记 1;upload 模块文件清单 upload_test 25→29 的同类历史漂移一并修正)。
+
+  **⑤ 根 CLAUDE.md 索引职责列**:16 个包追加 08-13/08-15 特性说明(asr 临时存储+ina VAD、worker DeferredError+CreateTaskIfNoActive、download downloadLimiter、biliutil 分 P 标识、publisher M11 幂等、handler H1/H2/P0 等,此前职责列止于 07-30)。
+
+  **验证**:`go build ./...` + 抽测改动零代码变化(纯文档,`git diff --stat` 仅 *.md)。**回归**:零。
+
+- 2026-08-13(四):**批量回放可靠性 PR #1(远端协作提交)** — commit `c9a3e51`(feat(replay),作者 RX Zhang,59 文件 +2778/-203;主 agent + plan-code-reviewer 两轮代码审核通过,无 Critical/High;Medium 项「config 备份导入遗漏 VAD 新字段」由维护者补丁 `ad7bda4` 紧跟其后)。六大特性组:
+  - **DashScope 临时存储**:新 `internal/asr/dashscope_temp_publisher.go`(`dashscope.temporary_storage_enabled` 开关,默认关)——调 DashScope uploads API 取签名 policy→multipart 直传 OSS 临时对象,免自建 HTTP/S3/rclone;48h 自动过期;runtime probe 把它计入 ASRSubmit 判定。2026-08-15 审核 L13(eeccf00)补对象键 session ID 前缀。
+  - **inaSpeechSegmenter VAD 引擎**:新 `internal/asr/ina_segmenter.go` + `scripts/ina_segment.py`——`vad.engine="silence"(默认,ffmpeg silencedetect)|"ina"(python 神经网络)` + 5 个 ina_* 配置(python/script/batch_size/min_speech_sec/merge_gap_sec);`ErrNoSpeechDetected` 全静音跳过收尾(不触发 onSuccess);`remapResultTimeline` SRT 与 segments 同步重建;config 加 `EffectiveEngine/EffectiveInaPython/EffectiveInaScript` + Validate 扩展。
+  - **批量下载保护**:新 `internal/download/risk_control.go` `downloadLimiter`(`downloader.max_concurrent/min_interval_seconds/failure_backoff_seconds`,<=0 默认关保持升级前行为)+ 新 `internal/worker/defer.go` `DeferredError`(任务退回 pending 延迟重入队,不加 attempt/不降级/不通知,不阻塞 worker 饿死其它任务类型)+ `downloader.auto_retry/max_retry_attempts` 仅 download 任务的自动重试(不开全局 worker.auto_retry 误伤 ASR/recap)。
+  - **多 P 来源标识**:`biliutil` 加 `ExtractVideoPart`/`ExtractVideoSourceID`(BV+p 构造 `BV..._pNNN` 分 P 级来源标识,同 BV 各分 P 不互相去重)+ `replay_date.go` `ReplayDateFromTitle`(标题提取日期填回放场次 StartedAt);download 显式 `?p=N` 只下载所选分 P;normalize metadata 加 `duration_ms`(分 P 选页时长,不把合集 pages 相加)。
+  - **回顾幂等重试**:`recap/handler.go` CreateTask 幂等(重叠提交复用既有活跃任务;回顾成功前 session 有意留在 asr_done,不能只据状态判断)+ `serialRecapProvider` 本地 CLI 串行 gate(API provider 保持原并发)+ canHandleRecap 接受 failed;state failed 补 `download_started` 入边;codex_cli stdin-only 提示词(不加载项目 AGENTS.md 省 token)+ CLI provider 免 API key(probe 同步)。
+  - **杂项**:handler `jsonBindErrorMessage`(JSON 类型错误返回字段级提示);前端 SessionTable 翻页修复(totalPages 用 totalItems,当前页 slice 算页数永远 1 页)+ 回顾排队/生成中显示(优先关联 pending/running 活跃任务,旧逻辑误显示「转写完成」)+ PublishCard 数字字段 computed setter(HSelect 只 emit string 会污染 JSON number)。
+
+  **测试增量**:asr 98→107、biliutil 90→93、download 70→75、worker 47→51、recap 113→127(后经 08-13 ISSUE-007/08-15 审核批次至现值)、normalize 69→70、runtime 26→28、handler 104→107、前端 29→34 文件(后至 36)。**(注:本条为 2026-08-16 /init 补记,PR 实际合入时间 08-13。)**
+
 - 2026-08-16(日):**2026-08-15 全项目审核修复批次收尾 — 7 High + 14 Medium + 3 跨域 + 14 Low 全部落地,35 commit(`1c1898e..84c5e34`),P2 最后 8 项(L8-L15)于本日完成**。上游:2026-08-14/15 两轮审核(12 提交增量 + 全项目 40k 行 Go/23k 行前端,7 High 全部双方确认)→ 修复计划 `plans/plan-full-review-fixes-2026-08-15.md`(plan-code-reviewer 三轮审核 r3 APPROVED,25 步实施顺序)。前 24 步(H1-H7/M1-M14/X1-X2/L2-L7/L15)已于 08-15 落地,本日完成剩余 P2 与终态验证:
 
   **行为变化(计划 §7 要求显式记录,影响升级预期)**:

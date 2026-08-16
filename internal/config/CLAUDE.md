@@ -112,16 +112,34 @@
 |------|------|
 | `cookie_encryption_key` | Cookie 文件静态加密密钥。为空时禁用；非空时必须是 64 位 hex（32 字节），启动后传入 `biliutil.SetCookieEncryptionKey`，用于 AES-256-GCM 加密扫码登录写入的 Cookie 文件，并解密已有 `HIKAMI_V1` 格式 Cookie 文件。 |
 
-**DownloaderConfig 结构体（回放下载后端选择）：**
+**DownloaderConfig 结构体（回放下载后端选择 + 2026-08-13 PR#1 批量下载保护）：**
 
 | 字段 | 说明 |
 |------|------|
 | `backend` | 下载后端：`auto`（默认，native 优先，遇不支持回退 yt-dlp）、`native`、`ytdlp` |
+| `auto_retry` | 仅 download 任务的自动重试开关（默认 false；不开 worker.auto_retry 以免把 ASR/recap 一并自动重试） |
+| `max_retry_attempts` | 自动重试上限（含首次执行，默认 12） |
+| `max_concurrent` | 同时访问 B 站的回放下载数上限（<=0 默认 0 关闭批量保护，保持升级前并发行为） |
+| `min_interval_seconds` | 相邻下载开始的最小间隔秒 |
+| `failure_backoff_seconds` | 远端失败后的共享冷却窗口秒数 |
 
 | 方法 | 说明 |
 |------|------|
 | `NativeConfigured()` | backend 为空、`auto` 或 `native` 时返回 true |
 | `YTDLPConfigured()` | backend 为 `ytdlp` 时返回 true |
+
+**VADConfig 2026-08-13 PR#1 扩展字段（inaSpeechSegmenter 引擎，基础字段见 2026-07-27 changelog）：**
+
+| 字段 | 说明 |
+|------|------|
+| `engine` | VAD 引擎：`silence`（默认，ffmpeg silencedetect 兜底零依赖）/ `ina`（inaSpeechSegmenter 神经网络，需隔离 Python 环境） |
+| `ina_python` | ina 隔离环境 Python 解释器（默认 `python3`） |
+| `ina_script` | 分段脚本路径（默认 `scripts/ina_segment.py`） |
+| `ina_batch_size` | GPU 推理 batch（默认 256，显存不足调低） |
+| `ina_min_speech_sec` | 丢弃更短 speech 毛刺（默认 0.6s） |
+| `ina_merge_gap_sec` | 合并相邻说话片段的最大间隔（默认 0.4s） |
+
+配套 `EffectiveEngine()`（空值按 silence 兼容旧配置）/`EffectiveInaPython()`/`EffectiveInaScript()` 兜底方法；`Validate()` 对 engine=ina 时 batch_size>0、min_speech_sec>=0、merge_gap_sec>=0 校验。另 DashScope 新增 `dashscope.temporary_storage_enabled`（默认 false，开启后 ASR 音频直传 DashScope 临时 OSS 对象，免自建存储，48h 自动过期）。
 
 **ArchiveConfig 结构体（发布成功后归档到 WebDAV）：**
 
@@ -163,7 +181,7 @@
 
 ## 测试与质量
 
-- `config_test.go`: 48 个测试用例，覆盖：
+- `config_test.go`: 49 个测试用例，覆盖：
   - 默认值: TestLoad_DefaultValues（Web/Worker/DashScope/RecapAI 全部默认值验证）
   - 校验: TestValidate_MissingOutputRoot、TestValidate_MissingDbPath、TestValidate_Success、TestValidate_WorkerNumZero、TestValidate_PublishModeInvalid、TestValidate_DownloaderBackend、**TestValidate_ArchiveCleanupPolicy**（archive.cleanup_policy 合法值校验）
   - 日志级别: TestLogLevel_Default、TestLogLevel_Explicit（6 种输入映射）
@@ -195,12 +213,14 @@ A: `web.listen` 默认值为 `:6334`（从 `:8080` 变更），可在 YAML 中�
 ## 相关文件清单
 
 - `config.go` -- 唯一源文件
-- `config_test.go` -- 配置加载与验证测试（48 个用例）
+- `config_test.go` -- 配置加载与验证测试（49 个用例；07-30 文档误记 48,2026-08-16 /init 复核更正）
 
 ## 变更记录 (Changelog)
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-08-16 | 文档修正 | **测试计数 48→49**（2026-08-16 /init 机械复核:07-30 changelog 记 45→48 实为 49,自那时起一直少记 1;根 CLAUDE.md 索引已在 08-15 批次 d54d9e6 复核为 49,本次模块文档对齐）。无代码改动。 |
+| 2026-08-13 | 功能 | **批量回放可靠性 PR #1**(commit `c9a3e51`)三组配置:① `downloader` 加 5 字段——`auto_retry`/`max_retry_attempts`(仅 download 任务的自动重试,不开 worker.auto_retry 以免误伤 ASR/recap)+ `max_concurrent`/`min_interval_seconds`/`failure_backoff_seconds`(批量下载保护,`max_concurrent<=0` 默认关闭保持升级前行为,download 包 `downloadLimiter` 消费);② `vad` 加 `engine`("silence"默认/"ina" inaSpeechSegmenter)+ 5 个 `ina_*` 字段(python/script/batch_size/min_speech_sec/merge_gap_sec)+ `EffectiveEngine/EffectiveInaPython/EffectiveInaScript` 兜底 + Validate 扩展;③ `dashscope.temporary_storage_enabled`(默认 false,ASR 音频直传 DashScope 临时 OSS)。config_test +81 行(含 c9a3e51 的用例扩充),计数 49。 |
 | 2026-07-30 | 功能 | **新增 `replay` 配置段(回放类全局自动开关)**(branch `feat/replay-auto-switch-2026-07-30`)。第 10 个 runtimeconfig 段——`ReplayConfig`(AutoASR bool / AutoRecap bool)+ `ReplaySectionDTO`(presence-aware 指针化)+ ApplyOverrides replay case(与 vad 段同模式)。**setDefaults**:`replay.auto_asr=false`、`replay.auto_recap=false`(默认关,升级零行为变化)。**纯函数 helper**:`ReplayAutoEnabled(sourceType, sessOK, channelFlag, globalFlag) bool`(「全局兜底,主播优先」判定——channelFlag 短路 / 非回放类或取 session 失败返回 false / 回放类看 globalFlag)+ `IsReplaySourceType`(抽到 config 包避 config→session 循环依赖,供 main.go 自动链复用)。**DB v39 迁移**:runtime_settings 表 CHECK 白名单 `+replay`(同 v35/v36/v37/v38 表重建范式)。配套 handler `GET/PUT /api/config/replay` + 配置导出/导入加 Replay 段。新增 3 测试(ReplayDefaults + _ReplayPresenceAware + ReplayAutoEnabled 8 case 表驱动),config 45→**48**。详见 `AGENTS.md` 2026-07-30 changelog + `plans/plan-replay-auto-switch-2026-07-30.md`。 |
 | 2026-07-27 | 功能 | **新增 `vad` 配置段(ASR 前置 VAD 静音裁剪)**(commit `b1ba520`,branch `feat/vad-2026-07-27`)。第 9 个 runtimeconfig 段——`VADConfig`(Enabled bool / ThresholdDB int -80~0 / MinSilenceSec float64 / PaddingSec float64 / DetectionMode string 固定 "peak" / MinOutputRatio float64)+ `VADConfig.Validate()`(Config.Validate 与 handler updateVADConfig 都调,拒绝非法值避免下次启动 fatal;detection_mode 不校验因 VADProcessor 内部固定 peak)+ `VADSectionDTO`(presence-aware 指针化)+ ApplyOverrides vad case(与 tools/mcp 段同模式)。**setDefaults**:`vad.enabled=true`(默认开,实测 -40dB/2s 零真实内容损失、降 3-10% ASR 计费)、`threshold_db=-40`、`min_silence_sec=2.0`、`padding_sec=0.2`、`detection_mode=peak`、`min_output_ratio=0.3`。**DB v38 迁移**:runtime_settings 表 CHECK 白名单 `+vad`(同 v35/v36 表重建范式)。配套 handler `GET/PUT /api/config/vad`。新增 5 测试(VADDefaults/Validate + _OverridesVADFields/_VADPresenceAware/_VADCorruptJSON),config 40→**45**。详见 `AGENTS.md` 2026-07-29 changelog + `plans/plan-vad-2026-07-27.md`。 |
 | 2026-07-25 | 配置变更 | **`output_root` 默认值 `hikami-go` → `./data`**(commit `63e25db`,branch 隐含)。**触发**:`hikami-go` 作为默认输出目录与 Go module 同名,git 不会自动忽略,曾导致真实录播产物(transcript/danmaku/recap)误入暂存区(2026-07-25 隐私清理时发现)。改为 `./data`,与 `config.example.yaml` 及 README/AGENTS 引导用户复制的模板一致。**改动**:① `config.go:874` SetDefault `'hikami-go'` → `'./data'`;② 新增 `TestSetDefaults_OutputRoot`(回归防线:钉死新默认值,防止未来再次漂移),config 39→40;③ `config.full.example.yaml` + `docs/DESIGN.md` 同步当前状态描述;④ `cmd/hikami/main.go` 启动检测旧目录 `hikami-go/` 打 WARN 引导迁移(`filepath.Clean` 归一化比较,平台无关措辞,结构化日志);⑤ `.gitignore` 兜底 `hikami-go/` 与 `data/` 并列忽略。**受影响**:仅「无 config.yaml、跑默认值」的用户(README 引导复制 config.example.yaml 的用户本就不会受影响)。 |

@@ -142,7 +142,7 @@
 
 ## 测试与质量
 
-- `worker_test.go`: 40 个测试用例，覆盖：
+- `worker_test.go`: 44 个测试用例，覆盖：
   - Store CRUD: Create（成功、缺 channel_id、缺 type、默认 payload）、Get（未找到）、List（空、排序）
   - Store 生命周期: pending->running->succeeded、pending->failed、running->failed、非 running 不能 MarkSucceeded
   - Store 高级: 非 failed 不能 Retry、UpdateProgress（成功、越界）、ActiveBySessionAndType（有/无）、ResetToPending
@@ -152,28 +152,34 @@
   - Helpers: parsePIDFromMessage、isProcessAlive
   - **syncSessionState attempt 校验（2026-07-21 新增 2 个）**：`TestSyncSessionState_StaleAttempt_Discarded`（retry 复用同一 task ID 只递增 attempt，旧 attempt 的延迟 callback 重查 DB 当前 attempt 不匹配则丢弃）、`TestSyncSessionState_FreshAttempt_Proceeds`（当前 attempt 匹配则正常处理）
   - **recoverRunning 状态同步（2026-08-01 新增 3 个）**：`TestRecoverRunningASRSyncsSessionState`（asr 分支崩溃恢复调 `syncSessionState` 同步 session 状态）、`TestRecoverRunningASRPollSyncsSessionState`（asr_poll 分支同理）、`TestRecoverRunningUploadBypassesState`（upload 为旁路任务，仅 `ResetToPending` 重排不同步主状态）
+  - **DeferredError 延期重入队（2026-08-13 PR#1 新增 3 个）**：`TestStoreDeferRunningTaskDoesNotIncrementAttempt`、`TestPoolDeferredErrorRequeuesWithoutAttemptOrFailure`（延期不加 attempt、不降级 session、不发失败通知）、`TestEnqueueIDAfterStopDoesNotQueue`（Stop 后入队守卫）
+  - **downloader 自动重试策略（2026-08-13 PR#1 新增 1 个）**：`TestShouldAutoRetryUsesDownloaderPolicy`（download 任务按 `downloader.auto_retry/max_retry_attempts` 判定，不误伤其它类型）
 
-- `task_test.go`: 7 个测试用例，覆盖：
+- `task_test.go`: 10 个测试用例，覆盖：
   - Task Store 生命周期: pending->running->progress->succeeded
   - RetryFailedTask: failed->pending（attempt+1）
   - CancelPendingTask: pending->cancelled
   - ActiveBySessionAndType: pending/running 可找到，succeeded 不可找到
   - RecoverRunning: running->failed
   - **CreateBypassFailStateRoundTrip**: 创建时置 BypassFailState=true，DB 往返持久化（v34 bypass_fail_state 列）
+  - **CreateTaskIfNoActive/UpdatePayload（2026-08-15 M11 新增 3 个）**：`TestStoreCreateTaskIfNoActiveIdempotent`（已有活跃任务返回既有任务 created=false）、`TestStoreCreateTaskIfNoActiveConcurrent`（竞态窗口重试一次仍冲突返回 ErrTaskConflict）、`TestStoreUpdatePayload`（payload 覆盖写 + 空 payload 归一 "{}" + 不存在返回 ErrTaskNotFound）
 
 ## 相关文件清单
 
-- `worker.go` -- Pool 实现、worker 循环、任务恢复（running 类型分发 + pending 孤儿重入队）、session 状态同步、BatchRetry、SetNotifyManager、**Register/WithBypassFailState/bypassFailState（状态旁路任务元数据，设计 4.3）**、**recoverRunning 的 asr/asr_poll/upload 分支补 syncSessionState（2026-08-01，对齐 live_record/default 分支）**
-- `task.go` -- Task 结构体、Store 实现、SQL 常量、PID 解析工具、RecentFailedTasks、TaskSummary、ListRunning/ListPending（共用 `listByStatus`）
+- `worker.go` -- Pool 实现、worker 循环、任务恢复（running 类型分发 + pending 孤儿重入队）、session 状态同步、BatchRetry、SetNotifyManager、**Register/WithBypassFailState/bypassFailState（状态旁路任务元数据，设计 4.3）**、**recoverRunning 的 asr/asr_poll/upload 分支补 syncSessionState（2026-08-01，对齐 live_record/default 分支）**、**DeferredError 延期处理（2026-08-13 PR#1：loop 捕获 `*DeferredError` 调 `deferTask` 退回 pending + 延迟重入队，不加 attempt/不降级/不通知）**、**`EnqueueIfNoActive`（2026-08-15 M11：仅当真正创建任务才 enqueueID+Broadcast，publisher 幂等发布链消费）**、**download 任务 `shouldAutoRetry` 按 downloader.auto_retry 策略（2026-08-13 PR#1）**
+- `task.go` -- Task 结构体、Store 实现、SQL 常量、PID 解析工具、RecentFailedTasks、TaskSummary、ListRunning/ListPending（共用 `listByStatus`）、**`CreateTaskIfNoActive`（2026-08-15 M11：`INSERT…SELECT…WHERE NOT EXISTS` 单语句原子「活跃检查+创建」，竞态窗口重试一次，双撞返回 ErrTaskConflict）**、**`UpdatePayload`（2026-08-15 M11：payload 覆盖写 + RowsAffected 检查，供 publisher 持久化 draft_id）**
+- `defer.go` -- **2026-08-13 PR#1 新增**。`DeferredError{Delay, Message}`：请求 worker pool 把 running 任务退回 pending 并在 Delay 后重新入队——适用于下载限速等本地调度约束，任务本身未失败，阻塞 worker goroutine 会让无关任务类型得不到执行机会
 - `hub.go` -- Hub 广播实现
 - `errors.go` -- 友好错误映射（GetFriendlyError、FriendlyError、errorMapping、friendlyErrorMappings）
-- `worker_test.go` -- 单元+集成测试（40 个用例）
-- `task_test.go` -- 单元+集成测试（7 个用例）
+- `worker_test.go` -- 单元+集成测试（44 个用例）
+- `task_test.go` -- 单元+集成测试（10 个用例）
 
 ## 变更记录 (Changelog)
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-08-15 | 功能 | **M11:任务存储原子幂等原语**(commit `6db0537`,审核批次 P1,配合 publisher 发布链幂等)。`task.go` 新增 `CreateTaskIfNoActive(ctx, input) (Task, bool, error)`——`INSERT…SELECT…WHERE NOT EXISTS` 单语句原子化「活跃检查+创建」(SQLite 单连接下无 check-then-act 竞态);插入 0 行即已有活跃任务,重查返回既有任务(created=false);「刚好结束」竞态窗口重试一次,双撞返回 `ErrTaskConflict`。`UpdatePayload(ctx, id, payload)`——payload 覆盖写 + RowsAffected 检查(空 payload 归一 "{}",0 行返回 ErrTaskNotFound)。`worker.go` 新增 `Pool.EnqueueIfNoActive`(仅当真正创建才 enqueueID+Broadcast)。task_test +3(Idempotent/Concurrent/UpdatePayload),worker 51→**54**。 |
+| 2026-08-13 | 功能 | **批量回放可靠性 PR #1**(commit `c9a3e51`):① 新文件 `defer.go` `DeferredError{Delay,Message}`——请求 pool 把 running 任务退回 pending 并延迟重入队,不增 attempt/不降级 session/不发失败通知(适配下载限速等本地调度约束,避免阻塞 worker goroutine 饿死其它任务类型);② `loop` 捕获 `*DeferredError` 调 `deferTask`;③ download 任务自动重试改按 `downloader.auto_retry/max_retry_attempts` 策略判定(`shouldAutoRetry`,不开 worker 全局 auto_retry 以免误伤 ASR/recap)。测试 +4(worker_test 40→44),worker 47→51(后经 M11 到 54)。 |
 | 2026-08-01 | BUG 修复 | **recoverRunning asr/asr_poll/upload 分支补齐 session 状态同步**(branch `fix/recover-running-asr-stuck-2026-08-01`,codex 四阶段审核 r7/r8/r9/r10 APPROVED)。**触发**:用户反馈「昨天的直播没有录播」,7-31 灰泽满 Hazel 一场 71 分钟直播在 ASR 转写阶段被系统 OOM Killer 杀死,录播原始文件完好但 session 卡在 `asr_submitted`、状态变 `failed`。**根因**:`Pool.recoverRunning`(`worker.go:301`)的 `case "asr","asr_poll","upload":` 分支崩溃恢复时只调 `ResetToPending` 重排任务,**未像 `live_record`/`default` 分支那样调 `syncSessionState` 同步 session 状态** → session 卡 `asr_submitted`;重排任务重入 `HandleTask` 再次 `Apply(EventASRSubmitted)` → 状态机查 `asr_submitted -> asr_submitted` 无此自环 → `ErrInvalidTransition` → 任务失败 → session 进 `failed`。**修复**:三分支补 `syncSessionState` 调用(按 task type 映射到正确的 session 状态)。worker_test.go 37→40(+`TestRecoverRunningASRSyncsSessionState`/`TestRecoverRunningASRPollSyncsSessionState`/`TestRecoverRunningUploadBypassesState`),worker 总测试 44→47。**回归**:零(默认路径不经 recoverRunning running 列表,改动只在崩溃恢复时触发)。详见 `docs/KNOWN_ISSUES.md` ISSUE-006 与 `AGENTS.md` 2026-08-01 changelog。 |
 | 2026-07-21 | BUG 修复 | **`syncSessionState` 加 attempt 校验**(branch `fix/bug-fix-2026-07-20`,commit `61f3989` v6)。**触发**:配合 session `ResetFailedSession` 的「ASR 失败可 reset」恢复链——reset 后,旧的延迟 ASR callback 可能在 reset 后才到达,需要避免它用旧 task ID/旧 attempt 覆盖新的 session 状态。**修复**:retry 复用同一 task ID 只递增 attempt,旧 attempt 的延迟 callback 到达时重查 DB 当前 attempt,不匹配则丢弃(配合 state.go 的 CAS 防御 + ResetFailedSession active task 原子守卫两层防御;v7 回退了 state.go CAS,改为容忍策略 + worker.go attempt 校验 + active task 守卫)。worker_test.go 35→37（+`TestSyncSessionState_StaleAttempt_Discarded`/`TestSyncSessionState_FreshAttempt_Proceeds`），worker 总测试 42→44。 |
 | 2026-07-06 | 修复 | **异常 #1：重启后孤儿 pending 任务死锁**（`3ae2435`）。`recoverRunning` 新增阶段二：服务重启后内存队列清空，但 DB 里 pending 的 task 不会被 `loop()` 消费，导致 session 卡在 `discovered` → scheduler `ActiveLiveForChannel` 误判 active → 死锁跳过该主播。修复：`Store.ListPending`（与 `ListRunning` 共用 `listByStatus`）查出 pending 任务，未超 `maxAttempts` 的直接 `enqueueID` 重新入队（**不递增 attempt**、从未被消费），超限的 `MarkFailed` + `syncSessionState` 同步 session 状态。同时明确 live_record 的 running 恢复走 `Manager.Adopt` 接管在跑的 ffmpeg 进程。worker_test.go 33→35（+`TestRecoverRunningReEnqueuesOrphanPending`/`TestRecoverRunningOrphanPendingAttemptsExhausted`/`TestRecoverRunningLiveRecordAdopts`），task_test.go 5→6（`TestCreateBypassFailStateRoundTrip` 此前已加但文档漏登），worker 总测试 38→41 |

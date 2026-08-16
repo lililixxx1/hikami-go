@@ -101,28 +101,30 @@ type Deleter interface {
 
 ## 测试与质量
 
-- `upload_test.go`: 28 个测试用例，覆盖：
+- `upload_test.go`: 29 个测试用例，覆盖：
   - CreateTask: 成功（asr_done/recap_done）、错误状态、无远端配置、目录不存在、非目录、活跃冲突、session 不存在
-  - Fetch: 成功、无远端配置、session 不存在、复制失败、取回后置 `local_available=true`
+  - Fetch: 成功、无远端配置、session 不存在、复制失败、取回后置 `local_available=true`、**静默缺目录拒绝（2026-08-15 L5：Fetch/Copy 返回 nil 但本地目录缺失时报错,不再置 local_available=true 误导下游守卫）**
   - 清理策略: none（含空值）、unknown、generated（删除 asr/）、temp（删除公开音频+远端删除+本地文件不存在）、all（删除整个目录+置 `local_available=false`/跳过未上传/session 查询失败）
   - HandleTask: 成功流程、复制失败
-- `webdav_copier_test.go`: 10 个测试用例，覆盖：
+- `webdav_copier_test.go`: 11 个测试用例，覆盖：
   - joinWebDAVPath: 多部分拼接、斜杠清理、空部分过滤
   - pathDir: 含斜杠取父目录、无斜杠返回空
   - relativeTarget: 正常去除前缀、空 basePath、target 等于 basePath
   - isWebDAVNotExist: os.ErrNotExist 返回 true、其他错误返回 false
+  - **整体超时应用（2026-08-15 M2）**: `TestWebDAVCopierTimeoutApplied`
 
 ## 相关文件清单
 
-- `upload.go` -- Handler、Copier/Deleter 接口、RcloneCopier、NewConfiguredCopier/NewConfiguredDeleter 工厂方法、清理策略
-- `webdav_copier.go` -- WebDAVCopier 原生 WebDAV 实现（Copy/Fetch/Delete）、路径安全处理、辅助函数
-- `upload_test.go` -- 单元测试（25 个用例）
-- `webdav_copier_test.go` -- WebDAV Copier 测试（10 个用例）
+- `upload.go` -- Handler、Copier/Deleter 接口、RcloneCopier、NewConfiguredCopier/NewConfiguredDeleter 工厂方法、清理策略、**Fetch 后本地目录存在性校验（2026-08-15 L5）**
+- `webdav_copier.go` -- WebDAVCopier 原生 WebDAV 实现（Copy/Fetch/Delete）、路径安全处理、辅助函数、**客户端 30 分钟整体超时（2026-08-15 M2，超时参数化供测试注入；服务端无响应不再永久挂起）**
+- `upload_test.go` -- 单元测试（29 个用例）
+- `webdav_copier_test.go` -- WebDAV Copier 测试（11 个用例）
 
 ## 变更记录 (Changelog)
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-08-15 | BUG 修复 | **M2 + L5**(commit `91cf02d`/`6d33ccd`,审核批次)。**M2**:WebDAV 客户端加 30 分钟整体超时——此前 gowebdav 默认无超时,服务端无响应时 Fetch/Copy 永久挂起占死 worker;超时参数化(`timeout` 字段)供测试注入(+1 测试 `TestWebDAVCopierTimeoutApplied`)。**L5**:Fetch/Copy 返回后、置 `local_available=true` 前 `os.Stat` 校验本地目录存在且为目录——rclone/WebDAV 声称成功但目录缺失时报错,不再让 glossary/recap/publisher 的 local_available 守卫被假信号骗过(+1 测试 `TestFetchSilentMissingLocalDirRejected`)。upload 38→**40**。 |
 | 2026-06-23 | 重构 | 抽出共享清理函数 `CleanupSession(ctx, sessions, deleter, cfg, sessionDir, sessionInfo, policy, guardStatus)` 及 `cleanupTempShared`/`cleanupGeneratedShared`/`cleanupAllShared`，`internal/archive` 归档后复用同一套清理逻辑，以 `guardStatus` 区分守卫态（upload=`uploaded`、archive=`published`）。upload.go 内原有的 cleanup 逻辑改为调用这些共享函数 |
 | 2026-06-17 | 修复 | `cleanupAll` 恢复为删除整个本地场次目录（撤销此前退化为仅删 `raw/` 的改动），删除成功后置 `session.local_available=false`；`Fetch` 取回成功后置回 `true`，形成「上传→清理→取回」闭环，驱动 glossary/recap/publisher 守卫 |
 | 2026-06-04 | 测试补充 | 新增 webdav_copier_test.go（10 用例）：joinWebDAVPath 3 个、pathDir 2 个、relativeTarget 3 个、isWebDAVNotExist 2 个。总用例从 25 增至 35 |

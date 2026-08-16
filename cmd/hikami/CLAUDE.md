@@ -54,7 +54,7 @@ recap.SetOnSuccess --(auto_publish)-> publisher.CreateTask
 publisher.SetOnSuccess -(auto_after_publish)-> archive.CreateTask  (状态旁路任务)
 ```
 
-每段回调内：获取主播配置 → 检查对应能力（`runtimeStatus.Capabilities.*`）→ 调用下一阶段 `CreateTask`；失败仅记录警告，不阻断主流程，已成功阶段不会被回滚。归档段从 `published` 出发，是「状态旁路任务」——不调用 `states.Apply`、不发 Event，成功仅写 `archived_at`。
+每段回调内：获取主播配置 → 检查对应能力（`autoChainGate.enabled(...)`，**2026-08-15 M14 改实时探测**：`autoChainCapabilityGate` 持 `atomic.Pointer` 指向 server 的 `CurrentRuntimeStatus()` 代际快照源，用户中途补齐配置后 auto ASR/publish/archive 不再被启动时刻的快照永久卡死；server 未注入时兜底启动快照）→ 调用下一阶段 `CreateTask`；失败仅记录警告，不阻断主流程，已成功阶段不会被回滚。归档段从 `published` 出发，是「状态旁路任务」——不调用 `states.Apply`、不发 Event，成功仅写 `archived_at`。
 
 **回放类不自动发布（2026-07-02，`e9cb624`）**：`recap.SetOnSuccess` 回调在提交 publish 任务前，先查 `sessionStore.Get(task.SessionID)`；若 `session.SourceType == "download"` 或 `"import"`（即回放类来源），**直接 return 跳过自动发布**——只有录播（`live_record`）才会随 `auto_publish` 自动发B站。手动 API `POST /api/sessions/:sid/publish` 不受此限制（由前端按 source_type 隐藏动作覆盖）。覆盖 recap 重跑场景（重跑仍按 source_type 判断）。
 
@@ -104,7 +104,8 @@ A: 加 `-tags systray` 编译托盘代码（`tray_windows.go`，依赖 `fyne.io/
 
 ## 相关文件清单
 
-- `main.go` -- 启动流程、Cookie 加密密钥初始化、依赖组装、`newShutdownCoordinator` 创建 + `runTray` 主线程阻塞、自动触发链（normalize→asr→recap→publish→archive 的 SetOnSuccess 回调；recap→publish 回调按 session.SourceType 拦截回放类自动发布）、archive Handler 创建与 WithBypassFailState 注册、旧版术语表导入、回顾模板 Store 创建
+- `main.go` -- 启动流程、Cookie 加密密钥初始化、依赖组装、`newShutdownCoordinator` 创建 + `runTray` 主线程阻塞、自动触发链（normalize→asr→recap→publish→archive 的 SetOnSuccess 回调；recap→publish 回调按 session.SourceType 拦截回放类自动发布）、archive Handler 创建与 WithBypassFailState 注册、旧版术语表导入、回顾模板 Store 创建。**2026-08-15**:`autoChainCapabilityGate`（M14 实时能力 gate,`runtimeStatusSource` 接口 + `atomic.Pointer` + `attach(server)`）、启动调 `fsutil.RemoveTempCookieFiles`（L4 cookie 残留清扫）、`publisherHandler.SetTaskStore(workerPool.Store())`（M11 发布链幂等 draft_id 持久化装配）
+- `capability_gate_test.go` -- **2026-08-15 新增**（4 个用例）：gate 默认兜底启动快照 / attach 后读实时状态 / attach 后 nil server 不 panic / server 实时快照优先于启动快照的阻断方向
 - `embed.go` -- 前端静态文件嵌入（`//go:build embedded_web`，`//go:embed all:webdist`）；`embed_none.go` 为无 tag 时的空占位（API-only 构建）
 - `tray_windows.go` -- **Windows 系统托盘实现**（`//go:build windows && systray`）：基于 `fyne.io/systray`，托盘菜单「打开管理界面/退出」+ 信号 goroutine 兜底；`shutdownCoordinator`(sync.Once 幂等关闭，关 HTTP 后调 `systray.Quit()` 让 `systray.Run()` 返回、main 走 defer 链)；`initLogFile` 桌面模式日志写 `%LOCALAPPDATA%/Hikami-Go/hikami.log`(失败回退 exe 同目录便携模式)
 - `tray_other.go` -- **非 Windows / 无 systray tag 的等价占位**（`//go:build !windows || !systray`）：`shutdownCoordinator` 结构/逻辑与 `tray_windows.go` 一致但不调 `systray.Quit`(无托盘)；`runTray` 阻塞在 `signal.Notify`；`initLogFile` 返回 stdout(不写文件)。两文件通过 build tag 互斥，保证 main.go 的 `runTray`/`newShutdownCoordinator`/`initLogFile` 符号在所有平台可编译
@@ -114,6 +115,7 @@ A: 加 `-tags systray` 编译托盘代码（`tray_windows.go`，依赖 `fyne.io/
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-08-15 | BUG 修复 | **M14:自动链能力 gate 改实时探测**(commit `3cc882d` + `594028c`,审核批次 P1)。**根因**:自动触发链三段(ASRSubmit/PublishOpus/WebDAVUpload)的能力检查用启动时刻的 `runtimeStatus` 快照——用户启动后才在 Web 上配好 DashScope key/发布 cookie/WebDAV,auto 链仍认为能力缺失永久跳过,须重启才恢复。**修复**:`autoChainCapabilityGate`(持 `atomic.Pointer[runtimeStatusSource]`,`enabled(fn)` 每次调用实时读 `server.CurrentRuntimeStatus()` 代际刷新快照;Probe 完成在 server 构造之后 `attach(server)` 注入,此前兜底启动快照,零竞态)。新增 `capability_gate_test.go` 4 用例(含 594028c 审核Minor 补的「server 优先于启动快照的阻断方向」),cmd/hikami 0→**4**(本包首次有测试)。同 commit 批次装配:M11 `publisherHandler.SetTaskStore` + L4 启动 cookie 清扫。 |
 | 2026-07-18 | 修复 | **openBrowser 子进程闪窗**（branch `fix/investigations-2026-07-18`，codex 计划+执行审核 APPROVED）。桌面模式（`-H windowsgui`）下点托盘「打开管理界面」会闪现黑色 cmd 窗口——Win32 机制：GUI 子系统父进程无控制台，派生的控制台子进程（`cmd /c start` / `open` / `xdg-open`）被 Windows 新建控制台。修复：`openBrowser` 在三分支 switch 之后、`cmd.Start()` 之前加 `executil.HideWindow(cmd)` 一行（三分支共享一处插入）。helper 见新增包 `internal/executil/`（Windows OR 进 `CREATE_NO_WINDOW 0x08000000`，非 Windows no-op）。与本次同步改造的另外 10 个业务文件 17 处调用点共同覆盖全仓 18 处生产 exec 调用点（详见 `internal/executil/CLAUDE.md` 的"覆盖范围"段）。无新增测试（helper 在非 Windows 是 no-op，调用点无逻辑变化）。 |
 | 2026-07-14 | 功能 | **Windows 系统托盘 + 隐藏控制台 + 文件日志**（`ad34a15`）：① 新增 `tray_windows.go`（`//go:build windows && systray`），基于 `fyne.io/systray` 实现托盘图标 + 菜单「打开管理界面/退出」，`openBrowser` 打开 `serverURL`；新增 `tray_other.go`（`//go:build !windows \|\| !systray`）作等价占位，两文件通过 build tag 互斥保证 `runTray`/`shutdownCoordinator`/`initLogFile` 在所有平台可编译；新增 `trayicon.go` + `trayicon.ico`（`//go:embed` 托盘图标字节）。② **关闭流程重构为 `shutdownCoordinator`**（`sync.Once` 幂等）：原 main.go 内联的 SIGINT/SIGTERM 监听 + HTTP Shutdown 抽到协调器，托盘菜单「退出」/信号都走 `requestShutdown`，关 HTTP 后调 `systray.Quit()` 让 `systray.Run()` 返回、main 继续 defer 链（sched.Stop → workerPool.Stop → database.Close → logCleanup LIFO）；**不调 `os.Exit`** 保证 defer 执行。③ **桌面模式文件日志**：`initLogFile` 在 Windows+systray 下优先写 `%LOCALAPPDATA%/Hikami-Go/hikami.log`（用户可写目录），失败回退 exe 同目录便携模式；其他平台返回 stdout。main.go 启动时调 `initLogFile()` 拿 `logWriter` + `logCleanup`。④ Makefile 新增 `build-windows-desktop`/`build-windows-desktop-lite` target（`-tags 'embed_ffmpeg,embedded_web,systray'` + `-ldflags='-H windowsgui -s -w'`），`CGO_ENABLED=0` 纯 Go 编译。⑤ CI release.yml 的 windows 矩阵新增 `desktop: true` 变体（产物名带 `-desktop` 后缀，加 `systray` tag + `-H windowsgui`）。依赖：`go.mod` 新增 `fyne.io/systray v1.12.2`（transitive：`godbus/dbus/v5` 等）。
 

@@ -169,11 +169,11 @@ type Provider interface {
 
 ## 测试与质量
 
-- **测试总数**: 121（`grep -c "^func Test"` 函数口径：recap_test.go 74 + template_test.go 27 + 2 个真实 API 端到端 + anthropic_tools_test.go 5 + provider_tools_test.go 5 + provider_openai_test.go 8；运行时表驱动展开更多）
+- **测试总数**: 136（`grep -c "^func Test"` 函数口径：recap_test.go 80 + template_test.go 29 + 2 个真实 API 端到端 + anthropic_tools_test.go 10 + provider_tools_test.go 5 + provider_openai_test.go 8 + codex_cli_test.go 2；运行时表驱动展开更多）
 
 > **2026-07-22 MCP 工具感知(Phase 1/4)**:`handler.go` 的 `generateRecap` 是回顾生成的 AI 调用入口,根据是否配置 MCP 工具选择路径——有 MCP 工具 + provider 实现 `aiprovider.ToolCapableProvider`→走 `runToolsAwareGenerate`(默认调 `mcp.RunWithTools` agent loop,模型可主动联网查证术语/人名/游戏名),否则普通 `provider.Generate` 零回归(空 tools 等价于 Generate,有契约测试保护)。包级函数变量 `RunToolsAwareGenerate` 由 `main.go` 注入,规避 recap→mcp 反向导入。tool-calling 基础设施(OpenAI/Anthropic provider 的 `GenerateWithTools` 实现与请求体 tools/tool_choice 解析)虽属 `aiprovider`,但其测试文件置于本包(recap 是首要消费方)。
 
-- `recap_test.go`: 74 个测试用例，覆盖：
+- `recap_test.go`: 80 个测试用例，覆盖：
   - CreateTask: 成功、状态错误、文件缺失、活跃冲突、场次不存在
   - Provider: LocalProvider（正常/空 prompt/system prompt）
   - 辅助函数: firstParagraph、safeName、parseChatCompletionContent、parseAnthropicResult
@@ -188,12 +188,16 @@ type Provider interface {
   - 预设: BuiltinPresetsPromptLayering、defaultSystemPromptHasDetailConstraints
   - 署名识别: `hasGeneratedNotice` 兼容历史 Hazel 与新 Hikami 署名/变体（改名过渡期 AI 可能吐回旧签名，`TestHasGeneratedNotice`）
   - Handler: NewHandlerNilTemplateStore
+  - **幂等与串行（2026-08-13 PR#1）**: `TestCreateTaskActiveIsIdempotent`（重复点击/自动手动重叠幂等,回顾成功前 session 有意留在 asr_done 不能只看状态）、`TestHandleTaskDefersWhileAnotherRecapIsRunning`（CLI provider 串行 gate,分钟级等待不占 worker）、`TestNewHandlerSerializesOnlyCLIProviders`（本地 CLI 才 gate,API provider 保持原并发）、`TestHandleTaskAcceptsRetryAndRegenStatuses`（canHandleRecap 接受 failed 重试）、`TestHandleTaskRetryAdvancesFailedSession`
+  - **空 content 守卫（2026-08-15 H4）**: `TestHandleTaskEmptyContentFailsWithoutWritingRecap`（MCP agent loop 耗尽时空正文不落盘/不发布）、`TestHandleTaskEmptyContentLengthRescuedByContinuation`
+  - **X1**: `TestHandleTaskPostSuccessProgressFailureDoesNotFailTask`（成功后置 Progress 失败不回卷已成功任务）
 
-- `template_test.go`: 27 个测试用例，覆盖：
+- `template_test.go`: 29 个测试用例，覆盖：
   - TemplateStore CRUD: GetGlobal、GetByChannel、Upsert、Delete、ListGlobal
   - Resolve 合并逻辑: 7 种场景
   - RenderTemplate: 8 种场景
   - **ResolvedTemplate JSON 键名**（2026-07-16，`TestResolvedTemplateJSONKeys`）：断言 4 字段序列化为 snake_case（`system_prompt`/`user_format`/`fan_name`/`extra_vars`），不再有 PascalCase
+  - **live_type（2026-08-16 L6）**: `TestSourceTypeLabel`/`TestRenderTemplateLiveType`——download/import 来源的 `vars.LiveType` 有正确标签,不再空串
 
 - `test_recap_main_test.go`: 1 个端到端集成测试（TestGenerateRecapFromRealData，使用真实 API）
 
@@ -201,16 +205,18 @@ type Provider interface {
 
 - `provider_tools_test.go`: 5 个测试用例（**2026-07-22 新增**,Phase 1 tool-calling）——OpenAI provider 的 `GenerateWithTools`：请求体构造（tools/tool_choice 字段）、`parseChatCompletionResult` 读 tool_calls（含 finish_reason 缺失回填）、**空 tools 等价于 Generate 零回归契约测试**
 
-- `anthropic_tools_test.go`: 5 个测试用例（**2026-07-22 新增**,Phase 1 tool-calling）——Anthropic provider 的 `GenerateWithTools`：请求体构造、tool_use 响应解析、纯文本响应向后兼容、**空 tools 等价于 Generate 零回归契约测试**
+- `anthropic_tools_test.go`: 10 个测试用例（2026-07-22 新增 5 个 Phase 1 tool-calling;2026-08-15 M1 +5）——Anthropic provider 的 `GenerateWithTools`：请求体构造、tool_use 响应解析、纯文本响应向后兼容、**空 tools 等价于 Generate 零回归契约测试**;**M1 空 content 分流重试**（`stop_reason=max_tokens` 确定性不重试/其余有界重试 3 次,对齐 doOpenAIRequestWithRetry 语义,5 个用例）
+
+- `codex_cli_test.go`: 2 个测试用例（2026-08-13 PR#1 新增 `TestCodexCLIArgs` + 2026-08-15 H6 新增 `TestClaudeCLIArgs`）——CLI 参数构造:stdin-only 提示词(不加载项目 AGENTS.md 省 token)、空 model 不拼 `--model ""`
 
 ## 相关文件清单
 
-- `handler.go` -- Handler、CreateTask、Register、HandleTask 主流程、`generateRecap`（2026-07-22 MCP 工具感知入口：有工具 + ToolCapableProvider→RunWithTools，否则普通 Generate 零回归）、`runToolsAwareGenerate`（默认调 mcp.RunWithTools，可由 main.go 包级变量注入覆盖）。**2026-07-30 删除 `CreateTaskWithRange`/`canCreateRangeRecap`**(自定义时间段回顾功能下线)
+- `handler.go` -- Handler、CreateTask、Register、HandleTask 主流程、`generateRecap`（2026-07-22 MCP 工具感知入口：有工具 + ToolCapableProvider→RunWithTools，否则普通 Generate 零回归）、`runToolsAwareGenerate`（默认调 mcp.RunWithTools，可由 main.go 包级变量注入覆盖）。**2026-07-30 删除 `CreateTaskWithRange`/`canCreateRangeRecap`**(自定义时间段回顾功能下线)。**2026-08-13 PR#1**:CreateTask 幂等(重叠提交复用既有活跃任务)+ `serialRecapProvider` 本地 CLI 串行 gate(API provider 不降并发)+ canHandleRecap 接受 failed(任务重试)。**2026-08-15 M11**:CreateTask/CreateRegenTask 尾部改 `pool.EnqueueIfNoActive`(原子幂等入队);**H4**:MCP 工具路径生成后空 content 守卫(不落盘不发布,任务失败);**X1**:成功后置 Progress 失败降级告警;**L6**:`sourceTypeLabel` helper 填 `vars.LiveType`
 - `provider_util.go` -- Provider 接口、LocalProvider、NewConfiguredProvider
-- `provider_openai.go` -- OpenAICompatibleProvider 实现
-- `anthropic.go` -- AnthropicProvider 实现
-- `claude_cli.go` -- ClaudeCLIProvider 实现
-- `codex_cli.go` -- CodexCLIProvider 实现
+- `provider_openai.go` -- OpenAICompatibleProvider 实现（**2026-08-13 ISSUE-007 空 content 分流重试**:`doOpenAIRequestWithRetry` 公共化,finish_reason 分流,诊断日志）
+- `anthropic.go` -- AnthropicProvider 实现（**2026-08-15 M1 空 content 分流重试**,对齐 OpenAI 语义）
+- `claude_cli.go` -- ClaudeCLIProvider 实现（**2026-08-15 H6:空 model 条件追加**,不拼 `--model ""`）
+- `codex_cli.go` -- CodexCLIProvider 实现（**2026-08-13 PR#1**:stdin-only 提示词 + `recapProviderNeedsAPIKey` CLI 免 key,从仓库目录运行不再加载项目 AGENTS.md 编码代理上下文浪费 token）
 - `prompt.go` -- buildPrompt（PromptSection 模块化）、术语表注入、模板变量整合
 - `transcript_correction.go` -- 回顾前术语校正转写、校正报告产物
 - `glossary_correction.go` -- 最终 Markdown 术语兜底、"致..."章节整理
@@ -222,15 +228,19 @@ type Provider interface {
 - `template.go` -- TemplateStore CRUD、Resolve 合并逻辑、导入导出、ClearCustom 全量清除、哨兵错误
 - `render.go` -- RenderTemplate 变量插值引擎、TemplateVars 结构体
 - `presets.go` -- TemplatePreset 类型、BuiltinPresets 5 个内置模板预设
-- `recap_test.go` -- 单元+集成测试（76 个用例）
-- `template_test.go` -- 模板测试（27 个用例）
+- `recap_test.go` -- 单元+集成测试（80 个用例）
+- `template_test.go` -- 模板测试（29 个用例）
 - `test_recap_main_test.go` -- 端到端集成测试（1 个用例）
 - `test_recap_0329_test.go` -- 端到端集成测试（1 个用例，03.29 场段）
 - `provider_tools_test.go` -- OpenAI provider tool-calling 测试（5 个用例，2026-07-22 新增）
-- `anthropic_tools_test.go` -- Anthropic provider tool-calling 测试（5 个用例，2026-07-22 新增）
+- `anthropic_tools_test.go` -- Anthropic provider tool-calling 测试（10 个用例：2026-07-22 5 + 2026-08-15 M1 空 content 重试 5）
+- `codex_cli_test.go` -- CLI 参数构造测试（2 个用例，2026-08-13/08-15 新增）
 
 ## 变更记录 (Changelog)
 
+- 2026-08-15/16(五/日):**审核修复批次 recap 六项**(H4/H6/M1/M11-recap/X1/L6+L7,commit `82f1584`/`1929c27`/`c19adc3`/`6db0537`/`5753771`/`deb0f05`):① **H4** MCP 工具路径生成后空 content 守卫——agent loop 耗尽/finish_reason=length 时空正文不再穿透落盘/发布,任务判失败(ISSUE-007 绕行收口;+2 测试);② **H6** claude_cli 空 model 条件追加,不拼 `--model ""` 致 CLI 报错(+1 测试 TestClaudeCLIArgs);③ **M1** anthropic provider 空 content 分流重试(`stop_reason=max_tokens` 确定性不重试,其余有界 3 次,对齐 doOpenAIRequestWithRetry;+5 测试);④ **M11** CreateTask/CreateRegenTask 尾部改 `pool.EnqueueIfNoActive` 原子幂等入队(配合 worker.CreateTaskIfNoActive);⑤ **X1** 成功后置 Progress 失败降级告警(Apply 已成功/onSuccess 已触发,不回卷任务失败;+1 测试);⑥ **L6** `sourceTypeLabel` 填 `vars.LiveType`(download/import 不再空串;+2 测试)+ **L7** publisher 侧 `truncateRunes` 中文摘要 rune 截断。recap 128→**136**(+8;此前 PR#1+H6 已到 128)。
+
+- 2026-08-13(三):**批量回放可靠性 PR #1**(commit `c9a3e51`):① **CreateTask 幂等**——重复点击/自动手动提交重叠时复用既有活跃任务(回顾成功前 session 有意保留在 asr_done,不能只据状态判断);② **本地 CLI 串行 gate**——`serialRecapProvider` 仅 CLI provider(claude_cli/codex_cli/local)串行化昂贵生成(分钟级等待任务退回 pending 不占 worker goroutine),API provider 保持原并发;③ **canHandleRecap 接受 failed**(任务重试入口,配合 state failed 入边);④ **codex_cli stdin-only**——提示词走 stdin,从仓库目录运行不再加载项目 AGENTS.md 编码代理上下文(每次回顾浪费大量 token)+ CLI provider 免 API key(`recapProviderNeedsAPIKey`,runtime probe 同步)。测试 +6(recap_test 74→79 + codex_cli_test 新 1),recap 121→127。
 - 2026-08-13(三):**ISSUE-007 空 content 真根因定位 + 修复**(branch `fix/recap-empty-content-retry-2026-08-13`,经两轮 plan-code-reviewer 审核收敛)。**根因**(非间歇):runtime_settings 把 model 从 pro 覆盖成 flash(reasoning 模型)+ max_tokens=16384 对 reasoning 模型不足(DeepSeek 的 max_tokens 限制 reasoning+completion 总和,且耗尽时常报 `finish_reason=stop` 而非 `length`)。**修复**(`provider_openai.go`,新增 `provider_openai_test.go`):① 抽公共 `doOpenAIRequestWithRetry`,`Generate` 与 `GenerateWithTools` 共用——修工具路径(MCP 开启时 recap 走此)空 content 硬失败的不对称;② 按 `finish_reason` 分流:`length`/`content_filter` 属确定性失败**不重试**直接报错(避免对确定性失败白烧付费调用),其余(`stop`+空等)有界重试共 3 次兜底真·间歇,HTTP 错误不重试;③ 空 content 时记录 finish_reason + raw_head(rune 安全截断)修复原诊断缺陷(丢弃 Raw 不打日志);④ TrimSpace 判空避免空白回顾流向下游。诊断口径在 `docs/KNOWN_ISSUES.md` ISSUE-007 诚实修正:DeepSeek 的 finish_reason 不能单独区分确定性与间歇。新增 8 测试(重试后成功/耗尽/HTTP 不重试/length 不重试/content_filter 不重试/首调成功不重试/GenerateWithTools 重试/truncateForLog 边界),recap 测试 113→**121**。详见 `AGENTS.md` 2026-08-13 changelog + `docs/KNOWN_ISSUES.md` ISSUE-007。
 
 - 2026-07-30(四):**删除自定义时间段回顾功能**(branch `feat/replay-auto-switch-2026-07-30`)。核实关键事实:`recap-partial` 与 `with-range` 是同一功能两个 URL 别名(都调 `recap.CreateTaskWithRange`),前端 UI 删除后该功能无任何消费方;`CreateTaskWithRange` 无其他调用方;续写 continuation 是 HandleTask 内部独立逻辑不受影响。**删除**:`CreateTaskWithRange`(handler.go)+ `canCreateRangeRecap`(只被它用)+ 清理 `canHandleRecap`/`validateRecapPreconditions` 注释引用;`recap_test.go` 删 2 个 `TestCreateTaskWithRange*` 测试(BypassOnRegenStatuses/LocalUnavailable)。同步 handler 删 recap-partial/recap-with-range 端点 + OpenAPI spec 删 path/孤儿 schema。recap 测试 115→**113**(recap_test.go 76→74)。零回归(删除无消费方功能)。详见 `AGENTS.md` 2026-07-30 changelog + `plans/plan-replay-auto-switch-2026-07-30.md`。

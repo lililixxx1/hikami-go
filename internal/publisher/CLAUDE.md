@@ -276,23 +276,27 @@ B 站专栏发布 API（`SaveDraft`/`PublishOpus`）可能在请求触发风控�
     - HandleTask_NotifyManager: 发布完成后发送通知
     - HandleTask_InvalidStatus: 非有效前置状态返回错误
     - HandleTask_UploadedStatus: 从 uploaded 状态成功发布
+    - **M11 发布链幂等（2026-08-15 新增 4 个）**：`TestHandleTask_RetryDeletesStaleDraftAndPersists`（重试删旧草稿 + draft_id 经 payload 持久化 round-trip）、`TestHandleTask_DeleteStaleDraftFailureDegraded`（删旧草稿失败仅告警降级不阻断）、`TestHandleTask_PublishTimeoutHint`（超时错误附人工确认提示）、`TestAnnotateUnknownPublishOutcome`（DeadlineExceeded/Canceled/timeout→追加提示）
+    - **failed 重试（2026-08-16 新增 1 个）**：`TestHandleTask_FailedSessionRetryAccepted`（canHandlePublish 放行 failed）
+    - **X1（2026-08-15 新增 1 个）**：`TestHandleTask_PostSuccessProgressFailureDoesNotFailTask`（成功后置 Progress 失败不回卷任务）
 
 - `publish_target_test.go`: 2 个测试用例，覆盖 `PublishTarget.Marshal`（JSON 结构序列化）与 `ParsePublishTarget`（兼容旧裸 dyn_id/`draft:id` 格式）。
 
 ## 相关文件清单
 
-- `publisher.go` -- Handler 实现、任务流程编排、ResolvedPublishConfig、resolvePublishConfig、封面来源解析（`resolveCoverUpload`/`webCoverURL`）、`findCoverImage`
+- `publisher.go` -- Handler 实现、任务流程编排、ResolvedPublishConfig、resolvePublishConfig、封面来源解析（`resolveCoverUpload`/`webCoverURL`）、`findCoverImage`。**2026-08-15 M11 发布链幂等**:`Handler.tasks` 字段 + `taskPayloadWriter` 接口 + `SetTaskStore` 注入(main.go 装配);CreateTask 改 `pool.EnqueueIfNoActive`(重复提交复用既有任务);HandleTask 解析 payload 里的 `PublishTarget{DraftID}`——重试时先删旧草稿(失败仅 Warn 降级不阻断)、SaveDraft 后立即持久化 draft_id 再 PublishOpus(崩溃重试不再重复建草稿);`annotateUnknownPublishOutcome` 给超时类未知结果追加「请到 B 站人工确认」提示;**canHandlePublish 接受 failed**(2026-08-16 重试闭环);**`truncateRunes`** 中文摘要 rune 安全截断(2026-08-16 L7,不再切出半个字符);**成功后置 Progress 失败降级告警**(2026-08-15 X1,不回卷已成功任务)
 - `bilibili_opus.go` -- BiliOpusClient 实现、B 站 API 交互、错误映射、OpusCoverUploader + UploadCover、-352 风控处理（doRequestWithGaia/doRequest/getBuvids/injectBuvids/performGaiaVerification）、buvid 24h 缓存
 - `cookie.go` -- 重导出 `internal/biliutil` 的 Cookie 类型（保持对外接口兼容）
 - `md2opus.go` -- Markdown 到 Opus 格式转换器（含 `formatTableRow`、`isTableSeparator`、`isHR`、`parseTableCells`、`makeHR`、`parseInlineBold` 等 helpers）
 - `md2opus_test.go` -- 转换器单元测试（21 个用例）
 - `bilibili_opus_test.go` -- B 站 API 交互测试（11 个用例）
-- `publisher_test.go` -- HandleTask 集成测试与配置合并测试（34 个用例）
+- `publisher_test.go` -- HandleTask 集成测试与配置合并测试（40 个用例）
 - `publish_target_test.go` -- PublishTarget 序列化/反序列化测试（2 个用例）
 
 ## 变更记录 (Changelog)
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-08-15/16 | BUG 修复 | **M11 发布链幂等 + failed 重试 + X1 + L7**(commit `6db0537`/`358cae1`/`5753771`/`deb0f05`,审核批次)。**M11 根因**:发布超时/崩溃重试会重复建草稿(每次 SaveDraft 新 draft_id,旧草稿成孤儿)且重复提交创建多个 publish 任务。**修复**:① draft_id 经 task.Payload(`PublishTarget{DraftID}` JSON)持久化 round-trip;② 重试时先 DeleteDraft 旧草稿(失败仅 Warn 降级——孤儿草稿可人工管理,不阻断重发);③ SaveDraft 成功后立即 UpdatePayload 再 PublishOpus;④ CreateTask 改 `EnqueueIfNoActive` 原子幂等(配合 worker.CreateTaskIfNoActive);⑤ `annotateUnknownPublishOutcome` 超时类错误附「到 B 站人工确认」提示。**358cae1**:canHandlePublish 放行 `failed`(recap_done/uploaded/failed,重试闭环最后一环)。**X1**:成功后置 Progress 上报失败降级告警(Apply 已成功/onSuccess 已触发,不回卷任务失败)。**L7**:`truncateRunes` 中文摘要 rune 截断。测试 +6(publisher_test 34→40),publisher 68→**74**。 |
 | 2026-07-20 | 修复 | **`resolvePublishCookie` 传 channel.PublishAccountID 让 per-channel 发布账号生效**(branch `fix/streamer-publish-fields-2026-07-19`,codex 4 轮计划审核收敛)。**根因**:`publisher.go:382` 此前调 `ResolveCookie(ctx, sql.NullInt64{}, sql.NullInt64{}, "publish", ch.CookieFile)`,第 3 参 `publishAccountID` 永远传空 `sql.NullInt64{}`,导致三级链 level 1(channel override)永远跳过,主播级发布账号字段即使设了也不生效。**改动**:① channel.go 补 `PublishAccountID` 字段全链路(struct/scan/SQL/EnsureUnassigned);② publisher.go 加本地 helper `nullInt64FromPtr` 把 `*int64 → sql.NullInt64`(参照 `live_record/manager.go:182`),调用改为 `ResolveCookie(ctx, sql.NullInt64{}, nullInt64FromPtr(ch.PublishAccountID), "publish", ch.CookieFile)`;③ 配套:`handler.listBiliSeries` 加 `?channel_id=` query 复用相同链路。**测试**:`TestHandleTask_PublishAccountIDWinsOverLegacy` end-to-end 验证 channel 同时绑 PublishAccountID + legacy CookieFile 时,SaveDraft 收到的是账号 cookie(DedeUserID=99999)而非 legacy。 |
 | 2026-07-05 | 重构 | **buvid 拉取下沉到共享组件**：本地 `getBuvids`/`injectBuvids`/`cachedBuvid`/`buvidCache`/`buvidCacheMu` 删除，改用 `biliutil.BuvidStore` + `biliutil.InjectBuvids`（replace 语义，比原无条件追加更安全）。`BiliOpusClient` 字段 `buvidCache`/`buvidCacheMu` → `buvids *biliutil.BuvidStore`，构造时 `NewBuvidStoreWithHTTPClient(c.httpClient)` 复用同一 client 避免连接池分裂。三处调用点（`uploadCoverToURL`/`doRequestWithGaia`/`doRequest`）改调共享组件。**行为等价**，容错策略不变。测试 helper `newOpusClientWithRedirect` 同步在覆盖 httpClient 后重新绑定 BuvidStore。publisher 测试 66→67 |

@@ -212,6 +212,14 @@ type resumableTranscriber interface {
   - `vad_handler_test.go`（3 个）：`TestHandleTask_VADNil_UsesOriginal`（未注入 vadProc 用原始音频）、`TestHandleTask_VADDisabled_UsesOriginal`（注入但 cfg.VAD.Enabled=false 跳过）、`TestHandleTask_OriginalSegmentsPreserved_WhenNoVAD`（零回归契约:无 VAD 时 segments 不变)
   - `vad_integration_test.go`（2 个）：`TestVADIntegration_DetectFindsSilence`（端到端 Detect 扫静音）、`TestVADIntegration_TrimMatchesSilenceMap`（端到端 Trim 与 SilenceMap 一致）
 
+- **2026-08-13 批量回放 PR(#1)新增/增量测试（9 个,asr 98→107）**:
+  - `dashscope_temp_publisher_test.go`（新增 2 个）：`TestDashScopeTempPublisherPublish`（httptest 桩:policy 签名→multipart 上传全表单字段断言→`oss://` URL 返回）、`TestUploadLimitBytes`（max_file_size_mb 解析 3 子场景）
+  - `ina_segmenter_test.go`（新增 3 个）：`DetectInaSpeech` 调用构造/`BuildInaSpeechMap` speech 保留 music/noise/noEnergy 裁掉/边界时长处理
+  - `dashscope_test.go`（4→5）：+1 覆盖 `doJSONWithRetryHeaders` 带鉴权头重试
+  - `vad_handler_test.go`（3→4）：+1 覆盖 `ErrNoSpeechDetected` 跳过收尾（不触发 onSuccess）
+  - `vad_integration_test.go`（2→3）：+1 ina 引擎端到端
+  - `vad_processor_test.go`（14→15）：+1 ina 相关处理
+
 ## 常见问题 (FAQ)
 
 **Q: DashScope ASR 模型如何选择？**
@@ -234,20 +242,24 @@ A: ASR 调 DashScope 前先用 ffmpeg 裁掉 `>min_silence_sec` 的静音段(产
 
 ## 相关文件清单
 
-- `asr.go` -- Handler 实现、LocalTranscriber、**2026-07-27 VAD 集成**(`applyVAD` 决策树:Detect→Trim→ASR→silence_map 反向映射;三层兜底回退原始音频;`NewHandler` 加 variadic `vadProc`)
-- `dashscope.go` -- DashScopeTranscriber、退避重试、远端任务恢复、SRT 生成、结果解析、**2026-07-21 3 个调用点（submit/checkTask/`tasks_url`）改用 `EffectiveASRURL()`/`EffectiveTasksURL()` 空串兜底，修复 ASR 配置丢失 BUG**
-- `vad_processor.go` -- **2026-07-27 新增**：`VADProcessor`(持 `*config.Config` 指针,改参立即生效;`Detect` 跑 silencedetect 扫静音、`Trim` 跑 atrim+concat 滤镜链、`BuildSilenceMap` 区间表→segment 表含 padding 与首尾静音处理)
+- `asr.go` -- Handler 实现、LocalTranscriber、**2026-07-27 VAD 集成**(`applyVAD` 决策树:Detect→Trim→ASR→silence_map 反向映射;三层兜底回退原始音频;`NewHandler` 加 variadic `vadProc`)、**2026-08-13 PR#1**:`ErrNoSpeechDetected` 无语音跳过收尾(不触发 onSuccess,session 不误进 asr_done)、`remapResultTimeline`(SRT 与 segments 同步重建,防 transcript.srt 与原时间线不一致)、`applyInaVAD`(ina 引擎分支)
+- `dashscope.go` -- DashScopeTranscriber、退避重试、远端任务恢复、SRT 生成、结果解析、**2026-07-21 3 个调用点（submit/checkTask/`tasks_url`）改用 `EffectiveASRURL()`/`EffectiveTasksURL()` 空串兜底，修复 ASR 配置丢失 BUG**、**2026-08-13 PR#1**:`doJSONWithRetryHeaders`(重试携带鉴权头)、DashScope 临时对象 48h 自动过期(不支持查询/删除)
+- `dashscope_temp_publisher.go` -- **2026-08-13 PR#1 新增**：`DashScopeTempPublisher`(调 DashScope uploads API 取签名 policy→multipart 直传 OSS 临时对象,零自有存储依赖;`dashscope.temporary_storage_enabled` 开关;2026-08-15 L13 对象键加 session ID 前缀防不同场次共用同一 key 互相覆盖)
+- `ina_segmenter.go` -- **2026-08-13 PR#1 新增**：inaSpeechSegmenter VAD 引擎(`DetectInaSpeech` 调隔离 Python 环境 + `BuildInaSpeechMap` 只保留 speech 标签;`vad.engine="ina"` + 5 个 ina_* 配置;`scripts/ina_segment.py` 配套脚本)
+- `vad_processor.go` -- **2026-07-27 新增**：`VADProcessor`(持 `*config.Config` 指针,改参立即生效;`Detect` 跑 silencedetect 扫静音、`Trim` 跑 atrim+concat 滤镜链、`BuildSilenceMap` 区间表→segment 表含 padding 与首尾静音处理);**2026-08-13 PR#1** 加 `EffectiveEngine()` 双引擎分流(silence=ffmpeg 兜底/ina=python 模型)
 - `vad_silence_map.go` -- **2026-07-27 新增**：`SilenceMap` 结构(裁剪段表 + padding,JSON 持久化 v1 版本号,Load/Save/round-trip)
 - `temp_server.go` -- 本地 ASR 临时音频 HTTP 服务（Publish/Delete/MountHandler）
 - `s3_publisher.go` -- S3 兼容对象存储后端（Publish/Delete，minio-go SDK）
 - `public_ip.go` -- 公网 IP 自动检测（多端点回退、私有 IP 过滤）
 - `danmaku_correction.go` -- ASR segments 驱动的弹幕时间校正
 - `asr_test.go` -- 单元测试（37 个用例）
-- `dashscope_test.go` -- **DashScope Effective URL 测试（2026-07-21 新增 4 个用例）**
-- `vad_processor_test.go` -- **2026-07-27 新增**：VAD 处理器测试（14 个用例:parseSilenceDetect/buildSilenceMap/buildAtrimConcatFilter/remap）
+- `dashscope_test.go` -- **DashScope Effective URL 测试（2026-07-21 新增 4 个用例;2026-08-13 +1 → 5 个）**
+- `dashscope_temp_publisher_test.go` -- **2026-08-13 PR#1 新增**：DashScope 临时存储上传测试（2 个用例）
+- `ina_segmenter_test.go` -- **2026-08-13 PR#1 新增**：inaSpeechSegmenter VAD 引擎测试（3 个用例）
+- `vad_processor_test.go` -- **2026-07-27 新增**：VAD 处理器测试（14 个用例:parseSilenceDetect/buildSilenceMap/buildAtrimConcatFilter/remap;2026-08-13 +1 → 15 个）
 - `vad_silence_map_test.go` -- **2026-07-27 新增**：SilenceMap 持久化测试（12 个用例:Load/Save/round-trip/输出比/JSON tags）
-- `vad_handler_test.go` -- **2026-07-27 新增**：VAD 集成零回归测试（3 个用例:nil/disabled/原始 segments 保留）
-- `vad_integration_test.go` -- **2026-07-27 新增**：VAD 端到端集成测试（2 个用例:Detect 扫静音/Trim 与 SilenceMap 一致）
+- `vad_handler_test.go` -- **2026-07-27 新增**：VAD 集成零回归测试（3 个用例:nil/disabled/原始 segments 保留;2026-08-13 +1 → 4 个）
+- `vad_integration_test.go` -- **2026-07-27 新增**：VAD 端到端集成测试（2 个用例:Detect 扫静音/Trim 与 SilenceMap 一致;2026-08-13 +1 → 3 个）
 - `danmaku_correction_test.go` -- 弹幕校正测试（1 个用例）
 - `temp_server_test.go` -- 临时音频服务测试（10 个用例）
 - `s3_publisher_test.go` -- S3 发布后端测试（7 个顶级 + 8 个子测试）
@@ -257,6 +269,8 @@ A: ASR 调 DashScope 前先用 ffmpeg 裁掉 `>min_silence_sec` 的静音段(产
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-08-15/16 | BUG 修复 | **L13:DashScope temp publisher 对象键加 session ID 前缀**(commit `eeccf00`,审核批次 P2)。不同场次的临时音频不再共用同一 OSS key 互相覆盖(对象键 `audio.asr.mp3`→`<session_id>_audio.asr.mp3`);`4ae6604` 注释软化(DashScope 临时对象 48h 自动过期,且上传策略带 `x_oss_forbid_overwrite`,覆盖窗口实际受限,前缀仍保证各场次 key 独立)。测试放宽 form key 断言为 HasPrefix/HasSuffix + 显式第二次调用 URL 断言。无测试数变化(107)。 |
+| 2026-08-13 | 功能 | **批量回放可靠性 PR #1**(commit `c9a3e51`,两轮代码审核通过无 Critical/High)。三大能力:① **DashScope 临时存储**(新文件 `dashscope_temp_publisher.go`,`dashscope.temporary_storage_enabled` 开关,调 uploads API 取签名 policy→multipart 直传 OSS 临时对象,免自建 HTTP/S3/rclone;48h 自动过期,不支持查询/删除);② **inaSpeechSegmenter VAD 引擎**(新文件 `ina_segmenter.go` + `scripts/ina_segment.py`,`vad.engine="silence"\|"ina"` 双引擎分流 + 5 个 `ina_*` 配置:python/script 路径/batch_size/min_speech_sec/merge_gap_sec,`DetectInaSpeech` 调隔离 Python 环境、`BuildInaSpeechMap` 只保留 speech 裁掉 music/noise/noEnergy);③ **无语音跳过**(`ErrNoSpeechDetected`:VAD 判定全静音时跳过收尾不触发 onSuccess,session 不误进 asr_done)+ `remapResultTimeline`(SRT 与 segments 同步重建防时间线不一致)+ `doJSONWithRetryHeaders`(重试携带鉴权头)。测试 98→**107**(+9:temp_publisher 2 新 + ina_segmenter 3 新 + dashscope/vad_handler/vad_integration/vad_processor 各 +1)。 |
 | 2026-07-27 | 功能 | **ASR 前置 VAD 静音裁剪降本**(commit `b1ba520`,branch `feat/vad-2026-07-27`)。ASR 调 DashScope 前先用 ffmpeg 裁掉 `>min_silence_sec` 的静音段,产出 `audio.asr.trimmed.mp3` + `silence_map.json`,ASR 返回后用 silence_map 反向映射回原始时间线(segments/text/words/begin/end 全字段重映射)。**实测 -40dB/2s 节省 3-10% DashScope 计费时长**(BGM 多的直播节省少),零真实内容损失。**新增 4 文件**:① `vad_processor.go`(`VADProcessor` 持 `*config.Config` 指针,改参立即生效;`Detect` 跑 `silencedetect=noise=-40dB:d=2 -f null -` 扫静音 + `Trim` 跑 `atrim+concat` 滤镜链 + `BuildSilenceMap` 区间表→segment 表含 padding 与首尾静音处理);② `vad_silence_map.go`(`SilenceMap` JSON 持久化 v1 版本号,Load/Save/round-trip);③ `asr.go` `NewHandler` 加 variadic `vadProc ...*VADProcessor`(不传禁用零回归,main.go 装配注入;`cfg.VAD.Enabled=false` 时 Processor 存在但 HandleTask 内部跳过)+ `applyVAD` 决策树(Detect→Trim→ASR→反向映射)。**零回归兜底三层**:ffmpeg 处理失败 / 裁剪比 `output/orig < min_output_ratio`(默认 0.3 防裁过头)/ ffmpeg 缺 `silencedetect`+`atrim`+`concat` filter → 全部用原始音频。新增 4 测试文件 31 用例(vad_processor 14 + vad_silence_map 12 + vad_handler 3 零回归契约 + vad_integration 2 端到端),asr 包函数口径 67→**98**。详见 `AGENTS.md` 2026-07-29 changelog + `plans/plan-vad-2026-07-27.md`。 |
 | 2026-07-21 | BUG 修复 | **DashScope `asr_url`/`tasks_url` Effective 兜底**(branch `fix/bug-fix-2026-07-20`,commit `61f3989` v6)。**触发**:实测发现 DashScope `asr_url`/`tasks_url` 在 `runtime_settings` 表被持久化为空字符串,覆盖 viper SetDefault 默认值,导致 ASR POST 到空 URL 失败(`Post "": unsupported protocol scheme ""`)。**根因**:`dashscopeConfigToDTO` 用 `&c.ASRURL` 总是取地址,ApplyOverrides 的 nil 检查无法区分「空串指针」与「非空串指针」。**修复**:`dashscope.go` 3 个调用点（`submit` line 227 / `checkTask` line 311 / `tasks_url` line 356）改用 `c.EffectiveASRURL()`/`c.EffectiveTasksURL()`（TasksURL 保留 `TrimRight('/')`）。新增 `dashscope_test.go` 4 个测试（`TestDashScopeEffectiveURLs` + `TestSubmitUsesEffectiveASRURL`/`TestCheckTaskUsesEffectiveTasksURL` + TrimRight 变体，用 `urlCapturingTransport` 捕获实际请求 URL 验证调用点真的用了 Effective 而非空串）。asr 包总测试 63→67。 |
 | 2026-06-24 | 重构 | **双重降级收敛**（`5fadea4`）：移除 `asr.go` HandleTask 中冗余的 `Apply(EventTaskFailed)` 调用（2 处）。任务失败降级现已统一由 `worker` 处理（普通任务由 `EventTaskFailed` 全局特判降级；旁路任务经 `Register(..., WithBypassFailState())` 声明后仅写 `last_error`），各业务 handler 不再自行 `Apply`，避免双写。本模块无新增对外接口，测试数无变化（仍 63） |

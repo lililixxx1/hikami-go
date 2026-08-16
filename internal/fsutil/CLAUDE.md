@@ -17,6 +17,7 @@
 |------|------|
 | `WriteFileAtomic(path, data, perm)` | 写入 `path+".tmp"` 后 `os.Rename` 原子落盘；rename 失败时清理临时文件 |
 | `WriteJSONAtomic(path, value, perm)` | `json.MarshalIndent` 序列化（**检查错误，不吞**）后调用 `WriteFileAtomic` |
+| `RemoveTempCookieFiles(outputRoot)` | 清扫 `<outputRoot>/.cookies/bilibili/ytdlp_*.txt` 明文 cookie 临时文件（2026-08-15 L4 新增），返回删除数；目录/文件不存在不算错误 |
 
 ## 关键设计决策
 
@@ -28,6 +29,7 @@
 ## 使用方
 
 - `internal/asr` -- ASR 产物（transcript.txt/srt、segments.json、result.raw.json）原子写入（ISS-3）
+- `cmd/hikami/main.go` -- 启动时调 `RemoveTempCookieFiles(cfg.OutputRoot)` 清扫崩溃残留的明文 cookie 临时文件（2026-08-15 L4）
 
 ## 测试与质量
 
@@ -36,14 +38,18 @@
   - `TestWriteFileAtomic_NoTmpResidue`：无 `.tmp` 残留
   - `TestWriteJSONAtomic_Success`：JSON 正确 + 结尾换行
   - `TestWriteJSONAtomic_MarshalError`：不可序列化值（chan）返回错误，不创建目标文件
+- `cookie_temp_test.go`: 1 个测试用例（2026-08-15 新增）：`TestRemoveTempCookieFiles` 覆盖删除 ytdlp_*.txt（含 sessionID 与 preview 两变体）、目录不存在不算错误
 
 ## 相关文件清单
 
 - `fsutil.go` -- `WriteFileAtomic` / `WriteJSONAtomic`
+- `cookie_temp.go` -- `RemoveTempCookieFiles` 明文 cookie 残留清扫（2026-08-15 L4 新增）
 - `fsutil_test.go` -- 单元测试（4 个用例）
+- `cookie_temp_test.go` -- cookie 清扫测试（2026-08-15 新增，1 个用例）
 
 ## 变更记录 (Changelog)
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-08-15 | 安全修复 | **L4:启动清扫 yt-dlp 明文 cookie 临时文件**(commit `6d33ccd`,审核批次 P2)。下载(`writeTempCookieFile`)/发现(`writePreviewTempCookie`)链路把账号池 cookie 解成 `<outputRoot>/.cookies/bilibili/ytdlp_*.txt` 明文文件供 yt-dlp 读取,正常路径用完即删,但进程崩溃/断电会残留——明文登录凭证落盘。新增 `cookie_temp.go` `RemoveTempCookieFiles(outputRoot)`,main.go 启动时调用(此时必然无在用任务,幂等,不存在不算错误);模式同时覆盖 `ytdlp_<sessionID>.txt` 与 `ytdlp_preview_*.txt`。测试 +1,fsutil 4→**5**。 |
 | 2026-06-16 | 初始化 | 新增 fsutil 包（`WriteFileAtomic`/`WriteJSONAtomic`），供 asr 原子写入产物使用（ISS-3） |

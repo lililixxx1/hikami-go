@@ -10,7 +10,7 @@
 
 - **入口文件**: `normalize.go`
 - **任务类型**: `normalize`
-- **测试总数**: 69（按 `grep -c "^func Test" internal/normalize/*_test.go` 顶级函数口径统计）
+- **测试总数**: 71（按 `grep -c "^func Test" internal/normalize/*_test.go` 顶级函数口径统计）
 
 ## 对外接口
 
@@ -101,28 +101,31 @@ type AudioConverter interface {
 | `title`, `started_at`, `ended_at` | 时间信息 |
 | `raw_audio_path`, `asr_audio_path` | 音频路径 |
 | `danmaku_count` | 弹幕数量 |
+| `duration_ms` | 原始音频时长毫秒（2026-08-13 PR#1 新增，`rawDurationMS` 从 raw 目录探测；显式选分 P 的单 P 元数据用该页时长而非 pages 相加，防合集总时长误标到每个场次） |
 | `generated_at` | 生成时间 |
 
 ## 测试与质量
 
-- `normalize_test.go`: 69 个测试用例，覆盖：
+- `normalize_test.go`: 71 个测试用例，覆盖：
   - JSONL 弹幕解析（基础、空行、默认 type、默认 source、无效 JSON、保留字段）
-  - XML 弹幕解析（基础、实体反解、时间偏移、跳过无效、无效时间、空文件、无效 XML、文件不存在、负偏移、user_id/raw_time 提取、最少字段）
+  - XML 弹幕解析（基础、实体反解、时间偏移、跳过无效、无效时间、空文件、无效 XML、文件不存在、负偏移、user_id/raw_time 提取、最少字段、**同 user_hash 去重 2026-08-15 M13**）
   - 弹幕优先级（JSONL 优先于 XML、XML 回退）
   - 多 P 弹幕合并（基础、缺失分 P、缺失 durations、无 XML 文件、乱序分 P、无效文件名、不存在目录、损坏 XML）
   - 文件操作（findRawAudio 优先级/回退/不存在、writeJSONAtomic 原子性/覆盖/切片）
-  - 元数据构建（buildMetadata 完整/空会话/子目录）
+  - 元数据构建（buildMetadata 完整/空会话/子目录、**rawDurationMS 2026-08-13**）
   - 集成测试（HandleTask 成功/会话不存在/转换失败/音频缺失、Register、convertAtomic 成功/失败/**空输出检测 2026-07-25**）
 
 ## 相关文件清单
 
 - `normalize.go` -- 唯一源文件
-- `normalize_test.go` -- 单元测试和集成测试（69 个用例）
+- `normalize_test.go` -- 单元测试和集成测试（71 个用例）
 
 ## 变更记录 (Changelog)
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-08-15 | BUG 修复 | **M13:XML 弹幕 user_id 改取 user_hash(fields[6])**(commit `69704b5`,审核批次 P1)。**根因**:B 站 XML `<d p="...">` 第 8 字段是 dmid(每条弹幕唯一),旧代码 `fields[7]` 取 dmid 当 user_id,导致同用户的多条弹幕被算成多个用户,污染统计去重(如「弹幕发送人数」虚高)。改取 `fields[6]`(user_hash,同用户稳定)。测试 +1(`TestParseXMLDanmakuSameUserHashDeduplicated`),normalize 70→**71**。 |
+| 2026-08-13 | 功能 | **批量回放可靠性 PR #1**(commit `c9a3e51`):`buildMetadata` 加 `duration_ms` 字段——新 helper `rawDurationMS(rawDir)` 从 raw 目录元数据探测原始音频时长;显式选分 P 的单 P 元数据(.info.json 仍含父视频完整 pages 列表)用所选页时长,不把 pages 相加(否则合集总时长误标到每个独立场次)。测试 +1(`TestRawDurationMS`),normalize 69→70。 |
 | 2026-07-25 | BUG 修复 | **convertAtomic 空文件 post-condition**(branch `fix/media-ready-consistency-2026-07-25`,qoder 计划审核 Ready with fixes + 代码审核 Ready)。**触发**:用户反馈界面上 64 个「音频已就绪」实际只有 1 个本地真有音频文件,经 DB + 文件交叉核查确认是 2026-07-16 批量脏数据(qoder 独立审核定位根因)。**根因**:`FFmpegConverter.Convert` 只检查退出码,ffmpeg 在输入截断/损坏时可 exit 0 但产出 0 字节 mp3 → `convertAtomic` Rename 成功 → `EventNormalizeSucceeded` → session 误进 media_ready 但音频为空。**修复**:`convertAtomic` 在 Convert 返回后、Rename 前 `os.Stat(tempPath)`,size==0 则删 tmp 返回 error(任务进 failed,不进 media_ready)。新增 `TestConvertAtomicEmptyOutput`。测试 68→69。**为什么 Size==0 够**:tmp→rename 原子性已防住中途崩溃;mp3 是帧格式「exit 0 + 部分帧」几乎不可能;加 ffprobe 时长校验属过度工程。见 `plans/plan-media-ready-consistency-2026-07-25.md` Phase 1。 |
 | 2026-06-24 | 重构 | **双重降级收敛**（`5fadea4`）：移除 `normalize.go` HandleTask 中冗余的 `Apply(EventTaskFailed)` 调用（3 处）。任务失败降级统一由 `worker` 处理（普通任务 `EventTaskFailed` 全局特判降级；旁路任务经 `Register(..., WithBypassFailState())` 声明后仅写 `last_error`），各业务 handler 不再自行 `Apply`，避免双写。本模块无新增对外接口，测试数无变化（仍 68） |
 | 2026-06-21 | 增量同步 | 测试计数校正：82→68（历史口径以 `go test -v \| grep "=== RUN"` 统计含子测试，现统一改用 `grep -c "^func Test"` 顶级函数口径，与各模块一致；实际测试函数未减少）。模块功能自 06-18 以来无变化 |

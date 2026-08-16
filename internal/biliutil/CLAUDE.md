@@ -236,14 +236,14 @@
 
 ## 测试与质量
 
-- `cookie_test.go`: 1 个测试用例，验证 Cookie 加载、完整请求头生成和 HttpOnly 行处理
+- `cookie_test.go`: 3 个测试用例（2026-08-15 +2），覆盖 Cookie 加载、完整请求头生成和 HttpOnly 行处理、`CheckCookieExpiry` 剥离 `#HttpOnly_` 前缀（HttpOnly SESSDATA 行不再被当注释跳过，H6）
 - `cookie_crypto_test.go`: 10 个测试用例，覆盖密钥校验、加解密往返、明文 passthrough、错误密钥和截断数据
-- `cookie_account_test.go`: 15 个测试用例，覆盖：
-  - CRUD: Create、Update（昵称修改）、Delete（删除后 ErrAccountNotFound）、List（多账号列表）
+- `cookie_account_test.go`: 17 个测试用例（2026-08-15 +2），覆盖：
+  - CRUD: Create、Update（昵称修改）、Delete（删除后 ErrAccountNotFound、**仍被主播 publish/download account_id 引用时返回 ErrAccountInUse**）、List（多账号列表）
   - 默认账号: SetDefaultDownload（切换默认下载）、SetDefaultPublish（切换默认发布、旧默认清除）、DeleteDefaultAccount（删除唯一默认 -> ErrNoDefaultAccount）
   - 路径校验: ValidateCookiePath（允许/路径穿越/空路径/无限制）
-  - Cookie 解析: ResolveCookie（channel override 成功、fallback 文件不存在、unknown usage）
-- `videoid_test.go`: 7 个测试用例，覆盖 ExtractVideoID/NormalizeSourceURL（BV 优先、非 B 站 sha1 兜底、各类 URL 归一化）
+  - Cookie 解析: ResolveCookie（channel override 成功、**level-1 命中但 cookie 文件不可读时告警降级全局默认**、fallback 文件不存在、unknown usage）
+- `videoid_test.go`: 10 个测试用例（2026-08-13 +2 / 2026-08-16 +1），覆盖 ExtractVideoID/NormalizeSourceURL（BV 优先、非 B 站 sha1 兜底、各类 URL 归一化）、ExtractVideoPart（p 参数解析）、ExtractVideoSourceID（BV+p 追加 `_pNNN`）、SourceIDWithPart（锚定调用方 ID 追加同款后缀）
 - `wbi_test.go`: 13 个测试用例，覆盖：
   - `TestGetMixinKey`: 置换表正确性验证
   - `TestGetMixinKeyShortInput`: 短输入越界跳过
@@ -267,6 +267,7 @@
 - `cover_test.go`: 2 个测试用例，覆盖 DownloadCover 落盘 + coverExt 扩展名推断
 - `shortlink_test.go`: 6 个测试用例（2026-08-08 新增），覆盖 ResolveShortLink b23.tv 短链解析：302→BV 成功、非 b23.tv 零开销原值返回、落地无 BV 降级、网络错误降级、isB23ShortLink host 判定（含 B23.TV 大小写 + b23.tv. 尾点 + query 含 b23.tv 误判排除 + host 仿冒排除）、落地 host 非 B 站官方域降级
 - `replay_title_test.go`: 2 个测试用例，覆盖 CleanReplayTitle 清洗 + 幂等性
+- `replay_date_test.go`: 1 个测试用例（2026-08-13 新增），覆盖 ReplayDateFromTitle 中文官方标题（`2026年08月04日18点场`）与录播账号格式（`20260804`/`2026-08-04`/`2026.08.04`）提取 + 非法日期拒绝
 
 ## 常见问题 (FAQ)
 
@@ -297,7 +298,8 @@ A: 从 B 站 `nav` API 的 `wbi_img.img_url` 和 `wbi_img.sub_url` 字段提取�
 - `cookie_crypto.go` -- Cookie 文件 AES-256-GCM 静态加密、解密和密钥配置
 - `cookie_account.go` -- Cookie Account Store、默认账号管理、ResolveCookie、CreateImported、ClearAll
 - `cookie_writer.go` -- Netscape Cookie 文件格式化和原子写入
-- `videoid.go` -- 视频链接解析：`ExtractVideoID`（BV 号优先，非 B 站用归一化 URL 的 sha1 兜底）、`NormalizeSourceURL`（去 fragment/跟踪参数，幂等）
+- `videoid.go` -- 视频链接解析：`ExtractVideoID`（BV 号优先，非 B 站用归一化 URL 的 sha1 兜底）、`NormalizeSourceURL`（去 fragment/跟踪参数，幂等）、**2026-08-13 PR#1**：`ExtractVideoPart`（p 查询参数显式分 P）+ `ExtractVideoSourceID`（BV+p 追加 `_pNNN` 场次级来源标识，多 P 各分 P 不互相去重）、**2026-08-16**：`SourceIDWithPart`（调用方已持 ID（如 yt-dlp entry.ID 不保证匹配 BV 正则）时锚定该 ID 只追加后缀，与 ExtractVideoSourceID 单一后缀来源保持去重口径一致）
+- `replay_date.go` -- **2026-08-13 PR#1 新增**。`ReplayDateFromTitle` 从录播标题提取明确日期（官方中文标题「2026年08月04日18点场」+ 录播账号 `20260804`/`2026-08-04`/`2026.08.04` 两族正则；非法日期回退 false），供 discover 回放场次填 StartedAt
 - `login.go` -- QR Login 客户端、扫码会话 Store、状态映射
 - `wbi.go` -- WBI URL 签名器（WBISigner、密钥获取与缓存、MD5 签名计算）
 - `ua.go` -- B 站 User-Agent 常量
@@ -309,13 +311,14 @@ A: 从 B 站 `nav` API 的 `wbi_img.img_url` 和 `wbi_img.sub_url` 字段提取�
 - `shortlink.go` -- **2026-08-08 新增**。b23.tv 短链解析（ResolveShortLink 把短链 HTTP 解析为含 BV 长链,host 严格判定 + 落地双校验 + 失败降级,供 download.CreateFromURL 入口单一收口）
 - `replay_title.go` -- 录播视频标题清洗（CleanReplayTitle，保留直播主题，幂等）
 - `buvid.go` -- 设备指纹存储（BuvidStore，按 cookie 24h 缓存 buvid3/buvid4，nil-safe）+ InjectBuvids replace 注入 + Invalidate（按 cookie 失效缓存，-352 重试用）
-- `cookie_test.go` -- Cookie 单元测试（1 个用例）
+- `cookie_test.go` -- Cookie 单元测试（3 个用例）
 - `cookie_crypto_test.go` -- Cookie 加密单元测试（10 个用例）
-- `cookie_account_test.go` -- Cookie Account 单元测试（15 个用例）
+- `replay_date_test.go` -- 录播标题日期提取测试（2026-08-13 新增，1 个用例）
+- `cookie_account_test.go` -- Cookie Account 单元测试（17 个用例）
 - `wbi_test.go` -- WBI 签名单元测试（13 个用例）
 - `login_test.go` -- QR Login 测试（3 个用例）
 - `cookie_writer_test.go` -- Cookie Writer 测试（3 个用例）
-- `videoid_test.go` -- 视频链接解析测试（BV 提取多 URL 形态、非 B 站兜底稳定性、归一化幂等、NetscapeBytes）
+- `videoid_test.go` -- 视频链接解析测试（10 个用例：BV 提取多 URL 形态、非 B 站兜底稳定性、归一化幂等、NetscapeBytes、分 P 后缀三函数）
 - `video_test.go` -- view API 测试（3 个用例）
 - `playurl_test.go` -- playurl API 和选流测试（4 个用例）
 - `danmaku_test.go` -- 弹幕 XML 拉取与解压测试（2 个用例）
@@ -329,6 +332,8 @@ A: 从 B 站 `nav` API 的 `wbi_img.img_url` 和 `wbi_img.sub_url` 字段提取�
 
 | 日期 | 操作 | 说明 |
 |------|------|------|
+| 2026-08-15/16 | BUG 修复 | **审核批次三项**(commit `d4cd2fb`/`5cc309e`/`e3f0e27`,7H+14M 批次):① **H6** `CheckCookieExpiry` 剥离 `#HttpOnly_` 前缀(cookie.go:155-159)——HttpOnly 标记行此前被当注释跳过,SESSDATA 几乎总是 HttpOnly,致 cookie 过期检测失明(cookie_test +2);② **M10** `ResolveCookie` level-1 命中但 cookie 文件不可读时 slog.Warn 后降级全局默认(不再静默)+ `Delete` 加 channels 引用检查(`publish_account_id`/`download_account_id` 仍指向该账号时返回 `ErrAccountInUse`,handler 映射 409;cookie_account_test +2);③ **L14** 新增 `SourceIDWithPart`——调用方已持视频 ID(如 yt-dlp entry.ID,不保证匹配 BV 正则)时锚定该 ID 只追加 `_pNNN` 后缀,discover 多 P 合录不再互相去重吞分 P(计划原方案 ExtractVideoSourceID 的 sha1 兜底会改变既有去重口径,弃用;videoid_test +1)。**biliutil 90→98**。 |
+| 2026-08-13 | 功能 | **批量回放可靠性 PR #1**(commit `c9a3e51`):新增 `replay_date.go`(`ReplayDateFromTitle` 从录播标题提取日期,discover 回放场次填 StartedAt)+ `videoid.go` 加 `ExtractVideoPart`/`ExtractVideoSourceID`(多 P URL 显式带 p 时构造 `BV..._pNNN` 场次级来源标识,与整个 BV 及其它分 P 区分)。测试 +3(replay_date_test 新 1 + videoid_test +2),biliutil 90→93(后经审核批次到 98)。 |
 | 2026-08-08 | 功能 | **新增 `shortlink.go` b23.tv 短链解析**(`ResolveShortLink`)。触发:8-7 官方录播用 b23.tv 短链下载,音频正常(yt-dlp 自动跟随 302)但回顾文档无弹幕、标题变 BV 兜底。根因:Go 代码 BV 提取依赖正则,b23.tv 短链不含 BV 字面量需 HTTP 302 解析。设计:host 严格判定(EqualFold+去尾点,排除 query 含 b23.tv / host 仿冒)+ 落地 URL 双校验(host 属 B 站官方域 + 含 BV)+ 失败降级不阻断(与 DownloadCover 策略一致)。复用 HTTPDoer/httpClientOrDefault/setBiliHeaders/bvPattern,签名对齐 DownloadCover。**测试 +6**(shortlink_test.go:FollowsRedirectToBV/NonB23ReturnsAsIs/NoBVInFinalFallback/NetworkErrorFallback/IsB23ShortLink 含大小写尾点 case/NonBilibiliFinalFallback),**biliutil 84→90**。codex 两阶段审核:r16 NEEDS_FIX(host 大小写/尾点 + 落地域名校验 + body 注释)→ r17 APPROVED。配套 `download.CreateFromURL` 入口单一收口(见 download/CLAUDE.md)。 |
 | 2026-07-29 | 重构 | **删除包级 `FetchVideoInfo` 便捷函数**(`video.go`,branch `fix/discover-title-perf-2026-07-29` 配套)。该函数每次调用 `vc := &VideoClient{}` 新建实例,导致 `BuvidStore`(24h)/WBI signer(1h)缓存随实例丢弃形同虚设 —— 发现回放预览时 38 条视频逐条解析空标题,每条重打 finger/spi + nav + view,耗时 29s 超前端 30s 超时。核实全项目**唯一调用方**是 `download.ResolveDownloadTitle`(改为持长生命周期 `Handler.viewClient` 实例方法后该函数变死代码),`download.go` 的 `fetchCidMapForMultiP`/`singlePCid` 与 `native.go` 本就直接 new `VideoClient{}` 调 `.Fetch()`,不走包级函数。`(*VideoClient).Fetch` 实例方法保留不变。**测试数不变(84)**:包级函数无专属测试,删除不影响。API 表 + 文件清单同步移除 FetchVideoInfo 描述。 |
 | 2026-07-06 | 功能 | 新增 `(*BuvidStore).Invalidate(cookieHeader)`：按 cookie 删除 buvid3/buvid4 缓存条目，下次 `GetBuvids` 重新拉取。用于 -352 风控重试前强制刷新指纹（与 `WBISigner.RefreshKeys` 配合，确保重试用新 buvid + 新签名）。nil-safe（nil 接收者直接返回）。配套 4 个测试（nil-safe/按 key 删除强制重拉/仅影响指定 cookie/缺失 key no-op），顺手修正 `buvid_test` 的 `readCount` 无效独立 mutex 改用 `atomic`。**调用方**：`live_record/bilibili.go` 的 `CheckLive` -352 重试路径。本轮同时补登此前漏入文档的 `cover.go`（DownloadCover，2 测试）和 `replay_title.go`（CleanReplayTitle，2 测试）。测试计数：biliutil 80→84（buvid_test 6→10、+cover 2、+replay_title 2） |
