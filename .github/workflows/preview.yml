@@ -1,0 +1,94 @@
+name: Preview Build
+
+# 预览包:每次推送 main(纯文档/站点改动跳过)或手动触发,自动构建
+# Windows 桌面版(内嵌 ffmpeg + 前端 + 托盘)exe 并上传为 workflow artifact。
+# 产物与 Release 流程同源(release.yml 单矩阵项),仅用于日常体验,不发 Release。
+# 正式发布仍走 release.yml(push v* tag,含全量测试门禁)。
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 新推送到来时取消仍在跑的旧预览构建,不排队
+concurrency:
+  group: preview-build
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.5'
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: web
+
+      - name: Build frontend
+        run: npm run build
+        working-directory: web
+
+      - name: Copy frontend to embed dir
+        run: |
+          rm -rf cmd/hikami/webdist
+          cp -r web/dist cmd/hikami/webdist
+
+      - name: Verify embedded ffmpeg asset
+        run: |
+          # 裁剪版 ffmpeg.zip 已入库(internal/runtime/assets/ffmpeg.zip),
+          # 顶层结构 bin/ffmpeg.exe + bin/ffprobe.exe,与 ffmpeg_manifest.go 一致。
+          if [ ! -f internal/runtime/assets/ffmpeg.zip ]; then
+            echo "ERROR: internal/runtime/assets/ffmpeg.zip not found. Run 'make build-ffmpeg-minimal' first."
+            exit 1
+          fi
+          echo "Embedded ffmpeg.zip size: $(du -h internal/runtime/assets/ffmpeg.zip | cut -f1)"
+
+      - name: Run Go vet
+        run: go vet ./...
+
+      - name: Build preview binary
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: 0
+        run: |
+          # 与 release.yml 的 desktop+ffmpeg 矩阵项同参:embed_ffmpeg + 前端 + 托盘
+          mkdir -p dist
+          go build -tags 'embed_ffmpeg,embedded_web,systray' \
+            -ldflags='-H windowsgui -s -w' \
+            -o dist/hikami-windows-amd64-desktop-ffmpeg.exe ./cmd/hikami
+          cd dist && sha256sum hikami-windows-amd64-desktop-ffmpeg.exe > checksums-sha256.txt
+          echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
+
+      - name: Summarize artifact
+        run: |
+          ls -lh dist/
+          echo "### Preview build: \`${{ env.SHORT_SHA }}\`" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat dist/checksums-sha256.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hikami-preview-windows-desktop-ffmpeg-${{ env.SHORT_SHA }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
