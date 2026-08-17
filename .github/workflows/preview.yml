@@ -1,9 +1,12 @@
 name: Preview Build
 
 # 预览包:每次推送 main(纯文档/站点改动跳过)或手动触发,自动构建
-# Windows 桌面版(内嵌 ffmpeg + 前端 + 托盘)exe 并上传为 workflow artifact。
-# 产物与 Release 流程同源(release.yml 单矩阵项),仅用于日常体验,不发 Release。
-# 正式发布仍走 release.yml(push v* tag,含全量测试门禁)。
+# Windows 桌面版(内嵌 ffmpeg + 前端 + 托盘)exe:
+# 1) 上传为 workflow artifact(带短 SHA,保留 30 天,登录后可下载历史);
+# 2) 附加到固定 tag `preview` 的滚动预发布(公开直链,无需登录,始终只有一条,
+#    同名资产自动覆盖,不占 Latest 徽章,不触发 release.yml 的 v* 门禁)。
+# 产物与 Release 流程同源(release.yml 单矩阵项);正式发布仍走 release.yml
+# (push v* tag,含全量测试门禁)。
 
 on:
   push:
@@ -15,7 +18,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write # 移动 preview tag + 创建/更新滚动预发布
 
 # 新推送到来时取消仍在跑的旧预览构建,不排队
 concurrency:
@@ -92,3 +95,25 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: 30
+
+      - name: Move rolling preview tag
+        run: |
+          # 固定 tag `preview` 强制指向当前 commit,softprops 复用它更新同一条预发布。
+          # 不匹配 release.yml 的 v* 触发,也不会再触发本工作流(push tag 不命中 branches: main)。
+          git tag -f preview "$GITHUB_SHA"
+          git push -f origin refs/tags/preview
+
+      - name: Attach to rolling preview release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: preview
+          prerelease: true
+          make_latest: false
+          name: Preview Build(跟踪 main,滚动更新)
+          body: |
+            自动构建自 main 分支最新提交 `${{ env.SHORT_SHA }}`(${{ github.sha }})。
+
+            - 产物:`hikami-windows-amd64-desktop-ffmpeg.exe`(Windows 桌面版,内嵌前端 + 裁剪版 ffmpeg + 系统托盘)
+            - 校验和见附件 `checksums-sha256.txt`
+            - **这不是稳定版本**:未跑全量测试,只过了 `go vet` 门禁;正式版本见 Releases 页其它条目
+          files: dist/*
