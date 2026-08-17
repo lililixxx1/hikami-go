@@ -167,6 +167,7 @@ graph TD
 | [frontend-types.md](./CLAUDE-detail/frontend-types.md) | TypeScript 类型定义与前端 API 模块说明 |
 | [development.md](./CLAUDE-detail/development.md) | 构建、运行、配置（20 项）、完整编码规范、完整 AI 使用指引（逐模块深度） |
 | [testing.md](./CLAUDE-detail/testing.md) | 测试策略和现有测试覆盖 |
+| [promo-video/](./docs/promo-video/) | B 站宣传片完整制作包（2026-08-16，31 文件）：[00-overview.md](./docs/promo-video/00-overview.md) 入口 + 文稿/分镜/字幕 SRT/发布套件/AI 工具指引/TTS/选题 + `video/` Remotion 可渲染源码（`npx remotion render` 一条命令出 mp4） |
 | [plans/](./plans/) | 活跃设计文档（当前无活跃计划）。已落地的历史计划归档于 [plans/archive/](./plans/archive/)（12 份，2026-07-17 自 `docs/plan-*` 迁入）：录播稳定性异常 #10/#11/P2 修复、auto_recap 默认值反转 + -352 风控加固、config + UI 修复、ASR 成本/失败清理/title_prefix 三项 issue、recap 模型手动输入、调查问题修复 2026-07-15、调查问题修复 2026-07-16（TemplateCardV10/术语词边界/ResolvedTemplate json tag） |
 
 > 架构、技术栈、模块结构图、场次状态机、变更记录已并入本文（根 CLAUDE.md），不再单独拆分为 CLAUDE-detail 子文件，以消除拆分维护导致的漂移。
@@ -248,6 +249,10 @@ systemctl status hikami      # 状态
 优先运行与改动相关的最小测试；跨模块、迁移、API 或前端类型变更后运行 `make test`，前端变更运行 `cd web && npm run type-check` 或 `make web-build`。
 
 ## 变更记录 (Changelog)
+
+### 2026-08-17 · /init 增量同步 — preview 滚动预览工作流 + 宣传片制作包入档(纯文档)
+
+上次 `/init`(08-16,`2f93c35`)后 7 个 commit 逐项对账:ISSUE-006 修复三连(`8b81924`/`c1403dc`/`a90cb19`)当次会话已同步 asr/worker 模块文档与本文件索引(asr 107→**123**),本轮机械核对确认无漂移;**入档对象为 `77561a6`+`093cbd6` 的 `preview.yml`**——push main(纯 md/docs 跳过)或手动触发,构建 desktop+ffmpeg 变体(与 release.yml 单矩阵项同参,`go vet` 快速门禁),双通道交付:artifact(短 SHA 命名,保留 30 天)+ 固定 tag `preview` **滚动预发布**(Releases 公开直链免登录、同名资产覆盖始终一条、`prerelease` 不占 Latest、不触发 `v*` 门禁、concurrency 防排队;实跑 run 31999373720/32000613691 双次验证)。另:`354fa07` B 站宣传片制作包(31 文件,Remotion 可渲染源码)入本文件「详细文档索引」;`cmd/hikami/CLAUDE.md` 回填 ISSUE-006 装配行(`asrHandler.SetTaskPayloadWriter`,08-16 欠账);AGENTS.md「关键文件索引」+CI 工作流+promo-video 两行。**全量逐包核对 29/29 零漂移**;DB v39/Go 1.25.5/web 36 文件 242 例均未动无漂移。验证:纯文档,`git diff` 仅 *.md,零回归。详见 AGENTS.md 2026-08-17 /init 条目。
 
 ### 2026-08-17 · H1/L14 手工冒烟完成(纯冒烟,零代码改动)
 

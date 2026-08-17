@@ -225,9 +225,21 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
 | 数据流详解 | `docs/data-flow.md` |
 | 业务流程 | `docs/BUSINESS_FLOW.md` |
 | 前端架构 | `docs/FRONTEND_ARCHITECTURE.md` |
+| CI 构建/发布/预览工作流 | `.github/workflows/`(`release.yml` 正式发布:`v*` tag 全量测试+6 产物;`preview.yml` 滚动预览:push main 自动构建 desktop-ffmpeg exe → artifact(短 SHA,30 天)+ 固定 tag `preview` 滚动预发布(公开直链);`deploy-pages.yml` 介绍站) |
+| B 站宣传片制作包 | `docs/promo-video/00-overview.md`(文稿/分镜/字幕/发布套件/AI 工具指引 + `video/` 可渲染 Remotion 源码,一条命令出 mp4) |
 | 各模块深度说明 | 根 `CLAUDE.md` + 各 `internal/<模块>/CLAUDE.md` |
 
 ## 变更记录
+
+- 2026-08-17(一):**`/init-project` 增量同步 — preview 滚动预览工作流 + 宣传片制作包入档 + cmd 模块文档回填**(无代码改动,纯文档)。上次 `/init`(08-16,`2f93c35`)后共 7 个 commit:`f5090be`(gitignore 宣传片工作目录)+ `354fa07`(docs/promo 宣传片制作包,31 文件)+ `8b81924`/`c1403dc`/`a90cb19`(ISSUE-006 修复及冒烟记录,当次会话已同步 asr/worker CLAUDE.md + 根 CLAUDE.md 索引 + 本文件条目,本轮核对无漂移)+ `77561a6`/`093cbd6`(ci preview 工作流,**本轮入档对象**)。
+
+  **① `preview.yml` 滚动预览(2026-08-17 新增,实跑验证过)**:push main(纯 `**.md`/`docs/**` 改动跳过;仅全部命中忽略路径才跳)+ workflow_dispatch 触发 → 构建与 release.yml 的 desktop+ffmpeg 矩阵项同参的 `hikami-windows-amd64-desktop-ffmpeg.exe`(`embed_ffmpeg,embedded_web,systray` + `-H windowsgui`),`go vet` 快速门禁(不跑全量测试,正式发布仍走 release.yml 的 tag 门禁)→ 双通道交付:artifact `hikami-preview-windows-desktop-ffmpeg-<短SHA>`(保留 30 天,登录可下历史)+ **固定 tag `preview` 的滚动预发布**(Releases 页公开直链免登录,同名资产自动覆盖始终一条,`prerelease: true` 不占 Latest;tag 不匹配 release.yml 的 `v*` 触发,推送 tag 不命中 `branches: main` 无自触发循环;concurrency 取消旧构建)。
+
+  **② 宣传片制作包入档**(`354fa07`,2026-08-16 落盘):`docs/promo-video/` 31 文件——00-overview 入口 + 文稿/分镜/字幕 SRT/发布套件/AI 工具指引/TTS/选题 7 份 md + `video/` Remotion 可渲染源码(React 场景组件,`npx remotion render` 一条命令出 mp4)。本文件「关键文件索引」+ 根 CLAUDE.md「详细文档索引」各加一行。
+
+  **③ `cmd/hikami/CLAUDE.md` 回填**(ISSUE-006 欠账,`8b81924` 改了 main.go 但当时只同步了 asr/worker 模块文档):main.go 清单行补 `asrHandler.SetTaskPayloadWriter(workerPool.Store())`(2026-08-16)+ changelog 表加 2026-08-16 行。
+
+  **全量逐包核对**(`^func Test` 机械统计 vs 根 CLAUDE.md 索引):**29/29 包零漂移**(asr 123✓ 已由修复会话同步,handler 126✓、recap 136✓、web 242✓ 等全对齐)。**核实通过(无需改)**:DB v39✓(本批无 db 改动)、Go 1.25.5✓(go.mod 未动)、web 前端 36 文件/242 例✓(web/ 未动)、KNOWN_ISSUES 待修复段已清零✓、webdist 陷阱/冒烟记录已有 08-17 条目✓。**验证**:纯文档零回归(`git diff` 仅 *.md)。**回归**:零。
 
 - 2026-08-17(一):**H1/L14 手工冒烟完成(无代码改动,纯冒烟记录)**——08-15 审核批次遗留的最后两项实机验证在本机完成,H3 因主播未直播顺延。方法:一次性临时实例(独立 `.tmp/smoke/` DB/output + 专用 admin token + 显式禁用 discovery/live_check cron,零后台副作用)+ 当前 HEAD 二进制 + Chrome DevTools 驱动前端。
 
