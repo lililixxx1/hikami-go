@@ -249,6 +249,10 @@ systemctl status hikami      # 状态
 
 ## 变更记录 (Changelog)
 
+### 2026-08-17 · H1/L14 手工冒烟完成(纯冒烟,零代码改动)
+
+一次性临时实例(独立 DB/token/禁 cron)验证 08-15 批次遗留项:**H1 /ws 鉴权全过**(协议级 6/6:401×2/101×2/恶意 Origin 403/REST 401+200;前端全链路:无 token 弹窗离线 → 正确 token 已连接 → 运行期改错 token 心跳断开 401 循环不崩 → 改回自动重连);**L14 多 P 后缀全过**(真实 40 分 P 视频 BV1SW411P7Du:40 条 `?p=` 条目 → 40 个 `_pNNN` source_id 零重复,单 P 合集 150 条零误加)。**H3 未测**(灰泽满 live_status=0 无直播窗口,留待下次)。运维发现:`cmd/hikami/webdist` 陈旧(8/6)会让纯 `go build` 嵌入旧前端——本机验证前须先 `make web-build`。详见 AGENTS.md 2026-08-17 条目。
+
 ### 2026-08-16 · ISSUE-006 修复:崩溃恢复重复提交 DashScope 付费任务
 
 **fix(asr)**:落实 `docs/KNOWN_ISSUES.md` ISSUE-006(2026-08-01 记录的最后待修复项)的正解方向①——`dashscope_task_id` 持久化。流程:自查(根因+双窗口分析)→ plan-code-reviewer 根因复核(APPROVE,附 A-1/B-1/G-1/G-2 采纳)→ 计划文档(`plans/plan-issue006-dashscope-taskid-persist-2026-08-16.md`)→ 计划审核(NEEDS_FIX 3M/3L/3S 全采纳修订)→ 实施 → 执行后审核(NEEDS_FIX 1M:`poll` 终态未映射哨兵,已修+D4b 测试)。改动:`asr.go`(`submittingTranscriber`/`taskPayloadWriter` 接口 + 三步付费安全决策树 + `persistDashScopeTaskID` + G-1 CreateTask 改 `EnqueueIfNoActive`)、`dashscope.go`(`SubmitASRTask`/`AwaitASRTask` 拆分 + `ErrDashScopeTaskDead` 哨兵 + fail-closed + `remotePathFor` 单一真相源;删除 `TranscribeWithTaskID*`)、`temp_server.go`(`ObjectPath`)、`main.go`(注入 `workerPool.Store()`)、`worker.go`(注释)。测试 asr 107→**123**(+16);核心契约:恢复重入 Submit 零调用、fail-closed 零 POST、防无限重提交。验证:22 包绿+6 Windows 预存 flake=基线、vet/gofmt/embedded_web 编译(28.7MB)全过。残余窗口(毫秒级 submit→persist/persist 持续失败/G-2 人工 reset/URL 过期/恢复期改 VAD)记录于 KNOWN_ISSUES 已修复段。

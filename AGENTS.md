@@ -229,6 +229,18 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
 
 ## 变更记录
 
+- 2026-08-17(一):**H1/L14 手工冒烟完成(无代码改动,纯冒烟记录)**——08-15 审核批次遗留的最后两项实机验证在本机完成,H3 因主播未直播顺延。方法:一次性临时实例(独立 `.tmp/smoke/` DB/output + 专用 admin token + 显式禁用 discovery/live_check cron,零后台副作用)+ 当前 HEAD 二进制 + Chrome DevTools 驱动前端。
+
+  **H1(/ws 鉴权,commit `b728dcc`)全过**:
+  - 协议级 6/6:无 token 401 / 错 token 401 / query token 101 / X-Admin-Token 101 / 正确 token + 恶意 Origin 403(CheckOrigin)/ REST 无 token 401 + 有 token 200。
+  - 前端全链路:无 token → 认证弹窗 + 顶栏「离线(降级轮询)」;输入正确 token → 弹窗关闭、数据加载、WS「已连接」;**设置页运行期改错 token → 心跳断开后 WS 401 循环保持离线、UI 不崩、REST 401 重弹认证框;改回正确 token → 自动重连恢复「已连接」**(验证了 useWebSocket 每次 connect 重读 token 的修复点,无 401 死循环)。
+
+  **L14(多 P 合集 `_pNNN` 后缀,commit `e3f0e27`)全过**:真实 40 分 P 视频 BV1SW411P7Du(相声纪录片合集)preview 返回 **40 条 `?p=` 条目、40 个 `_pNNN` 后缀 source_id、零重复**(修复前 40 个 entry.ID 同一 BV 会被唯一约束吞掉 39 个),服务端日志 source_id 与响应一致。旁证:灰泽满合集 5070891(现 150 条,全单 P)无 `?p=` 条目、source_id 全部无后缀(零误加);该主播空间 1600 条投稿亦全单 P——**多 P 属 B 站遗留格式,真实触发场景已稀少**。
+
+  **H3(录制中取消/重启自愈)未测**:灰泽满当前 `live_status=0`(未直播),无真实直播窗口;逻辑路径已由 live_record 93 测试覆盖,实机冒烟留待下次直播窗口(录制中 Cancel + mid-record 重启,验证 fe442c5/f260f05 的收尾行为)。
+
+  **运维发现(记录防再踩)**:`cmd/hikami/webdist`(gitignore)是 **8/6 的陈旧构建**——纯 `go build -tags embedded_web`(不走 `make build`)会把它原样嵌入,服务的前端缺 08-15 之后的所有前端修复(H1 冒烟首轮假阴性即此因)。**本机冒烟/验证前先 `make web-build`(或 `npm run build` + 拷贝 web/dist → cmd/hikami/webdist)再编译**。本轮已重建(`index-DCzNQXfC.js`),冒烟结束后 checkout 恢复,未入库。
+
 - 2026-08-16(日):**ISSUE-006 修复:崩溃恢复重复提交 DashScope 付费任务 — dashscope_task_id 持久化关闭双付费窗口**(用户指定四阶段审核流:自查 → plan-code-reviewer 复核 → 计划文档审核 → 执行后审核,全部闭环;改 `internal/asr/asr.go`/`dashscope.go`/`temp_server.go` + `cmd/hikami/main.go` + `internal/worker/worker.go` 注释,新增 2 测试文件)。
 
   **触发**:用户要求修复 `docs/KNOWN_ISSUES.md` 中最后一个待修复项 ISSUE-006(2026-08-01 记录):进程崩溃(OOM 等)落在「状态事件已 Apply、worker MarkSucceeded 前」窗口时,`recoverRunning` 无条件重跑 ASR → 重新提交 DashScope 付费任务 → 重复计费。主窗口覆盖整个 poll 阶段(120×5s=10min,OOM 高发区)。
