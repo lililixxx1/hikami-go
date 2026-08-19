@@ -231,6 +231,19 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
 
 ## 变更记录
 
+- 2026-08-19(三):**回归 E2E 实测:debd7b1(部署二进制)→ cf6ec70(HEAD)+ 2 修复 — 38 项矩阵 36 PASS / 2 SKIP,发现并修复 L14 真实回归**(计划 `plans/plan-regression-e2e-2026-08-19.md` 经 plan-code-reviewer 两轮 16 项发现审核后执行;每问题修复后独立审核;收尾 post-review 9 项发现全落实)。**报告:`docs/2026-08-19-回归E2E测试报告-debd7b1到cf6ec70.md`**。
+
+  **测试形态**:`.tmp/e2e-20260819/` 隔离实例(6335,拷贝生产 DB+精选场次,专用 token,cron 禁用,publish=draft)+ 真实付费 E2E(DashScope fun-asr ×3 场 ~95min / DeepSeek recap ×7 调用 / B 站草稿 draft_id=386174 **待用户手动删**)+ kill -9 崩溃恢复实测 + headless Chrome CDP 前端自动化。生产零接触。
+
+  **修复 2 个(均 plan-code-reviewer APPROVE 后提交)**:
+  - `8857963` fix(web):Node 25 残缺原生 localStorage(vitest#8757/nodejs#60303)破坏 vitest 收集 → 新增 `vitest.setup.ts` polyfill(仅检测到无方法原生实现才接管)+ config/tsconfig 挂载。零业务代码改动,242 测试全过。
+  - `3fe5b57` fix(biliutil):**L14 的真实回归(E2E 抓到)**——yt-dlp `--flat-playlist` 的 entry.id 不带 `BV` 前缀,`SourceIDWithPart` 锚定 entry.ID 原样保留导致 discover 生成 `1SW411P7Du_p001`(无前缀)与 download-by-url 的 `BV1SW411P7Du_p001` 键脱节、去重失效。修复:videoID 不匹配 BV 正则时从 rawURL 提取 BV 作锚(custom-id+URL-BV 兼容语义保留);`TestSourceIDWithPart` 扩到 8 case + discover 夹具改 BV-less ID 钉死(测试函数数不变:98/37)。E2E 复验 40 条 preview 全 BV 前缀 + exists 命中。
+  - `f990d74` style(handler):顺手清双空行。
+
+  **关键铁证**:ISSUE-006——3 条 ASR 任务 payload 持久化 `dashscope_task_id`;kill -9(11:25:04,submit+2s)后 run3 恢复 `await started` 同 task_id;run2-5 合计 0 次 `submitted`(每场恰 1 次)→ **恢复重入 await 零重提交**。执行事故(已记录防再踩):`cd && nohup &` 后台子壳致 kill -9 打偏包装进程,真实进程存活完成 ASR 后在 CAS 输给重排 attempt,批量重试收口——核心断言不受影响。
+
+  **结论**:全部增量功能验证通过,**可以升级**(步骤+多 P 历史条目一次性重下载注意事项见报告 §9);升级由用户确认后执行,本轮未动生产。SKIP:T16 H3(无直播窗口)/T17 H4(MCP 工具链),背书与登记见报告 §4。
+
 - 2026-08-17(一):**`/init-project` 增量同步 — preview 滚动预览工作流 + 宣传片制作包入档 + cmd 模块文档回填**(无代码改动,纯文档)。上次 `/init`(08-16,`2f93c35`)后共 7 个 commit:`f5090be`(gitignore 宣传片工作目录)+ `354fa07`(docs/promo 宣传片制作包,31 文件)+ `8b81924`/`c1403dc`/`a90cb19`(ISSUE-006 修复及冒烟记录,当次会话已同步 asr/worker CLAUDE.md + 根 CLAUDE.md 索引 + 本文件条目,本轮核对无漂移)+ `77561a6`/`093cbd6`(ci preview 工作流,**本轮入档对象**)。
 
   **① `preview.yml` 滚动预览(2026-08-17 新增,实跑验证过)**:push main(纯 `**.md`/`docs/**` 改动跳过;仅全部命中忽略路径才跳)+ workflow_dispatch 触发 → 构建与 release.yml 的 desktop+ffmpeg 矩阵项同参的 `hikami-windows-amd64-desktop-ffmpeg.exe`(`embed_ffmpeg,embedded_web,systray` + `-H windowsgui`),`go vet` 快速门禁(不跑全量测试,正式发布仍走 release.yml 的 tag 门禁)→ 双通道交付:artifact `hikami-preview-windows-desktop-ffmpeg-<短SHA>`(保留 30 天,登录可下历史)+ **固定 tag `preview` 的滚动预发布**(Releases 页公开直链免登录,同名资产自动覆盖始终一条,`prerelease: true` 不占 Latest;tag 不匹配 release.yml 的 `v*` 触发,推送 tag 不命中 `branches: main` 无自触发循环;concurrency 取消旧构建)。
