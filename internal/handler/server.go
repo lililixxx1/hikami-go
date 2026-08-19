@@ -1922,7 +1922,6 @@ func derefBool(p *bool) bool {
 	return *p
 }
 
-
 // envMutation 描述 applySecretEnvChangeTx 在事务内对 secrets 表做的、
 // 需要在事务 commit 成功后再反映到进程 env 的副作用。
 // 语义:commit 成功后,对 setEnv 调 os.Setenv、对 unsetEnvs 逐个 os.Unsetenv。
