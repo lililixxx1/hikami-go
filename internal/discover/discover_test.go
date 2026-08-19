@@ -467,13 +467,16 @@ func TestDiscoverChannelResolvesEmptyTitle(t *testing.T) {
 }
 
 // multiPartLister 模拟多 P 合集:yt-dlp --flat-playlist 对多 P 视频返回的
-// entry.ID 全是同一个 BV,只有 WebpageURL 的 ?p= 区分分 P(L14 场景)。
+// entry.ID 全是同一个 ID,只有 WebpageURL 的 ?p= 区分分 P(L14 场景)。
+// ID 用实测的 BV-less 形态(2026-08-19:BV1SW411P7Du 的 entry.id 为
+// "1SW411P7Du")——SourceIDWithPart 需锚定 URL 的 BV 才能与 download-by-url
+// 的 ExtractVideoSourceID("BV..._pNNN")去重键对齐。
 type multiPartLister struct{}
 
 func (multiPartLister) List(ctx context.Context, sourceURL string, cookieFile string) ([]Entry, error) {
 	return []Entry{
-		{ID: "BV1xx411c7mD", Title: "【直播回放】上篇", WebpageURL: "https://www.bilibili.com/video/BV1xx411c7mD?p=1"},
-		{ID: "BV1xx411c7mD", Title: "【直播回放】下篇", WebpageURL: "https://www.bilibili.com/video/BV1xx411c7mD?p=2"},
+		{ID: "1xx411c7mD", Title: "【直播回放】上篇", WebpageURL: "https://www.bilibili.com/video/BV1xx411c7mD?p=1"},
+		{ID: "1xx411c7mD", Title: "【直播回放】下篇", WebpageURL: "https://www.bilibili.com/video/BV1xx411c7mD?p=2"},
 	}, nil
 }
 

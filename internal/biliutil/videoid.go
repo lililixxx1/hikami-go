@@ -98,16 +98,28 @@ func ExtractVideoSourceID(rawURL string) string {
 
 // SourceIDWithPart 在调用方已持有视频 ID(如 yt-dlp entry.ID,可能是列表器
 // 自定义格式、不保证匹配 BV 正则)时构造场次级来源标识:URL 显式带 p 则追加
-// 与 ExtractVideoSourceID 一致的 _pNNN 分 P 后缀,否则原样返回 videoID。
+// 与 ExtractVideoSourceID 一致的 _pNNN 分 P 后缀,否则原样返回 videoID
+// (videoID 为 BV-less 而 URL 携带 BV 时例外,见下)。
 // 后缀格式与 ExtractVideoSourceID 单一来源,保证两条路径去重口径一致。
+// yt-dlp 对多 P 合集的 entry.ID 会剥掉 BV 前缀(实测 2026-08-19,BV1SW411P7Du
+// 的 flat-playlist entry.id 为 "1SW411P7Du"),裸用会使 discover 与
+// download-by-url 的 ExtractVideoSourceID("BV..._pNNN")键脱节,同一分 P 经
+// 两条路径各建一场、重复下载。entry.ID 不匹配 BV 而 URL 携带 BV 时锚定 URL
+// 的 BV;URL 无 BV(如 ep/ss 或非 B 站列表)保持 entry.ID 原样,历史去重连续。
 func SourceIDWithPart(videoID, rawURL string) string {
 	if videoID == "" {
 		return ExtractVideoSourceID(rawURL)
 	}
-	if part, ok := ExtractVideoPart(rawURL); ok {
-		return fmt.Sprintf("%s_p%03d", videoID, part)
+	base := videoID
+	if !bvPattern.MatchString(videoID) {
+		if urlBV := bvPattern.FindString(rawURL); urlBV != "" {
+			base = urlBV
+		}
 	}
-	return videoID
+	if part, ok := ExtractVideoPart(rawURL); ok {
+		return fmt.Sprintf("%s_p%03d", base, part)
+	}
+	return base
 }
 
 // NormalizeSourceURL 规范化视频链接：去 fragment、剔除跟踪参数、去首尾空白。

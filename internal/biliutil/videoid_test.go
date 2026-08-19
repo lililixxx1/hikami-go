@@ -79,13 +79,21 @@ func TestSourceIDWithPart(t *testing.T) {
 		url     string
 		want    string
 	}{
-		// 列表器自定义 ID(不匹配 BV 正则)也原样保留,仅追加 p 后缀——
-		// discover 锚定 entry.ID 的去重语义与历史 session 连续(L14)。
-		{"custom id with part", "BV1", "https://www.bilibili.com/video/BV1xx411c7mD?p=2", "BV1_p002"},
-		{"custom id no part", "BV1", "https://www.bilibili.com/video/BV1xx411c7mD", "BV1"},
+		// yt-dlp 对多 P 合集的 entry.ID 剥掉 BV 前缀(实测 2026-08-19:BV1SW411P7Du
+		// 的 entry.id 为 "1SW411P7Du")。BV-less ID + BV URL 必须锚定 URL 的 BV,
+		// 与 download-by-url 的 ExtractVideoSourceID 去重键对齐,否则同一分 P
+		// 经 discover 与 download-by-url 两条路径各建一场、重复下载。
+		{"yt-dlp bv-less id with part anchors url bv", "1SW411P7Du", "https://www.bilibili.com/video/BV1SW411P7Du?p=3", "BV1SW411P7Du_p003"},
+		{"yt-dlp bv-less id no part anchors url bv", "1SW411P7Du", "https://www.bilibili.com/video/BV1SW411P7Du", "BV1SW411P7Du"},
+		// 列表器自定义 ID 且 URL 无 BV(ep/ss、非 B 站列表)保持原样,
+		// 与历史 session 去重连续(L14 原语义)。
+		{"custom id non-bv url stays as-is with part", "ep123456", "https://www.bilibili.com/bangumi/ep123456?p=2", "ep123456_p002"},
+		{"custom id non-bv url stays as-is", "ep123456", "https://www.bilibili.com/bangumi/ep123456", "ep123456"},
+		// 不完整 BV 前缀形态(不匹配 BV 正则)同样锚定 URL 的 BV。
+		{"malformed bv prefix anchors url bv", "BV1", "https://www.bilibili.com/video/BV1xx411c7mD?p=2", "BV1xx411c7mD_p002"},
 		{"valid bv with part matches ExtractVideoSourceID", "BV1xx411c7mD", "https://www.bilibili.com/video/BV1xx411c7mD?p=1", "BV1xx411c7mD_p001"},
 		{"empty id falls back to url", "", "https://www.bilibili.com/video/BV1xx411c7mD?p=3", "BV1xx411c7mD_p003"},
-		{"invalid p ignored", "BV1", "https://www.bilibili.com/video/BV1xx411c7mD?p=abc", "BV1"},
+		{"invalid p ignored", "BV1xx411c7mD", "https://www.bilibili.com/video/BV1xx411c7mD?p=abc", "BV1xx411c7mD"},
 	}
 	for _, tt := range tests {
 		if got := SourceIDWithPart(tt.videoID, tt.url); got != tt.want {
