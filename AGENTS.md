@@ -231,6 +231,19 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
 
 ## 变更记录
 
+- 2026-08-20(四):**「同场直播失败后无法重录」根因翻案 + 修复 — 原「20h active 泄漏」证伪,真根因是开播时间槽唯一约束(含失败态)+ 误导性 ErrAlreadyRecording;F1-F4 修复经三轮计划审核 + 实现审核全部 APPROVED**(用户触发:「这个问题已经发生几次了,重新确认一下是否是这个原因」)。**计划:`plans/plan-liverecord-rerecord-2026-08-20.md`**(r0 NEEDS_FIX 1H+3M → r1 NEEDS_FIX 1 必须 → r2 APPROVED → 实现 APPROVED;全部审核记录在计划附录)。
+
+  **根因翻案(推翻同日分析文档的根因 B)**:①任务 20:21:53 就干净完成(HandleTask 返回/defer 清 active/MarkFailed+session failed)——「tasks 时间戳停在 16:44:07」是次日用户 UI 手动重试 run-2 的 MarkRunning/MarkFailed **覆盖**造成的假象;run-2 能过 setActive + Retry 要求 status=failed 双重证明无泄漏。②20:22-23:34 "already recording" 风暴真凶:`session.CreateLive` 用 B站 live_start_time 生成 source_id 落 `(channel,source_type,source_id)` UNIQUE(注释明示含失败态防下播竞态),同场直播(live_start_time 恒定)期间每 tick 建场必撞 → `ErrAlreadyLive` 被映射为 `ErrAlreadyRecording`——**主播复播的 3h12m 真实直播因 failed 场占槽永远无法重录**(8-19 全部实际损失)。③历史交叉验证:7-22 同款风暴在复播瞬间(新 live_start_time=新槽)消失;8-09 同款闪断 83 秒干净完成。原分析文档头部已加复核结论段。
+
+  **修复(8 文件 +358/-7 + 新测试文件)**:
+  - **F1 槽位冷却复活**:`live_record.rerecord_cooldown_seconds`(默认 600,0=禁用)/`rerecord_max_attempts`(默认 3)两配置 + `Effective*` 归一化;`startWithInfo` 撞槽时 `tryRerecordFailedSlot` 复用槽内 failed session 直接 Retry 其录制任务(状态机 M6 已放行 failed→recording,零 schema 改动)。门槛纯函数 `evaluateRerecordGate`(禁用→槽非 failed→**残留音频**→任务不可用→次数上限→冷却→放行):**残留音频保全门控**(raw/ 任一 Size()>0 音频 → 禁自动复活+WARN 提示人工救场,防 `-y` 截断销毁 failed 场残留音频——afterRecordFinishError/风控中止两路径都会留音频)+ 零字节残壳清理(防复活运行 `-n` 撞名立败,ErrNotExist 容忍)+ `ErrTaskConflict` 幂等降级(tick 重叠/手动三方竞态)+ 槽 session Get 微竞态静默降级。session 层抽 `LiveSlotSlugTime/LiveSlotSessionID`(id/slug/sourceID 单次派生)。
+  - **F2 日志诚实化**:槽位冲突按形态打真实原因(已调度/等冷却/耗尽带自救提示/残留音频保全/死槽 task missing|cancelled),API 保持 409 前端零改动。
+  - **F3 openStream 加固**:包级 transport(DefaultTransport.Clone 基,Dial 10s/TLS 10s/ResponseHeaderTimeout 15s,**不设 Client.Timeout 防掐断长流**),nil-client 不再回退无超时的 http.DefaultClient——原 P1 唯一真实隐患(CDN TCP 挂起会造成真 active 占用)收口;看门狗撤销(泄漏证伪)。
+  - **F4**:worker.runTask 两处 ctx 取消吞错分支补 INFO 日志。
+  - **测试**:live_record 93→106(新增 `manager_rerecord_test.go` 13 个:9 场景用 newAnomaly9Manager 范式 pool 不 Start 防竞态 + 端到端 M6 重入 + 纯函数表驱动 11 子例 + F3 两项,含 slog capture 的 F2 文案断言)+ config 49→50(+1)。
+  - **验证**:全量 28 包全绿、vet/gofmt 干净、embedded_web 构建 27.8MB。8-19 案例回放推演:failed 20:21:53 → 20:32 tick 自动复活 → preflight live:true → 重录 3h02m → 完整流水线,损失可完全避免。
+  - **部署**:`make build-go && systemctl restart hikami` 后生效;下次直播窗口实测同场重录(含残留音频型 WARN 路径)。
+
 - 2026-08-19(三):**回归 E2E 实测:debd7b1(部署二进制)→ cf6ec70(HEAD)+ 2 修复 — 38 项矩阵 36 PASS / 2 SKIP,发现并修复 L14 真实回归**(计划 `plans/plan-regression-e2e-2026-08-19.md` 经 plan-code-reviewer 两轮 16 项发现审核后执行;每问题修复后独立审核;收尾 post-review 9 项发现全落实)。**报告:`docs/2026-08-19-回归E2E测试报告-debd7b1到cf6ec70.md`**。
 
   **测试形态**:`.tmp/e2e-20260819/` 隔离实例(6335,拷贝生产 DB+精选场次,专用 token,cron 禁用,publish=draft)+ 真实付费 E2E(DashScope fun-asr ×3 场 ~95min / DeepSeek recap ×7 调用 / B 站草稿 draft_id=386174 **待用户手动删**)+ kill -9 崩溃恢复实测 + headless Chrome CDP 前端自动化。生产零接触。
