@@ -107,6 +107,24 @@ func (s *Store) DB() *sql.DB {
 	return s.db
 }
 
+// LiveSlotSlugTime 返回直播场次槽位时间戳(秒粒度,来自 B 站 live_start_time)。
+// 同一场 B 站直播(含闪断)期间该值恒定,是槽位去重的实际键。CreateLive 与
+// live_record 槽位复活反查(2026-08-20)共用此函数,保证格式单一来源。
+func LiveSlotSlugTime(startedAt time.Time) string {
+	if startedAt.IsZero() {
+		startedAt = time.Now()
+	}
+	return startedAt.Format("20060102_150405")
+}
+
+// LiveSlotSessionID 返回指定频道在给定开播时间(B 站 live_start_time)的直播场次 session ID,
+// 与 CreateLive 生成的 id 同构。用于 startWithInfo 撞槽唯一约束后反查槽内会话。
+// 注意:调用方应传与 CreateLive 完全相同的 startedAt;zero-time 时两处各自的 time.Now()
+// 可能产生不同 id——该边界仅测试桩可触发,查不到时安全降级为「无槽会话」,不影响主流程。
+func LiveSlotSessionID(channelID string, startedAt time.Time) string {
+	return fmt.Sprintf("%s_live_%s", channelID, LiveSlotSlugTime(startedAt))
+}
+
 func (s *Store) CreateLive(ctx context.Context, input CreateLiveInput) (Session, error) {
 	if strings.TrimSpace(input.ChannelID) == "" {
 		return Session{}, fmt.Errorf("%w: channel_id is required", ErrInvalid)
@@ -121,8 +139,9 @@ func (s *Store) CreateLive(ctx context.Context, input CreateLiveInput) (Session,
 		input.StartedAt = time.Now()
 	}
 
-	slugTime := input.StartedAt.Format("20060102_150405")
-	id := fmt.Sprintf("%s_live_%s", input.ChannelID, slugTime)
+	// id/slug/sourceID 从同一次格式化的 slugTime 派生,消除并行 Format 的漂移可能。
+	slugTime := LiveSlotSlugTime(input.StartedAt)
+	id := LiveSlotSessionID(input.ChannelID, input.StartedAt)
 	slug := "live_" + slugTime
 	sourceID := fmt.Sprintf("live-%d-%s", input.RoomID, slugTime)
 	sourceURL := fmt.Sprintf("https://live.bilibili.com/%d", input.RoomID)
@@ -142,13 +161,15 @@ func (s *Store) CreateLive(ctx context.Context, input CreateLiveInput) (Session,
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, id, slug, input.ChannelID, "live_record", sourceID, input.Title, startedAt, sourceURL, state.StatusDiscovered)
 	if err != nil {
-		// 约束冲突：可能是 UNIQUE（同分钟槽 session 已存在）或 FK（channel 不存在）等。
+		// 约束冲突：可能是 UNIQUE（同开播时间槽(秒粒度) session 已存在）或 FK（channel 不存在）等。
 		// 用字符串匹配 constraint failed 会把 FK 错误也误判为“已存在”（codex 审核），
 		// 这里改为查目标 session 是否真实存在来区分：存在才是同槽重复，否则原样返回底层错误。
 		if isConstraintViolation(err) {
 			if existing, getErr := s.Get(ctx, id); getErr == nil && existing.ID == id {
-				// 同 (channel, 分钟槽) UNIQUE 命中。
-				// 不再自动复用/重置——历史上 failed 自动重置是 live_check 误触发复用旧 session
+				// 同 (channel, 开播时间槽) UNIQUE 命中。含失败态:同一场直播期间调度器每 tick
+				// 都会撞到这里(2026-08-19 3h12m 未重录即此);失败槽的冷却复活由
+				// live_record.startWithInfo 的 tryRerecordFailedSlot 处理,session 层不再
+				// 自动复用/重置——历史上 failed 自动重置是 live_check 误触发复用旧 session
 				// 的放大器（把 failed 拉回 discovered 后，新的录制任务把状态污染到 recording）。
 				return Session{}, fmt.Errorf("%w: %s", ErrAlreadyLive, id)
 			}

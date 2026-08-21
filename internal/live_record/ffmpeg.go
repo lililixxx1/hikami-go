@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os/exec"
@@ -114,6 +115,23 @@ func (r *FFmpegRecorder) stopGracePeriod() time.Duration {
 	return 10 * time.Second
 }
 
+// openStreamTransport / openStreamClient 是 openStream 的默认 HTTP 客户端（2026-08-20 F3，
+// plans/plan-liverecord-rerecord-2026-08-20.md）：生产装配未注入 HTTPClient 时不再回退到
+// 无超时的 http.DefaultClient——CDN TCP 挂起（非 404 快速失败）会让 openStream 无限阻塞，
+// 录制任务卡死并占用频道 active 槽。以 DefaultTransport.Clone() 为基（继承代理配置），
+// 只限定建连与响应头阶段：DialContext 10s / TLSHandshakeTimeout 10s / ResponseHeaderTimeout 15s。
+// 特意不设 http.Client.Timeout——它覆盖整个响应周期，会掐断数小时的长流 io.Copy；
+// 响应头到手后，流体的读取不受上述任何超时约束。
+var openStreamTransport = func() *http.Transport {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext
+	transport.TLSHandshakeTimeout = 10 * time.Second
+	transport.ResponseHeaderTimeout = 15 * time.Second
+	return transport
+}()
+
+var openStreamClient = &http.Client{Transport: openStreamTransport}
+
 func (r *FFmpegRecorder) openStream(ctx context.Context, stream StreamInfo) (*http.Response, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, stream.URL, nil)
 	if err != nil {
@@ -130,7 +148,7 @@ func (r *FFmpegRecorder) openStream(ctx context.Context, stream StreamInfo) (*ht
 	}
 	client := r.HTTPClient
 	if client == nil {
-		client = http.DefaultClient
+		client = openStreamClient
 	}
 	response, err := client.Do(request)
 	if err != nil {

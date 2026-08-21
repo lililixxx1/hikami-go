@@ -265,6 +265,10 @@ func (p *Pool) runTask(id string) {
 	reporter := &taskReporter{store: p.store, hub: p.hub, taskID: task.ID}
 	if err := handler(ctx, task, reporter); err != nil {
 		if ctx.Err() != nil {
+			// H3 设计：任务取消不落终态（音频保全收尾由 HandleTask 内完成）。
+			// 补日志区分「主动取消」与「疑似卡死」（2026-08-20 F4）。
+			slog.Info("task handler returned error after context cancelled",
+				"task_id", task.ID, "type", task.Type, "error", err)
 			return
 		}
 		var deferred *DeferredError
@@ -276,6 +280,8 @@ func (p *Pool) runTask(id string) {
 		return
 	}
 	if ctx.Err() != nil {
+		slog.Info("task handler succeeded after context cancelled",
+			"task_id", task.ID, "type", task.Type)
 		return
 	}
 

@@ -26,6 +26,14 @@ cron:
   discovery: ""
   live_check: "@every 30s"
 
+live_record:
+  # 同场直播失败后自动复活重录（2026-08-20）：B 站同一场直播（live_start_time 不变）期间
+  # 录制失败，冷却 rerecord_cooldown_seconds 秒后由调度器自动 Retry 槽内失败场次的录制任务
+  #（上限 rerecord_max_attempts 次，含首次）。raw/ 残留有效音频的失败场次不会自动复活
+  # （防覆盖，走人工救场）。rerecord_cooldown_seconds: 0 = 关闭自动复活。
+  rerecord_cooldown_seconds: 600
+  rerecord_max_attempts: 3
+
 logs:
   dir: "logs"
   level: "info"

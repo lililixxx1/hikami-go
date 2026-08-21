@@ -1088,3 +1088,37 @@ func TestReplayAutoEnabled(t *testing.T) {
 		})
 	}
 }
+
+func TestRerecordDefaultsAndEffective(t *testing.T) {
+	// 2026-08-20 同场重录修复(plans/plan-liverecord-rerecord-2026-08-20.md):
+	// viper 默认 600s/3 次;Effective 归一化 cooldown<=0→0(禁用)、max<=0→3。
+	path := writeTestConfig(t, "output_root: /tmp/test\ndb_path: test.db\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.LiveRecord.RerecordCooldownSeconds != DefaultRerecordCooldownSeconds {
+		t.Errorf("live_record.rerecord_cooldown_seconds 默认 = %d, 期望 %d",
+			cfg.LiveRecord.RerecordCooldownSeconds, DefaultRerecordCooldownSeconds)
+	}
+	if cfg.LiveRecord.RerecordMaxAttempts != DefaultRerecordMaxAttempts {
+		t.Errorf("live_record.rerecord_max_attempts 默认 = %d, 期望 %d",
+			cfg.LiveRecord.RerecordMaxAttempts, DefaultRerecordMaxAttempts)
+	}
+	for _, v := range []int{0, -5} {
+		if got := (LiveRecordConfig{RerecordCooldownSeconds: v}).EffectiveRerecordCooldown(); got != 0 {
+			t.Errorf("EffectiveRerecordCooldown(%d) = %d, 期望 0(禁用)", v, got)
+		}
+	}
+	if got := (LiveRecordConfig{RerecordCooldownSeconds: 300}).EffectiveRerecordCooldown(); got != 300 {
+		t.Errorf("EffectiveRerecordCooldown(300) = %d, 期望 300", got)
+	}
+	for _, v := range []int{0, -1} {
+		if got := (LiveRecordConfig{RerecordMaxAttempts: v}).EffectiveRerecordMaxAttempts(); got != DefaultRerecordMaxAttempts {
+			t.Errorf("EffectiveRerecordMaxAttempts(%d) = %d, 期望 %d", v, got, DefaultRerecordMaxAttempts)
+		}
+	}
+	if got := (LiveRecordConfig{RerecordMaxAttempts: 5}).EffectiveRerecordMaxAttempts(); got != 5 {
+		t.Errorf("EffectiveRerecordMaxAttempts(5) = %d, 期望 5", got)
+	}
+}

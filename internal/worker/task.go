@@ -240,6 +240,20 @@ func (s *Store) ActiveBySessionAndType(ctx context.Context, sessionID string, ta
 	return task, true, nil
 }
 
+// LatestBySessionAndType 返回会话某类型最新的任务(按创建时间倒序,不限状态)。
+// 供 live_record 开播时间槽复活反查失败录制任务(2026-08-20,
+// plans/plan-liverecord-rerecord-2026-08-20.md);未找到返回 ErrTaskNotFound。
+func (s *Store) LatestBySessionAndType(ctx context.Context, sessionID string, taskType string) (Task, error) {
+	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(taskType) == "" {
+		return Task{}, fmt.Errorf("%w: session_id and type are required", ErrInvalidTask)
+	}
+	task, err := scanTaskCore(s.db.QueryRowContext(ctx, latestBySessionAndTypeSQL, sessionID, taskType))
+	if err == sql.ErrNoRows {
+		return Task{}, ErrTaskNotFound
+	}
+	return task, err
+}
+
 // ListRunning 返回所有状态为 running 的任务。
 func (s *Store) ListRunning(ctx context.Context) ([]Task, error) {
 	return s.listByStatus(ctx, StatusRunning)
@@ -665,6 +679,11 @@ const listRunningSQL = `SELECT ` + selectTaskColumns + ` FROM tasks WHERE status
 const activeBySessionAndTypeSQL = `SELECT ` + selectTaskColumns + `
 FROM tasks
 WHERE session_id = ? AND type = ? AND status IN (?, ?)
+ORDER BY created_at DESC, id DESC
+LIMIT 1`
+const latestBySessionAndTypeSQL = `SELECT ` + selectTaskColumns + `
+FROM tasks
+WHERE session_id = ? AND type = ?
 ORDER BY created_at DESC, id DESC
 LIMIT 1`
 

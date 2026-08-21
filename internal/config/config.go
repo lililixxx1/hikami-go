@@ -100,6 +100,39 @@ type LiveRecordConfig struct {
 	AutoReconnect        bool   `mapstructure:"auto_reconnect"`
 	MaxReconnect         int    `mapstructure:"max_reconnect"`
 	ReconnectDelay       int    `mapstructure:"reconnect_delay_seconds"`
+	// RerecordCooldownSeconds 是「同场直播失败后自动复活重录」的冷却秒数(2026-08-20,
+	// plans/plan-liverecord-rerecord-2026-08-20.md):开播时间槽唯一约束含失败态,失败后
+	// 同一场 B 站直播(live_start_time 不变)期间调度器每 tick 撞槽被 ErrAlreadyRecording
+	// 挡死、整场丢失(2026-08-19 3h12m 即此)。冷却过后由调度器自动 Retry 槽内 failed
+	// 场次的录制任务。0 = 关闭自动复活,完全保持旧行为。
+	RerecordCooldownSeconds int `mapstructure:"rerecord_cooldown_seconds"`
+	// RerecordMaxAttempts 是同槽复活的总尝试上限(含首次录制),防止下播竞态抖动下
+	// 无限快速失败。<=0 时按默认 3(EffectiveRerecordMaxAttempts)。
+	RerecordMaxAttempts int `mapstructure:"rerecord_max_attempts"`
+}
+
+// 同场重录默认值(单一来源,viper SetDefault 与 Effective 兜底共用)。
+const (
+	DefaultRerecordCooldownSeconds = 600
+	DefaultRerecordMaxAttempts     = 3
+)
+
+// EffectiveRerecordCooldown 返回复活冷却的有效秒数;<=0(显式 0 或负值)= 禁用自动复活。
+// 归一化收口在此处(Effective* 范式,同 RecapAIConfig.EffectiveProvider):setDefaults
+// 只在键缺席时生效,显式配置的 0/负值由这里统一兜底,调用方(live_record.Manager)不再判空。
+func (l LiveRecordConfig) EffectiveRerecordCooldown() int {
+	if l.RerecordCooldownSeconds > 0 {
+		return l.RerecordCooldownSeconds
+	}
+	return 0
+}
+
+// EffectiveRerecordMaxAttempts 返回复活总尝试上限的有效值;<=0 回落默认 3。
+func (l LiveRecordConfig) EffectiveRerecordMaxAttempts() int {
+	if l.RerecordMaxAttempts > 0 {
+		return l.RerecordMaxAttempts
+	}
+	return DefaultRerecordMaxAttempts
 }
 
 type LogsConfig struct {
@@ -1119,6 +1152,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("live_record.auto_reconnect", true)
 	v.SetDefault("live_record.max_reconnect", 3)
 	v.SetDefault("live_record.reconnect_delay_seconds", 10)
+	v.SetDefault("live_record.rerecord_cooldown_seconds", DefaultRerecordCooldownSeconds)
+	v.SetDefault("live_record.rerecord_max_attempts", DefaultRerecordMaxAttempts)
 	v.SetDefault("log_format", "json")
 	v.SetDefault("logs.dir", "logs")
 	v.SetDefault("logs.level", "info")

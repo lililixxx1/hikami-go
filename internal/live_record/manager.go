@@ -510,7 +510,7 @@ func (m *Manager) startWithInfo(ctx context.Context, item channel.Channel, info 
 		StartedAt: info.StartedAt,
 	})
 	if err != nil {
-		// 同一 (channel, 分钟槽) 已存在 live_record session（含后期态/失败态）。
+		// 同一 (channel, 开播时间槽(秒粒度)) 已存在 live_record session（含后期态/失败态）。
 		// 这是原始下播竞态的核心防护：靠同槽 UNIQUE 拒绝重复，而非 ActiveLiveForChannel
 		// 的频道级白名单（后者曾误扩到 published 等终态，导致该频道永久禁录——见 codex 审核）。
 		//
@@ -519,6 +519,14 @@ func (m *Manager) startWithInfo(ctx context.Context, item channel.Channel, info 
 		// 手动 Start 场景下报"already recording"语义略宽（实际是"这场已有 session"），
 		// 但调用方（handler）统一映射成 409，用户体验一致；保持单一错误以避免改动 cron 分支。
 		if errors.Is(err, session.ErrAlreadyLive) {
+			// 2026-08-20 同场重录修复（plans/plan-liverecord-rerecord-2026-08-20.md）：
+			// 槽位约束含失败态的代价是——同一场 B 站直播（live_start_time 不变）录制失败后，
+			// 期间每 tick 都撞槽被挡死、整场无法重录（2026-08-19 3h12m 即此）。槽内 failed
+			// 会话满足冷却/次数/无残留音频时自动复活重录；否则维持 ErrAlreadyRecording
+			//（409 语义兼容，前端零改动），冲突原因由 tryRerecordFailedSlot 诚实记录（F2）。
+			if status, revived := m.tryRerecordFailedSlot(ctx, item, info); revived {
+				return status, nil
+			}
 			return Status{}, ErrAlreadyRecording
 		}
 		return Status{}, err
@@ -552,6 +560,209 @@ func (m *Manager) startWithInfo(ctx context.Context, item channel.Channel, info 
 		SessionID: createdSession.ID,
 		TaskID:    task.ID,
 	}, nil
+}
+
+// rerecordDecision 是开播时间槽复活的门槛判定结果（evaluateRerecordGate 的输出）。
+type rerecordDecision int
+
+const (
+	rerecordProceed           rerecordDecision = iota // 全部条件满足，可复活重录
+	rerecordDisabled                                  // 配置禁用（cooldown<=0，完全保持旧行为）
+	rerecordSlotNotFailed                             // 槽内会话非 failed（进行中或成功终态，不该复活）
+	rerecordResidualAudio                             // raw/ 残留有效音频，禁自动复活防 -y 截断销毁
+	rerecordTaskUnavailable                           // 最新录制任务缺失/非 failed（死槽或已复活待跑）
+	rerecordAttemptsExhausted                         // 尝试次数达上限
+	rerecordCooldown                                  // 距上次失败未满冷却
+)
+
+// rerecordGateInput 是 evaluateRerecordGate 的纯数据输入（便于表驱动单测）。
+type rerecordGateInput struct {
+	cooldown         time.Duration
+	maxAttempts      int
+	now              time.Time
+	slotStatus       string        // 槽内会话状态
+	slotUpdatedAt    string        // 槽内会话 updated_at（RFC3339，上次失败时刻）
+	taskFound        bool          // 是否存在该会话的 live_record 任务
+	taskStatus       worker.Status // 最新任务状态（taskFound=false 时忽略）
+	taskAttempt      int
+	hasResidualAudio bool // raw/ 下存在 Size()>0 的 audio.<container>/audio.part.*
+}
+
+// evaluateRerecordGate 纯函数判定槽位复活门槛（2026-08-20，
+// plans/plan-liverecord-rerecord-2026-08-20.md F1）。不触 IO。
+// 判定顺序：禁用 → 槽非 failed → 残留音频（保全优先，最值得先暴露的原因）→
+// 任务不可用 → 次数上限 → 冷却（updated_at 解析失败按未到冷却保守处理）→ 放行。
+func evaluateRerecordGate(in rerecordGateInput) rerecordDecision {
+	if in.cooldown <= 0 {
+		return rerecordDisabled
+	}
+	if in.slotStatus != string(state.StatusFailed) {
+		return rerecordSlotNotFailed
+	}
+	if in.hasResidualAudio {
+		return rerecordResidualAudio
+	}
+	if !in.taskFound || in.taskStatus != worker.StatusFailed {
+		return rerecordTaskUnavailable
+	}
+	if in.taskAttempt >= in.maxAttempts {
+		return rerecordAttemptsExhausted
+	}
+	lastFail, err := time.Parse(time.RFC3339, in.slotUpdatedAt)
+	if err != nil || in.now.Sub(lastFail) < in.cooldown {
+		return rerecordCooldown
+	}
+	return rerecordProceed
+}
+
+// audioHuskCandidates 返回 raw 目录下主音频与重连分段的候选路径（不判断存在性）。
+func audioHuskCandidates(rawDir, container string) []string {
+	paths := []string{filepath.Join(rawDir, "audio."+container)}
+	if parts, err := filepath.Glob(filepath.Join(rawDir, "audio.part.*")); err == nil {
+		paths = append(paths, parts...)
+	}
+	return paths
+}
+
+// hasResidualAudio 检查 raw/ 是否残留有效音频（任一 Size()>0 的主文件或分段）。
+// failed 场可以带有效音频残留（afterRecordFinishError / 风控中止，都不走
+// finishWithAudioIfAny 统一收口）：自动复活后首个 recordAudio 对主文件走 -y 会立刻
+// 截断销毁它，违反「已录音频必须保留」不变量（2026-08-02/07 两场即靠 failed 场残留
+// 音频人工救回），必须先挡下，交人工处置。
+func hasResidualAudio(rawDir, container string) bool {
+	for _, path := range audioHuskCandidates(rawDir, container) {
+		if info, err := os.Stat(path); err == nil && !info.IsDir() && info.Size() > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// cleanZeroByteAudioHusks 删除 raw/ 下零字节音频残壳。残壳不含数据（与 audioFileExists
+// 的 Size()>0 口径一致），但复活运行的分段文件用 -n（不覆盖），撞名会让 ffmpeg 立败。
+// 复活门槛已过（旧任务 failed 终态 + 冷却已到）保证无并发写者；os.Remove 的
+// ErrNotExist（并发 tick 同时清理 / 外部删除）忽略。
+func cleanZeroByteAudioHusks(rawDir, container string) {
+	for _, path := range audioHuskCandidates(rawDir, container) {
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() || info.Size() != 0 {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			slog.Warn("rerecord: remove zero-byte audio husk failed", "path", path, "error", err)
+		}
+	}
+}
+
+// tryRerecordFailedSlot 在 startWithInfo 撞开播时间槽唯一约束时，评估并执行槽内 failed
+// 场次的「冷却复活」（2026-08-20 同场重录修复）。
+//
+// 复活 = 复用槽内 failed session，Retry 其最新 live_record task（状态机 M6 已放行
+// failed→EventLiveRecordStarted→recording），不新建 session、不改 schema。调度器后续
+// 每 tick 仍会撞槽，经此门槛幂等处理：复活已调度（task pending/running）→ INFO 跳过，
+// 冷却/上限/残留音频 → 跳过并诚实记录原因。返回 (Status, true) 表示已调度复活；
+// false 表示不复活，调用方维持 ErrAlreadyRecording 语义。
+func (m *Manager) tryRerecordFailedSlot(ctx context.Context, item channel.Channel, info LiveInfo) (Status, bool) {
+	cooldown := time.Duration(m.cfg.LiveRecord.EffectiveRerecordCooldown()) * time.Second
+	maxAttempts := m.cfg.LiveRecord.EffectiveRerecordMaxAttempts()
+	slot, err := m.sessions.Get(ctx, session.LiveSlotSessionID(item.ID, info.StartedAt))
+	if err != nil {
+		// 微竞态：槽会话恰在此刻被删除（用户手动 deleteSession）→ 本 tick 不可复活，
+		// 下一 tick CreateLive 自愈重建。
+		return Status{}, false
+	}
+	task, taskErr := m.workers.Store().LatestBySessionAndType(ctx, slot.ID, TaskType)
+	if taskErr != nil && !errors.Is(taskErr, worker.ErrTaskNotFound) {
+		slog.Warn("rerecord: lookup slot live_record task failed",
+			"channel_id", item.ID, "session_id", slot.ID, "error", taskErr)
+		return Status{}, false
+	}
+	rawDir := filepath.Join(m.cfg.OutputRoot, item.ID, slot.Slug, "raw")
+	decision := evaluateRerecordGate(rerecordGateInput{
+		cooldown:         cooldown,
+		maxAttempts:      maxAttempts,
+		now:              time.Now(),
+		slotStatus:       slot.Status,
+		slotUpdatedAt:    slot.UpdatedAt,
+		taskFound:        taskErr == nil,
+		taskStatus:       task.Status,
+		taskAttempt:      task.Attempt,
+		hasResidualAudio: hasResidualAudio(rawDir, m.cfg.LiveRecord.AudioContainer),
+	})
+	if decision != rerecordProceed {
+		m.logRerecordBlocked(decision, item, slot, task, taskErr == nil, cooldown)
+		return Status{}, false
+	}
+	cleanZeroByteAudioHusks(rawDir, m.cfg.LiveRecord.AudioContainer)
+	retried, retryErr := m.workers.Retry(ctx, task.ID)
+	if retryErr != nil {
+		if errors.Is(retryErr, worker.ErrTaskConflict) {
+			// 并发复活（tick 重叠 / 手动 CheckAndStartAll / 用户手动 Retry 三方竞态）：
+			// Retry 的 WHERE status='failed' 原子性保证只有一方成功，败方幂等跳过，
+			// 不上抛、不制造新的 WARN 风暴。
+			slog.Info("rerecord: task already revived by concurrent caller, skipping",
+				"channel_id", item.ID, "session_id", slot.ID, "task_id", task.ID)
+			return Status{}, false
+		}
+		slog.Warn("rerecord: retry slot live_record task failed",
+			"channel_id", item.ID, "session_id", slot.ID, "task_id", task.ID, "error", retryErr)
+		return Status{}, false
+	}
+	slog.Info("rerecord scheduled for failed live slot session",
+		"channel_id", item.ID, "session_id", slot.ID, "task_id", task.ID,
+		"attempt", retried.Attempt, "max_attempts", maxAttempts,
+		"failed_at", slot.UpdatedAt)
+	// 注：此时任务为 pending，距真正开录还有 preflight；Home 页 /api/live/status 走
+	// Check()（activeFor 未命中）在 HandleTask 启动前显示未录制，30s 内自洽。
+	return Status{
+		ChannelID: item.ID,
+		RoomID:    item.LiveRoomID,
+		Live:      true,
+		Title:     info.Title,
+		StartedAt: info.StartedAt,
+		Recording: true,
+		SessionID: slot.ID,
+		TaskID:    retried.ID,
+	}, true
+}
+
+// logRerecordBlocked 按 F2 诚实化口径记录槽位冲突不可复活的原因（替代误导性的
+// 「channel is already recording」静默）。冷却等待 / 已调度 / 非失败槽是常态 → INFO；
+// 需要人工介入（残留音频保全、任务缺失/取消死槽、次数耗尽）→ WARN 带自救提示。
+// 配置禁用（rerecordDisabled）不打日志：每 tick 一条无信息量，保持旧行为的静默。
+func (m *Manager) logRerecordBlocked(decision rerecordDecision, item channel.Channel, slot session.Session, task worker.Task, taskFound bool, cooldown time.Duration) {
+	taskStatus := "missing"
+	if taskFound {
+		taskStatus = string(task.Status)
+	}
+	switch decision {
+	case rerecordSlotNotFailed:
+		slog.Info("live slot occupied by non-failed session, skipping re-record",
+			"channel_id", item.ID, "session_id", slot.ID, "slot_status", slot.Status)
+	case rerecordTaskUnavailable:
+		if taskFound && (task.Status == worker.StatusPending || task.Status == worker.StatusRunning) {
+			slog.Info("re-record already scheduled for failed live slot session",
+				"channel_id", item.ID, "session_id", slot.ID, "task_id", task.ID, "task_status", taskStatus)
+			return
+		}
+		slog.Warn("live slot failed but live_record task unavailable, manual cleanup required",
+			"channel_id", item.ID, "session_id", slot.ID, "task_status", taskStatus,
+			"hint", "delete the failed session to release the slot")
+	case rerecordAttemptsExhausted:
+		slog.Warn("live slot re-record attempts exhausted, manual cleanup required",
+			"channel_id", item.ID, "session_id", slot.ID, "task_id", task.ID,
+			"attempt", task.Attempt, "max_attempts", m.cfg.LiveRecord.EffectiveRerecordMaxAttempts(),
+			"hint", "delete the failed session to release the slot")
+	case rerecordResidualAudio:
+		// 不带 task_id:音频门控先于任务检查判定,task 可能是零值(缺失)。
+		slog.Warn("live slot has residual recorded audio, auto re-record disabled to protect it",
+			"channel_id", item.ID, "session_id", slot.ID,
+			"hint", "manual rescue: keep raw audio and enqueue a pending normalize task, or retry the task manually")
+	case rerecordCooldown:
+		slog.Info("live slot failed recently, waiting re-record cooldown",
+			"channel_id", item.ID, "session_id", slot.ID, "failed_at", slot.UpdatedAt,
+			"cooldown", cooldown.String())
+	}
 }
 
 func (m *Manager) Start(ctx context.Context, channelID string) (Status, error) {
