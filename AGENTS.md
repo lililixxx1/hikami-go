@@ -224,12 +224,27 @@ ZCode 运行时对**每个目录根**同时扫描两个 skill 源(逆向 `~/.zco
 | 完整 API 路由表 | `CLAUDE-detail/api-routes.md` |
 | 数据流详解 | `docs/data-flow.md` |
 | 业务流程 | `docs/BUSINESS_FLOW.md` |
+| 录播故障排查(三层定位法/日志语义对照/救场操作/陷阱清单/历次事故索引) | `docs/录播故障排查手册.md` |
 | 前端架构 | `docs/FRONTEND_ARCHITECTURE.md` |
 | CI 构建/发布/预览工作流 | `.github/workflows/`(`release.yml` 正式发布:`v*` tag 全量测试+6 产物;`preview.yml` 滚动预览:push main 自动构建 desktop-ffmpeg exe → artifact(短 SHA,30 天)+ 固定 tag `preview` 滚动预发布(公开直链);`deploy-pages.yml` 介绍站) |
 | B 站宣传片制作包 | `docs/promo-video/00-overview.md`(文稿/分镜/字幕/发布套件/AI 工具指引 + `video/` 可渲染 Remotion 源码,一条命令出 mp4) |
 | 各模块深度说明 | 根 `CLAUDE.md` + 各 `internal/<模块>/CLAUDE.md` |
 
 ## 变更记录
+
+- 2026-08-22(六):**十人联动场 recap 三连灭根因定位 + 修复 — DeepSeek 非流式请求 ~180s 服务端时间墙;新增 `thinking_enabled`/`reasoning_effort` 配置,关思考后一次救回**(用户触发:「看一下为什么昨天的录播回顾没有生成…十人联动…注意分别」)。
+
+  **事故**:8-21「联动玩一下致命公司」(3h31m,弹幕 106,486)录制/normalize/ASR(2700 段/103K 字)全部成功,recap 3 次尝试全部空 content 失败。救场过程实证排除了 max_tokens 假设:32768→65536 后反而三次全部**精确 180.00s** 收到 HTTP 200 + `{}`(raw_len=2);昨晚两次 `finish_reason=stop` 空 content 的响应 reasoning_content 中途断句(模型已正确理解「十人联动」任务),一次恰 180s 返回 `{}`。
+
+  **根因**(systematic-debugging 四阶段,含一次反向实证):DeepSeek V4 系模型默认思考模式(`reasoning_effort=high`),**非流式请求生成超 ~180s 被服务端掐断**——官方 Rate Limit 文档证实非流式推理期间仅发空行保活、长生成推荐流式;`{}` 与 stop+断句均为该墙的不同表现。本场提示词达 **51,950 prompt tokens**(usage 实测),high 档思考必然超墙;调大 max_tokens 只让思考更久,必撞。与 ISSUE-007(8-13)同族不同层:那次是 max_tokens 预算耗尽,这次是时间墙;DeepSeek 对两者都常报 `stop` 而非 `length`/超时错。对照:8-20 单人 4h39m 场同配置 80 秒一次成功。
+
+  **修复**(config/recap/handler 三包):`recap_ai` 新增 `thinking_enabled`(*bool 三态:nil=不发参数零回归;false=发 `thinking:{"type":"disabled"}` 跳过思考直接作答;true=显式 enabled)与 `reasoning_effort`(low/medium/high/xhigh/max 白名单校验,空=不发)。provider 层 `applyV4ThinkingControls` 合入请求体,Generate 与 GenerateWithTools 共用;DTO/ApplyOverrides/PUT handler/响应/round-trip 持久化全链接线。注意事项:参数会原样发给任意 openai_compatible 端点,严格校验未知参数的端点(如 OpenAI 官方)配置后会 400,仅 DeepSeek V4 端点需要设置。
+
+  **救场(运维)**:`PUT /api/config/recap {"thinking_enabled":false}` + retry 任务 → completion 仅 **3,226 tokens**、约 2 分钟一次通过 → 自动链 recap→publish 全绿,session=`published`(09:00:48),回顾文档 14K 已发布。回顾质量:明确「十人规模/与二十七期同期生及新人」,点名十六萤、莉蔻、克罗雅、宇宙车友、liko、弥月等(单路混音无说话人分离条件下的极限)。
+
+  **测试**:config 50→**51**(`TestApplyOverrides_RecapAIThinkingControls` presence-aware/去空白/空 DTO 零回归)、handler 126→**127**(`TestUpdateRecapConfigThinkingControls` round-trip+GET 回读+非法 effort 400)、recap 136→**138**(`TestApplyV4ThinkingControls` 5 子例 + `TestGenerate_SendsThinkingControlsWhenConfigured` 请求体契约:缺省零发送/配置后携带)。**验证**:三包 + 全量 `go test ./...` 全绿、vet/gofmt 干净、embedded_web 构建 27MB、服务重启健康。
+
+  **生产状态**:**最终态(2026-08-22 三次用户调整后):模型 `deepseek-v4-flash` + `thinking_enabled=true` + `reasoning_effort=high`**(与官方有效档位 low/high/max 对齐;runtime + config.yaml 基线同步;救场时的 `thinking_enabled=false` 已按用户要求改回开启)。max_tokens 65536/timeout 300 为救场时调整,可保留。**已知取舍**:①思考重开 + 十人联动级超复杂场次(52K token 提示词)仍可能撞 §三.6.5 的 180s 墙,届时按手册 §四.3 临时关思考救场;②flash + max_tokens 65536 + 思考开启:8-13「思考吃空 max_tokens」窗口理论上重现,但 65536 预算远大于 8-13 的 16384,风险低。下次直播场次为实测窗口。根治方向是 recap 请求改流式(DeepSeek 官方推荐,无时间墙),零件未备。详见 `docs/录播故障排查手册.md` §三.6.5(新事故档案)+ §二 日志对照两条 + §四.3/§六 更新。
 
 - 2026-08-20(四):**「同场直播失败后无法重录」根因翻案 + 修复 — 原「20h active 泄漏」证伪,真根因是开播时间槽唯一约束(含失败态)+ 误导性 ErrAlreadyRecording;F1-F4 修复经三轮计划审核 + 实现审核全部 APPROVED**(用户触发:「这个问题已经发生几次了,重新确认一下是否是这个原因」)。**计划:`plans/plan-liverecord-rerecord-2026-08-20.md`**(r0 NEEDS_FIX 1H+3M → r1 NEEDS_FIX 1 必须 → r2 APPROVED → 实现 APPROVED;全部审核记录在计划附录)。
 
