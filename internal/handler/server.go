@@ -2695,6 +2695,8 @@ type recapConfigResponse struct {
 	MaxContinuations   int    `json:"max_continuations"`
 	TimeoutSeconds     int    `json:"timeout_seconds"`
 	IncludeSpeakerInfo bool   `json:"include_speaker_info"`
+	ThinkingEnabled    *bool  `json:"thinking_enabled,omitempty"`
+	ReasoningEffort    string `json:"reasoning_effort,omitempty"`
 }
 
 // newRecapConfigResponse 返回回顾 AI 配置响应。
@@ -2713,6 +2715,8 @@ func newRecapConfigResponse(r config.RecapAIConfig) recapConfigResponse {
 		MaxContinuations:   r.MaxContinuations,
 		TimeoutSeconds:     r.TimeoutSeconds,
 		IncludeSpeakerInfo: r.IncludeSpeakerInfo,
+		ThinkingEnabled:    r.ThinkingEnabled,
+		ReasoningEffort:    r.ReasoningEffort,
 	}
 }
 
@@ -2732,6 +2736,16 @@ var validRecapProviders = map[string]bool{
 	"local":             true,
 }
 
+// validReasoningEfforts 是 DeepSeek V4 reasoning_effort 取值白名单
+// (medium/xhigh 由服务端映射为 high,允许透传);空=不发参数,不在此校验。
+var validReasoningEfforts = map[string]bool{
+	"low":    true,
+	"medium": true,
+	"high":   true,
+	"xhigh":  true,
+	"max":    true,
+}
+
 func (s *Server) updateRecapConfig(ctx *gin.Context) {
 	var input struct {
 		Enabled            *bool   `json:"enabled"`
@@ -2745,6 +2759,8 @@ func (s *Server) updateRecapConfig(ctx *gin.Context) {
 		MaxContinuations   *int    `json:"max_continuations"`
 		TimeoutSeconds     *int    `json:"timeout_seconds"`
 		IncludeSpeakerInfo *bool   `json:"include_speaker_info"`
+		ThinkingEnabled    *bool   `json:"thinking_enabled"`
+		ReasoningEffort    *string `json:"reasoning_effort"`
 	}
 	if err := ctx.ShouldBindJSON(&input); err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid json body"})
@@ -2773,6 +2789,12 @@ func (s *Server) updateRecapConfig(ctx *gin.Context) {
 	if input.APIKeyEnv != nil {
 		if err := validateEnvKeyName(*input.APIKeyEnv, "api_key_env"); err != nil {
 			ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	if input.ReasoningEffort != nil {
+		if e := strings.TrimSpace(*input.ReasoningEffort); e != "" && !validReasoningEfforts[e] {
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": "reasoning_effort must be one of low/medium/high/xhigh/max"})
 			return
 		}
 	}
@@ -2820,6 +2842,12 @@ func (s *Server) updateRecapConfig(ctx *gin.Context) {
 	if input.IncludeSpeakerInfo != nil {
 		nextCfg.IncludeSpeakerInfo = *input.IncludeSpeakerInfo
 	}
+	if input.ThinkingEnabled != nil {
+		nextCfg.ThinkingEnabled = input.ThinkingEnabled
+	}
+	if input.ReasoningEffort != nil {
+		nextCfg.ReasoningEffort = strings.TrimSpace(*input.ReasoningEffort)
+	}
 	dto := recapConfigToDTO(nextCfg)
 
 	// 原子:secrets 写入 + runtime_settings 写入放同一事务,commit 后才改 env/cfg。
@@ -2853,7 +2881,7 @@ func (s *Server) updateRecapConfig(ctx *gin.Context) {
 // recapConfigToDTO 把 RecapAIConfig 转成完整下一状态 DTO（仅 UI 管理字段，不含 CLIPath/GlossaryFile/EnableSummarization）。
 // APIKey 不进 DTO（走 secrets）。
 func recapConfigToDTO(c config.RecapAIConfig) config.RecapAISectionDTO {
-	return config.RecapAISectionDTO{
+	dto := config.RecapAISectionDTO{
 		Enabled:            &c.Enabled,
 		Provider:           &c.Provider,
 		APIKeyEnv:          &c.APIKeyEnv,
@@ -2863,7 +2891,14 @@ func recapConfigToDTO(c config.RecapAIConfig) config.RecapAISectionDTO {
 		MaxContinuations:   &c.MaxContinuations,
 		TimeoutSeconds:     &c.TimeoutSeconds,
 		IncludeSpeakerInfo: &c.IncludeSpeakerInfo,
+		ThinkingEnabled:    c.ThinkingEnabled,
 	}
+	// ReasoningEffort 空=不发参数,persist 侧同样以空省略(omitempty),round-trip 语义一致。
+	if c.ReasoningEffort != "" {
+		effort := c.ReasoningEffort
+		dto.ReasoningEffort = &effort
+	}
+	return dto
 }
 
 // RecapModelOption 是回顾模型的推荐快捷选项。

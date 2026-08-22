@@ -173,7 +173,16 @@ type RecapAIConfig struct {
 	MaxContinuations   int    `mapstructure:"max_continuations"`
 	TimeoutSeconds     int    `mapstructure:"timeout_seconds"`
 	IncludeSpeakerInfo bool   `mapstructure:"include_speaker_info"`
-	CLIPath            string `mapstructure:"cli_path"`
+	// V4 思考控制(2026-08-22)。两项缺省(nil/空)= 不向 API 发送对应参数,行为与引入前一致。
+	// 背景:DeepSeek V4 系模型默认开启思考模式(reasoning_effort 默认 high),非流式请求思考
+	// 超过服务端 ~180s 时间墙会被掐断——超时返回空 body(实测逐次精确 180.00s + `{}`)或思考
+	// 中途 stop+空 content(ISSUE-007 家族)。十人联动等超复杂提示词必撞墙,调大 max_tokens
+	// 无效(思考更久)。ThinkingEnabled=false 显式关闭思考直接作答;true 显式开启。
+	// 注意:参数会原样发给任意 openai_compatible 端点,严格校验未知参数的端点(如 OpenAI 官方)
+	// 配置后会 400,仅 DeepSeek V4 端点需要设置。
+	ThinkingEnabled *bool  `mapstructure:"thinking_enabled"`
+	ReasoningEffort string `mapstructure:"reasoning_effort"` // low/medium/high/xhigh/max,空=不发
+	CLIPath         string `mapstructure:"cli_path"`
 	// deprecated: glossary is now stored in database, use /api/glossary endpoints
 	GlossaryFile        string `mapstructure:"glossary_file"`
 	EnableSummarization bool   `mapstructure:"enable_summarization"`
@@ -739,6 +748,8 @@ type RecapAISectionDTO struct {
 	MaxContinuations   *int    `json:"max_continuations,omitempty"`
 	TimeoutSeconds     *int    `json:"timeout_seconds,omitempty"`
 	IncludeSpeakerInfo *bool   `json:"include_speaker_info,omitempty"`
+	ThinkingEnabled    *bool   `json:"thinking_enabled,omitempty"`
+	ReasoningEffort    *string `json:"reasoning_effort,omitempty"`
 }
 
 // WebDAVSectionDTO 对应 updateWebDAVConfig 管理的字段。Password 不进 DTO（走 secrets）。
@@ -973,6 +984,12 @@ func ApplyOverrides(cfg *Config, overrides map[string]json.RawMessage) error {
 		}
 		if dto.IncludeSpeakerInfo != nil {
 			cfg.RecapAI.IncludeSpeakerInfo = *dto.IncludeSpeakerInfo
+		}
+		if dto.ThinkingEnabled != nil {
+			cfg.RecapAI.ThinkingEnabled = dto.ThinkingEnabled
+		}
+		if dto.ReasoningEffort != nil {
+			cfg.RecapAI.ReasoningEffort = strings.TrimSpace(*dto.ReasoningEffort)
 		}
 		// 注意：CLIPath/GlossaryFile/EnableSummarization 不在 DTO，保留 config.yaml 基线（r10）。
 	}

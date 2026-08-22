@@ -37,6 +37,7 @@ func (p *OpenAICompatibleProvider) Generate(ctx context.Context, systemPrompt st
 	if p.cfg.RecapAI.MaxTokens > 0 {
 		body["max_tokens"] = p.cfg.RecapAI.MaxTokens
 	}
+	applyV4ThinkingControls(body, p.cfg.RecapAI)
 	data, err := json.Marshal(body)
 	if err != nil {
 		return aiprovider.GenerateResult{}, err
@@ -81,6 +82,7 @@ func (p *OpenAICompatibleProvider) GenerateWithTools(ctx context.Context, req ai
 	} else if p.cfg.RecapAI.MaxTokens > 0 {
 		body["max_tokens"] = p.cfg.RecapAI.MaxTokens
 	}
+	applyV4ThinkingControls(body, p.cfg.RecapAI)
 	// tools 非空时声明工具 + tool_choice:auto(让模型自主决定是否调用)。
 	if len(req.Tools) > 0 {
 		tools := make([]map[string]any, 0, len(req.Tools))
@@ -196,6 +198,24 @@ func (p *OpenAICompatibleProvider) doOpenAIRequestWithRetry(ctx context.Context,
 		"finish_reason", lastResult.FinishReason, "raw_len", len(lastRaw),
 		"raw_head", truncateForLog(string(lastRaw), 800))
 	return lastResult, lastRaw, fmt.Errorf("recap provider response missing content after %d attempts (finish_reason=%s)", maxEmptyContentRetries+1, lastResult.FinishReason)
+}
+
+// applyV4ThinkingControls 把 DeepSeek V4 思考控制参数(thinking/reasoning_effort)合入请求体。
+// 两项均缺省时零发送,请求体与引入前完全一致(零回归)。2026-08-22 十人联动场次根因:
+// 思考模式对超复杂提示词推理必然超过非流式请求 ~180s 服务端时间墙,返回空 content
+// (finish_reason=stop 或空 body `{}`),重试/调大 max_tokens 均无效;thinking_enabled=false
+// 跳过思考直接作答是确定性出路(回顾任务用固定结构模板提示词,不依赖深度思考)。
+func applyV4ThinkingControls(body map[string]any, rc config.RecapAIConfig) {
+	if rc.ThinkingEnabled != nil {
+		mode := "enabled"
+		if !*rc.ThinkingEnabled {
+			mode = "disabled"
+		}
+		body["thinking"] = map[string]any{"type": mode}
+	}
+	if e := strings.TrimSpace(rc.ReasoningEffort); e != "" {
+		body["reasoning_effort"] = e
+	}
 }
 
 // truncateForLog 截断字符串到约 max 字节的日志预览,在 rune 边界截断,

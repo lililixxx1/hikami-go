@@ -1635,6 +1635,43 @@ func TestUpdateRecapConfigProvider(t *testing.T) {
 	}
 }
 
+// TestUpdateRecapConfigThinkingControls 验证 V4 思考控制字段(2026-08-22):
+// round-trip(PUT 响应 + GET 回读持久化)、effort 白名单非法值 400。
+func TestUpdateRecapConfigThinkingControls(t *testing.T) {
+	server := newTestServer(t)
+
+	ok := performRequest(server, http.MethodPut, "/api/config/recap", `{"thinking_enabled":false,"reasoning_effort":"low"}`)
+	if ok.Code != http.StatusOK {
+		t.Fatalf("update status = %d, body = %s", ok.Code, ok.Body.String())
+	}
+	got := decodeRecapResponse(t, ok.Body)
+	if got.ThinkingEnabled == nil || *got.ThinkingEnabled {
+		t.Fatalf("thinking_enabled = %v, want 显式 false", got.ThinkingEnabled)
+	}
+	if got.ReasoningEffort != "low" {
+		t.Fatalf("reasoning_effort = %q, want low", got.ReasoningEffort)
+	}
+
+	// GET 回读:字段经 runtimeconfig 持久化后可读回
+	getResp := performRequest(server, http.MethodGet, "/api/config/recap", "")
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("get status = %d, body = %s", getResp.Code, getResp.Body.String())
+	}
+	got2 := decodeRecapResponse(t, getResp.Body)
+	if got2.ThinkingEnabled == nil || *got2.ThinkingEnabled {
+		t.Fatalf("持久化回读 thinking_enabled = %v, want false", got2.ThinkingEnabled)
+	}
+	if got2.ReasoningEffort != "low" {
+		t.Fatalf("持久化回读 reasoning_effort = %q, want low", got2.ReasoningEffort)
+	}
+
+	// 非法 effort → 400
+	bad := performRequest(server, http.MethodPut, "/api/config/recap", `{"reasoning_effort":"turbo"}`)
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("invalid effort status = %d, want 400, body = %s", bad.Code, bad.Body.String())
+	}
+}
+
 // TestUpdateRecapConfigEmptyProviderFallback 验证 provider 留空可存入,
 // 响应层回落到 openai_compatible(DeepSeek 默认)。
 func TestUpdateRecapConfigEmptyProviderFallback(t *testing.T) {

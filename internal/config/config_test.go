@@ -596,6 +596,38 @@ func TestApplyOverrides_CorruptJSONSkippedNotFatal(t *testing.T) {
 	}
 }
 
+// TestApplyOverrides_RecapAIThinkingControls 验证 V4 思考控制的 presence-aware 覆盖:
+// 显式设置生效(effort 去空白),空 DTO 不动基线(nil/空保持,零回归)。2026-08-22 新增。
+func TestApplyOverrides_RecapAIThinkingControls(t *testing.T) {
+	cfg := baseCfg()
+	off := false
+	low := " low "
+	overrides := map[string]json.RawMessage{
+		"recap_ai": rawJSON(t, RecapAISectionDTO{ThinkingEnabled: &off, ReasoningEffort: &low}),
+	}
+	if err := ApplyOverrides(cfg, overrides); err != nil {
+		t.Fatalf("ApplyOverrides: %v", err)
+	}
+	if cfg.RecapAI.ThinkingEnabled == nil || *cfg.RecapAI.ThinkingEnabled {
+		t.Fatalf("ThinkingEnabled 应为显式 false, got %v", cfg.RecapAI.ThinkingEnabled)
+	}
+	if cfg.RecapAI.ReasoningEffort != "low" {
+		t.Fatalf("ReasoningEffort = %q, want low(去空白)", cfg.RecapAI.ReasoningEffort)
+	}
+
+	// 空 DTO:基线保留(nil/空不被触碰)
+	cfg2 := baseCfg()
+	if cfg2.RecapAI.ThinkingEnabled != nil || cfg2.RecapAI.ReasoningEffort != "" {
+		t.Fatalf("基线应为 nil/空, got %v/%q", cfg2.RecapAI.ThinkingEnabled, cfg2.RecapAI.ReasoningEffort)
+	}
+	if err := ApplyOverrides(cfg2, map[string]json.RawMessage{"recap_ai": rawJSON(t, RecapAISectionDTO{})}); err != nil {
+		t.Fatalf("ApplyOverrides 空 DTO: %v", err)
+	}
+	if cfg2.RecapAI.ThinkingEnabled != nil || cfg2.RecapAI.ReasoningEffort != "" {
+		t.Fatalf("空 DTO 不应动基线, got %v/%q", cfg2.RecapAI.ThinkingEnabled, cfg2.RecapAI.ReasoningEffort)
+	}
+}
+
 func TestApplyOverrides_DoesNotFreezeHiddenRecapFields(t *testing.T) {
 	cfg := baseCfg()
 	cfg.RecapAI.CLIPath = "/usr/local/bin/claude" // 隐藏字段，UI 不管理

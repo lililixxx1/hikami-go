@@ -2,14 +2,18 @@ package recap
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"unicode/utf8"
 
 	"hikami-go/internal/aiprovider"
+	"hikami-go/internal/config"
 	"hikami-go/internal/session"
 )
 
@@ -214,6 +218,105 @@ func TestGenerateWithTools_RetriesEmptyContentThenSucceeds(t *testing.T) {
 	}
 	if got := calls.Load(); got != 2 {
 		t.Fatalf("expected 2 calls (1 empty + 1 success), got %d", got)
+	}
+}
+
+// TestApplyV4ThinkingControls 验证 V4 思考控制参数的合入规则:缺省零发送(零回归)、
+// 显式 false/true 映射 thinking.type、reasoning_effort 去空白后非空才发送。
+// 背景(2026-08-22 十人联动场次):DeepSeek 非流式请求思考超 ~180s 服务端时间墙会被掐断
+// 返回空 content,thinking_enabled=false 跳过思考直接作答。
+func TestApplyV4ThinkingControls(t *testing.T) {
+	t.Run("缺省零发送", func(t *testing.T) {
+		body := map[string]any{}
+		applyV4ThinkingControls(body, config.RecapAIConfig{})
+		if len(body) != 0 {
+			t.Fatalf("缺省配置必须零发送, got %v", body)
+		}
+	})
+	t.Run("false 映射 disabled", func(t *testing.T) {
+		body := map[string]any{}
+		off := false
+		applyV4ThinkingControls(body, config.RecapAIConfig{ThinkingEnabled: &off})
+		th, ok := body["thinking"].(map[string]any)
+		if !ok || th["type"] != "disabled" {
+			t.Fatalf("thinking = %v, want type=disabled", body["thinking"])
+		}
+	})
+	t.Run("true 映射 enabled", func(t *testing.T) {
+		body := map[string]any{}
+		on := true
+		applyV4ThinkingControls(body, config.RecapAIConfig{ThinkingEnabled: &on})
+		th, ok := body["thinking"].(map[string]any)
+		if !ok || th["type"] != "enabled" {
+			t.Fatalf("thinking = %v, want type=enabled", body["thinking"])
+		}
+	})
+	t.Run("effort 去空白后发送", func(t *testing.T) {
+		body := map[string]any{}
+		applyV4ThinkingControls(body, config.RecapAIConfig{ReasoningEffort: " low "})
+		if body["reasoning_effort"] != "low" {
+			t.Fatalf("reasoning_effort = %v, want low", body["reasoning_effort"])
+		}
+	})
+	t.Run("effort 空白不发送", func(t *testing.T) {
+		body := map[string]any{}
+		applyV4ThinkingControls(body, config.RecapAIConfig{ReasoningEffort: "  "})
+		if _, ok := body["reasoning_effort"]; ok {
+			t.Fatalf("空白 effort 不应发送, got %v", body)
+		}
+	})
+}
+
+// TestGenerate_SendsThinkingControlsWhenConfigured 端到端钉死请求体契约:
+// 未配置时不含 thinking/reasoning_effort(与历史请求体一致);配置后携带对应参数。
+func TestGenerate_SendsThinkingControlsWhenConfigured(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(raw))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(validContentResponse()))
+	}))
+	defer server.Close()
+
+	p := newToolTestProvider(t, server)
+	if _, err := p.Generate(context.Background(), "sys", "user", session.Session{}); err != nil {
+		t.Fatalf("缺省配置 generate: %v", err)
+	}
+	off := false
+	p.cfg.RecapAI.ThinkingEnabled = &off
+	p.cfg.RecapAI.ReasoningEffort = "low"
+	if _, err := p.Generate(context.Background(), "sys", "user", session.Session{}); err != nil {
+		t.Fatalf("配置后 generate: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(bodies))
+	}
+	var first, second map[string]any
+	if err := json.Unmarshal([]byte(bodies[0]), &first); err != nil {
+		t.Fatalf("unmarshal first body: %v", err)
+	}
+	if err := json.Unmarshal([]byte(bodies[1]), &second); err != nil {
+		t.Fatalf("unmarshal second body: %v", err)
+	}
+	if _, ok := first["thinking"]; ok {
+		t.Fatalf("缺省请求体不应含 thinking: %s", bodies[0])
+	}
+	if _, ok := first["reasoning_effort"]; ok {
+		t.Fatalf("缺省请求体不应含 reasoning_effort: %s", bodies[0])
+	}
+	th, ok := second["thinking"].(map[string]any)
+	if !ok || th["type"] != "disabled" {
+		t.Fatalf("配置后 thinking = %v, want type=disabled: %s", second["thinking"], bodies[1])
+	}
+	if second["reasoning_effort"] != "low" {
+		t.Fatalf("配置后 reasoning_effort = %v, want low: %s", second["reasoning_effort"], bodies[1])
 	}
 }
 
